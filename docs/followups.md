@@ -78,3 +78,17 @@ See `.review/wp4-r3.md`.
 | R1-#1 (high, fixed): `.deb` lacked the tray library | done | `mygo.json` now declares `libayatana-appindicator3-1`. Still to add: a packaging check that fails if a rebuild drops it, and a prerequisite check/message in `scripts/install.sh` for the tarball/source paths. |
 | R1-#2 (medium): accepted installation paths produce a broken desktop command | WP10 | Quote or reject install prefixes with spaces/special characters in the desktop entry `Exec` line; test with such a prefix. See `.review/wp10-r1.md`. |
 | R1-#3 (medium): source installer registers the launcher outside the configured XDG data dir | WP10 | Honor `XDG_DATA_HOME` for the desktop entry and icon; test with it set. |
+
+## WP9 remaining (2026-10-21 deadline)
+
+- Folder edits (ignore list, `SaveFolder` with an ID) do not reach the indexer, so a changed ignore list needs a restart.
+- The indexer starts only after the first installed combination (or at launch when one exists), because
+  `index.Start` opens the runtime. Folder adds before that go to the store directly. A Start that fails (for example
+  a crashed sidecar at launch) is logged and not retried until restart.
+- Models on disk: the downloader's layout is `models/<revision>/<name>` and it writes `downloads/<sha>.done`
+  markers. The flat `lookback-data/models/` files from the spike are not found, so a fresh download is needed there.
+- `max_image_edge` is not applied to the extractor registry (`SetImageEdge`).
+- Installed combinations are recorded from the downloader's stream. A combination verified in an earlier run is
+  recorded only if the stream reports its files as done at startup.
+- The runtime's starting backend is the onboarding choice; a later `Use` does not persist across restarts.
+- The live smoke test (window, hotkey, tray, first run on a clean data folder) is not run by WP9.
