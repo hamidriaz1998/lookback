@@ -78,10 +78,20 @@ type App struct {
 	labSteps    map[contract.RunID]contract.LabStep
 	labOrder    []contract.RunID
 
-	// From the data snapshot, reloaded in the background.
+	// From the data snapshot, reloaded in the background. Progress updates only mark a reload due; View runs it
+	// once reloadInterval has passed since the last one. indexRev counts the changes of the index state, so a
+	// query knows its results may be stale.
 	data       snapshot
 	reloading  bool
 	reloadWant bool
+	reloadDue  bool
+	lastLoad   time.Time
+	nowT       time.Time // the clock of the current frame
+	indexRev   uint64
+
+	usage     []diskPart // what the data folder holds, read when Settings shows it
+	usageBusy bool
+	usageAt   time.Time
 
 	search   searchState
 	folders  foldersState
@@ -125,8 +135,16 @@ func (a *App) Start(ctx context.Context, dispatch func(func())) {
 	a.theme.start(ctx, dispatch, a.d.Themes)
 
 	pump(ctx, dispatch, a.d.Indexer.Subscribe(ctx), func(p contract.Progress) {
+		gen := int64(0)
+		if a.data.active != nil {
+			gen = a.data.active.ID
+		}
 		a.progress, a.hasProgress = p, true
-		a.reload()
+		if p.Gen != gen {
+			a.reload()
+			return
+		}
+		a.reloadDue = true
 	})
 	pump(ctx, dispatch, a.d.Indexer.SubscribeRebuild(ctx), func(p contract.Progress) {
 		if p.FilesDone == p.FilesTotal && p.FilesTotal > 0 {
@@ -168,15 +186,49 @@ func (a *App) reload() {
 	}
 	a.reloading = true
 	ctx := a.ctx
+	a.lastLoad = a.nowT
 	go func() {
 		s := buildSnapshot(ctx, a.d)
 		a.dispatch(func() {
+			if s.indexSig != a.data.indexSig {
+				a.indexRev++
+			}
 			a.data = s
 			a.reloading = false
 			if a.reloadWant {
 				a.reloadWant = false
 				a.reload()
 			}
+		})
+	}()
+}
+
+// dueReload runs the reload that progress updates asked for, once reloadInterval has passed since the last one.
+// Until then it asks the frame for a wake-up, so the reload still happens without more updates.
+func (a *App) dueReload(c *ui.Context) {
+	if !a.reloadDue || a.reloading {
+		return
+	}
+	if wait := reloadInterval - a.nowT.Sub(a.lastLoad); wait > 0 {
+		c.After(wait)
+		return
+	}
+	a.reloadDue = false
+	a.reload()
+}
+
+// refreshUsage reads the size of each part of the data folder, off the main thread, when the Settings page shows
+// it. It runs again when the last reading is older than usageInterval.
+func (a *App) refreshUsage() {
+	if a.usageBusy || (!a.usageAt.IsZero() && a.nowT.Sub(a.usageAt) < usageInterval) {
+		return
+	}
+	a.usageBusy, a.usageAt = true, a.nowT
+	ctx, dir := a.ctx, a.d.DataDir
+	go func() {
+		parts := diskUsage(ctx, dir)
+		a.dispatch(func() {
+			a.usage, a.usageBusy = parts, false
 		})
 	}()
 }
@@ -194,6 +246,8 @@ func (a *App) setting(key, value string) {
 
 // View builds the window from the state, once per frame.
 func (a *App) View(c *ui.Context) {
+	a.nowT = c.Now()
+	a.dueReload(c)
 	a.theme.apply(c, a.data.setting("theme", ""))
 	a.shortcuts(c)
 	if !a.data.ready {
@@ -356,4 +410,19 @@ func pageFromID(id string) page {
 // activityNeedsDot reports whether the Activity page has something to show: indexing or errors.
 func (a *App) activityNeedsDot() bool {
 	return a.indexStatus().busy || len(a.data.errors) > 0
+}
+
+// reloadInterval is the least time between two data snapshots while indexing runs (UI guide section 10): progress
+// updates arrive several times a second, and each reload reads the store.
+const reloadInterval = 2 * time.Second
+
+// usageInterval is how old the storage sizes may be when the Settings page shows them.
+const usageInterval = 10 * time.Second
+
+// activeID returns the ID of the active generation in the snapshot, or 0 when there is none.
+func (a *App) activeID() int64 {
+	if a.data.active == nil {
+		return 0
+	}
+	return a.data.active.ID
 }

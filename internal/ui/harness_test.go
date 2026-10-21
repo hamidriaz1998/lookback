@@ -137,7 +137,8 @@ func (h *harness) quiet() bool {
 // wait pumps until cond holds or the test fails.
 func (h *harness) wait(what string, cond func() bool) {
 	h.t.Helper()
-	for i := 0; i < 2000; i++ {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		h.pump(0)
 		if cond() {
 			return

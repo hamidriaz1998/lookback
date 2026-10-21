@@ -37,6 +37,7 @@ type searchState struct {
 	submit    bool // Enter was pressed: run now
 	kind      int  // 0 all, 1 images, 2 documents
 	ranKey    string
+	ranRev    uint64 // the index revision the results were run against
 	hits      []contract.Hit
 	seed      *seed
 	prevQuery string // the query Find similar replaced
@@ -411,15 +412,16 @@ func kindName(k contract.Kind) string {
 func (a *App) maybeRunSearch(c *ui.Context) {
 	s := &a.search
 	key := s.key()
-	if key == s.ranKey {
+	changed := key != s.ranKey
+	if !changed && s.ranRev == a.indexRev {
 		return
 	}
-	if key != "" && !s.submit && c.Now().Sub(s.editedAt) < searchDebounce {
+	if changed && key != "" && !s.submit && c.Now().Sub(s.editedAt) < searchDebounce {
 		c.After(searchDebounce - c.Now().Sub(s.editedAt))
 		return
 	}
 	s.submit = false
-	s.ranKey = key
+	s.ranKey, s.ranRev = key, a.indexRev
 	if key == "" {
 		// Ending the query ends its run: the run's context is canceled, and its sequence no longer matches.
 		if s.cancel != nil {
@@ -445,13 +447,15 @@ func (a *App) startSearch(c *ui.Context) {
 	s.seq++
 	seq := s.seq
 	s.searching, s.startedAt, s.err = true, c.Now(), ""
+	gen := a.activeID()
 	q, kinds, sd := s.query, s.kinds(), s.seed
 	go func() {
 		t0 := time.Now()
 		hits, err := a.runQuery(ctx, q, kinds, sd)
 		elapsed := time.Since(t0)
 		a.dispatch(func() {
-			if seq != s.seq {
+			// A query whose generation ended is dropped; the reload that ended it reruns the query.
+			if seq != s.seq || a.activeID() != gen {
 				return
 			}
 			s.searching, s.elapsed = false, elapsed

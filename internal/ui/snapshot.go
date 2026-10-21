@@ -33,8 +33,13 @@ type snapshot struct {
 	errors   []fileError
 	recent   []contract.Hit
 	settings map[string]string
-	usage    []diskPart // what the data folder holds, by part
+	indexSig indexSig // the active generation and its done rows; a change means the results may change
 	err      error
+}
+
+// indexSig identifies the state of the active index: its generation and how many files it has done.
+type indexSig struct {
+	gen, done int64
 }
 
 // diskPart is the size of one part of the data folder.
@@ -135,12 +140,20 @@ func buildSnapshot(ctx context.Context, d Deps) snapshot {
 		}
 		s.folders = append(s.folders, fv)
 	}
-	s.usage = diskUsage(d.DataDir)
+	if s.active != nil {
+		s.indexSig.gen = s.active.ID
+		for _, ix := range s.index {
+			if ix.Status == contract.StatusDone {
+				s.indexSig.done++
+			}
+		}
+	}
 	return s
 }
 
-// diskUsage sums the sizes of the top-level entries of dir, one part per entry, largest first.
-func diskUsage(dir string) []diskPart {
+// diskUsage sums the sizes of the top-level entries of dir, one part per entry, largest first. It stops when ctx
+// ends. It walks the whole folder, so the app runs it only when the Settings page shows the storage.
+func diskUsage(ctx context.Context, dir string) []diskPart {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -149,6 +162,9 @@ func diskUsage(dir string) []diskPart {
 	for _, e := range entries {
 		var n int64
 		_ = filepath.WalkDir(filepath.Join(dir, e.Name()), func(_ string, d fs.DirEntry, err error) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if err == nil && !d.IsDir() {
 				if info, ierr := d.Info(); ierr == nil {
 					n += info.Size()

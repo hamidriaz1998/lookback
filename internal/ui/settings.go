@@ -26,6 +26,7 @@ type settingsState struct {
 // settingsPage builds the Settings page (UI guide section 3.9): one scrolling page with headings.
 func (a *App) settingsPage(c *ui.Context) {
 	t := c.Theme()
+	a.refreshUsage()
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Fill().Padding(t.Space(6)).Gap(t.Space(5)).Children(func() {
 			a.appearanceSection(c)
@@ -274,13 +275,13 @@ func (a *App) storageSection(c *ui.Context) {
 	section(c, "Storage", func() {
 		ui.Text(c, a.d.DataDir).SingleLine().FontFeatures("tnum")
 		var total int64
-		for _, p := range a.data.usage {
+		for _, p := range a.usage {
 			total += p.bytes
 		}
-		if len(a.data.usage) == 0 {
+		if len(a.usage) == 0 {
 			ui.Text(c, "Nothing is stored yet.").TextColor(t.TextMuted)
 		}
-		for _, p := range a.data.usage {
+		for _, p := range a.usage {
 			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, p.name).Basis(160)
 				ui.Meter(c, float64(p.bytes), 0, float64(max(total, 1)), nil).Grow(1)
