@@ -35,3 +35,9 @@ findings block a merge). Each item names its owner. The full findings are in the
 | Item | Owner | What to do |
 |---|---|---|
 | R3-#1: tray pause state diverges from Activity pause state | WP9 | The tray toggles WP7's cached `PauseUser`; WP6 Activity calls `Indexer.Pause/Resume(PauseUser)` directly. Route both through one owner, refresh the tray on either change, keep battery/suspend/lab reasons and the frozen Indexer interface. Add an integration regression: pause via tray, resume via Activity, and the reverse. See `.review/wp7-r3.md`. |
+
+## From orchestrator gate runs
+
+| Item | Owner | What to do |
+|---|---|---|
+| `TestRealCPURuntimeResume` times out on a slow network | WP9 | It failed once (57 s, "timed out waiting for" the runtime archive) and passed on two reruns (27 s, 33 s). Give the resume wait a deadline that scales with the archive size, or skip the real download under `-short`, so a slow link does not fail the gate. |
