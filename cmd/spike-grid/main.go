@@ -11,6 +11,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,11 +32,14 @@ const (
 	tileHeight = 150  // tile height in DIPs
 	winWidth   = 1100 // window width in DIPs, as main opens it
 	pad        = 12   // the view's padding on each side, in DIPs
-	// autoCols is the grid's column count at winWidth: the grid's gap, 8 DIPs, leaves the same
-	// count. The grid does not expose its columns, so autoscroll steps by this count.
-	autoCols = (winWidth - 2*pad) / tileWidth
-	autoRows = (thumbCount + autoCols - 1) / autoCols
 )
+
+// gridColumns is how many columns MyGo's GridView lays out in width DIPs: as many items at least minWidth
+// wide, gap apart, as fit (ui.GridView computes floor((width+gap)/(minWidth+gap)), at least one). The grid
+// does not expose its column count, so autoscroll computes it from the window width each frame.
+func gridColumns(width, minWidth, gap float32) int {
+	return max(1, int(math.Floor(float64((width+gap)/(minWidth+gap)))))
+}
 
 // decoded is one thumbnail, ready to become a bitmap on the main thread.
 type decoded struct {
@@ -53,6 +57,7 @@ type app struct {
 	first  time.Duration // time from start to the first bitmap in the grid
 	done   time.Duration // time from start to the last bitmap in the grid
 
+	win  *mygo.Window  // the window, for its size when autoscroll computes the columns
 	auto time.Duration // LOOKBACK_AUTOSCROLL: how long to scroll the grid, 0 for none
 	row  int           // the grid row autoscroll shows first
 	dir  int           // autoscroll direction: 1 down, -1 up
@@ -80,13 +85,17 @@ func (a *app) view(c *ui.Context) {
 
 // autoscroll steps the grid one row a frame, reversing at the first and last row, and asks for the
 // next frame, so the window redraws at display rate until the timer in load ends the run. One row
-// a frame is a harsher case than wheel scrolling.
+// a frame is a harsher case than wheel scrolling. The step is the grid's real column count at the
+// window's current width, so each step moves exactly one row.
 func (a *app) autoscroll(c *ui.Context) {
-	if next := a.row + a.dir; next < 0 || next >= autoRows {
+	width, _ := a.win.ContentSize()
+	cols := gridColumns(float32(width)-2*pad, tileWidth, c.Theme().Space(2))
+	rows := (thumbCount + cols - 1) / cols
+	if next := a.row + a.dir; next < 0 || next >= rows {
 		a.dir = -a.dir
 	}
 	a.row += a.dir
-	a.grid.ScrollTo(a.row*autoCols, ui.Start)
+	a.grid.ScrollTo(a.row*cols, ui.Start)
 	c.AnimationFrame()
 }
 
@@ -242,6 +251,7 @@ func main() {
 			Height:  760,
 			Content: ui.View(a.view),
 		})
+		a.win = win
 		a.start = time.Now()
 		go a.load(win, paths)
 	})
