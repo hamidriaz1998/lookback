@@ -33,23 +33,19 @@ func startProcess(o Options, port int, key string) (*process, error) {
 	if err := os.MkdirAll(filepath.Dir(o.LogPath), 0o755); err != nil {
 		return nil, err
 	}
-	rotateLog(o.LogPath)
+	sink, err := logSinkFor(o.LogPath)
+	if err != nil {
+		return nil, err
+	}
 	p := &process{logPath: o.LogPath, exited: make(chan struct{})}
 	started := make(chan error, 1)
 	bin := o.Files.Server
 	args := argv(o, port, key)
 	go func() {
 		goruntime.LockOSThread()
-		logFile, err := os.OpenFile(o.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			started <- err
-			close(p.exited)
-			return
-		}
-		defer logFile.Close()
 		cmd := exec.Command(bin, args...)
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
+		cmd.Stdout = sink
+		cmd.Stderr = sink
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 		if err := cmd.Start(); err != nil {
 			started <- fmt.Errorf("runtime: start %s: %w", bin, err)

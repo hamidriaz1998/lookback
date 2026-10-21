@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -22,23 +23,39 @@ var (
 // testRuntime returns a Runtime whose sidecars are the fake llama-server (see main_test.go).
 func testRuntime(t *testing.T, b contract.Backend) (*Runtime, context.CancelFunc) {
 	t.Helper()
+	return countedRuntime(t, b, func(_ int, _ contract.Backend, s contract.VectorSpace) (Files, error) {
+		return fakeFiles(t, s), nil
+	})
+}
+
+// countedRuntime returns a Runtime whose Files function is files. The call number is 1 for the first launch.
+func countedRuntime(t *testing.T, b contract.Backend,
+	files func(call int, b contract.Backend, s contract.VectorSpace) (Files, error)) (*Runtime, context.CancelFunc) {
+	t.Helper()
 	life, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	var calls atomic.Int32
 	cfg := Config{
 		Life:    life,
 		Backend: b,
 		LogPath: filepath.Join(t.TempDir(), "logs", "llama-server.log"),
 		Threads: 2,
-		Files: func(_ contract.Backend, s contract.VectorSpace) (Files, error) {
-			return Files{Server: self, Model: "/fake/text-" + string(s.TextQuant) + ".gguf",
-				MMProj: "/fake/mmproj-" + string(s.EncQuant) + ".gguf"}, nil
+		Files: func(bk contract.Backend, s contract.VectorSpace) (Files, error) {
+			return files(int(calls.Add(1)), bk, s)
 		},
 	}
 	return New(cfg), cancel
+}
+
+// fakeFiles runs the test binary as the fake llama-server for space s.
+func fakeFiles(t *testing.T, s contract.VectorSpace) Files {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Files{Server: self, Model: "/fake/text-" + string(s.TextQuant) + ".gguf",
+		MMProj: "/fake/mmproj-" + string(s.EncQuant) + ".gguf"}
 }
 
 // waitFor polls cond for up to 30 s.
@@ -237,7 +254,9 @@ func TestKillTwiceFallsBackToCPU(t *testing.T) {
 	}
 }
 
-func TestBadImageIsAServerErrorNotARestart(t *testing.T) {
+// TestBadImageRestartsTheSidecar: SPEC section 8 restarts the sidecar once after a request fails with a server
+// error. The fake answers HTTP 500 for a bad image, so the request reports ErrRestarting and the sidecar comes back.
+func TestBadImageRestartsTheSidecar(t *testing.T) {
 	r, _ := testRuntime(t, contract.BackendVulkan)
 	ctx := context.Background()
 	sess, err := r.Session(ctx, spaceA)
@@ -247,11 +266,20 @@ func TestBadImageIsAServerErrorNotARestart(t *testing.T) {
 	defer sess.Close()
 	pid := pidOf(r, spaceA)
 	_, _, err = sess.EmbedImage(ctx, []byte("BAD image"), "image/png")
-	if err == nil || errors.Is(err, contract.ErrRestarting) {
-		t.Fatalf("bad image: got %v, want a server error", err)
+	if !errors.Is(err, contract.ErrRestarting) {
+		t.Fatalf("bad image: got %v, want ErrRestarting", err)
 	}
-	if pidOf(r, spaceA) != pid || r.Status().State != contract.RuntimeReady {
-		t.Fatal("a bad image restarted the sidecar")
+	if err := sess.Ready(ctx); err != nil {
+		t.Fatalf("Ready after the restart: %v", err)
+	}
+	if pidOf(r, spaceA) == pid {
+		t.Fatal("a server error did not restart the sidecar")
+	}
+	if r.Backend() != contract.BackendVulkan {
+		t.Fatalf("backend %s after one server error, want vulkan", r.Backend())
+	}
+	if _, _, err := sess.EmbedTexts(ctx, []string{"after the restart"}); err != nil {
+		t.Fatalf("embed after the restart: %v", err)
 	}
 }
 
@@ -400,5 +428,84 @@ func TestStreamDeliversSnapshotAndClosesWithContext(t *testing.T) {
 	}
 	cancel()
 	for range ch {
+	}
+}
+
+// TestSessionCallsAfterShutdownReturnStopped: once the lifetime ends, session calls return ErrStopped, not
+// ErrNotReady, even before the shutdown has stopped the sidecar.
+func TestSessionCallsAfterShutdownReturnStopped(t *testing.T) {
+	r, endLife := testRuntime(t, contract.BackendVulkan)
+	ctx := context.Background()
+	sess, err := r.Session(ctx, spaceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endLife()
+	waitFor(t, "stopped", func() bool { return r.Status().State == contract.RuntimeStopped })
+	if _, _, err := sess.EmbedTexts(ctx, []string{"x"}); !errors.Is(err, contract.ErrStopped) {
+		t.Fatalf("EmbedTexts after shutdown: %v, want ErrStopped", err)
+	}
+	if _, err := sess.Tokenize(ctx, "x"); !errors.Is(err, contract.ErrStopped) {
+		t.Fatalf("Tokenize after shutdown: %v, want ErrStopped", err)
+	}
+}
+
+// TestClosingOneSharedHandleWakesItsReady: closing one of two handles to the same space ends that handle's Ready
+// with ErrNotReady, while the other handle keeps the space.
+func TestClosingOneSharedHandleWakesItsReady(t *testing.T) {
+	r, _ := testRuntime(t, contract.BackendVulkan)
+	ctx := context.Background()
+	a, err := r.Session(ctx, spaceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.Session(ctx, spaceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if err := r.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- a.Ready(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, contract.ErrNotReady) {
+			t.Fatalf("Ready on a closed handle: %v, want ErrNotReady", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ready of a closed handle stayed blocked")
+	}
+}
+
+// TestUseWithoutSessionsPublishesBackend: with no open space, a Use still changes the status that subscribers see.
+func TestUseWithoutSessionsPublishesBackend(t *testing.T) {
+	r, _ := testRuntime(t, contract.BackendVulkan)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := r.Subscribe(ctx)
+	if first := <-ch; first.Backend != contract.BackendVulkan {
+		t.Fatalf("snapshot backend %s", first.Backend)
+	}
+	if err := r.Use(context.Background(), contract.BackendCPU); err != nil {
+		t.Fatalf("Use with no sessions: %v", err)
+	}
+	select {
+	case st := <-ch:
+		if st.Backend != contract.BackendCPU {
+			t.Fatalf("update after Use: backend %s, want cpu", st.Backend)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no status update after Use")
+	}
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	if st := <-r.Subscribe(ctx2); st.Backend != contract.BackendCPU {
+		t.Fatalf("new subscription after Use starts with backend %s", st.Backend)
 	}
 }

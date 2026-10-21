@@ -31,6 +31,8 @@ type Runtime struct {
 	open    []*space         // open spaces, in the order they were opened
 	changed chan struct{}    // closed and replaced on every change
 	streams *Stream[contract.RuntimeStatus]
+	opSeq   uint64                                   // counts Use and Stop calls; a later one supersedes an earlier Use
+	tail    map[contract.VectorSpace]<-chan struct{} // closes after the last launch or stop of each space
 }
 
 // space is the sidecar of one open vector space.
@@ -59,6 +61,7 @@ func New(cfg Config) *Runtime {
 		want:    cfg.Backend,
 		backend: cfg.Backend,
 		changed: make(chan struct{}),
+		tail:    map[contract.VectorSpace]<-chan struct{}{},
 		streams: NewStream(
 			func(contract.RuntimeStatus) string { return "" },
 			func(contract.RuntimeStatus) bool { return false },
@@ -128,12 +131,51 @@ func (r *Runtime) statusLocked() contract.RuntimeStatus {
 // publishLocked publishes the status and wakes the waiters. The caller holds r.mu.
 func (r *Runtime) publishLocked() {
 	r.streams.Publish(r.statusLocked())
+	r.wakeLocked()
+}
+
+// wakeLocked wakes every waiter without a status event. The caller holds r.mu.
+func (r *Runtime) wakeLocked() {
 	close(r.changed)
 	r.changed = make(chan struct{})
 }
 
-// startLocked begins a new epoch of sp in state st. It ends the previous epoch's start, and stops its server in
-// the background. The start runs under the runtime's lifetime, never under a caller's ctx (SPEC section 8).
+// queueLocked chains one launch or stop of key behind the ones already queued. It returns the channel that closes
+// after the previous job (nil when there is none) and the channel that the new job closes when it is done. No two
+// servers of one space run at once: each job waits for the one before it (SPEC section 8).
+func (r *Runtime) queueLocked(key contract.VectorSpace) (after <-chan struct{}, done chan struct{}) {
+	after = r.tail[key]
+	done = make(chan struct{})
+	r.tail[key] = done
+	return after, done
+}
+
+// retireLocked queues the stop of srv (nil is allowed) behind the jobs of key. The stop uses ctx.
+func (r *Runtime) retireLocked(key contract.VectorSpace, srv *Server, ctx context.Context) <-chan struct{} {
+	after, done := r.queueLocked(key)
+	go func() {
+		if after != nil {
+			<-after
+		}
+		if srv != nil {
+			srv.Stop(ctx)
+		}
+		close(done)
+	}()
+	return done
+}
+
+// waitDone waits for every channel. A nil channel is skipped.
+func waitDone(chs ...<-chan struct{}) {
+	for _, c := range chs {
+		if c != nil {
+			<-c
+		}
+	}
+}
+
+// startLocked begins a new epoch of sp in state st. It ends the previous epoch's start, and stops its server before
+// the new server starts. The start runs under the runtime's lifetime, never under a caller's ctx (SPEC section 8).
 func (r *Runtime) startLocked(sp *space, st contract.RuntimeState, msg string) {
 	sp.epoch++
 	if sp.cancel != nil {
@@ -145,12 +187,19 @@ func (r *Runtime) startLocked(sp *space, st contract.RuntimeState, msg string) {
 	sp.cancel = cancel
 	sp.state, sp.err = st, msg
 	r.publishLocked()
-	go r.boot(ctx, sp, sp.epoch, r.backend, prev)
+	after, done := r.queueLocked(sp.key)
+	go r.boot(ctx, sp, sp.epoch, r.backend, prev, after, done)
 }
 
 // boot starts the server of one epoch. Its result is kept only when the epoch is still current.
-// prev, when set, is the server of the previous epoch: it stops before the new one starts, so two never overlap.
-func (r *Runtime) boot(ctx context.Context, sp *space, ep uint64, b contract.Backend, prev *Server) {
+// prev, when set, is the server of the previous epoch. after closes when the launches queued before this one have
+// finished, and done closes when this one has: a launch never overlaps the servers of earlier launches.
+func (r *Runtime) boot(ctx context.Context, sp *space, ep uint64, b contract.Backend, prev *Server,
+	after <-chan struct{}, done chan struct{}) {
+	defer close(done)
+	if after != nil {
+		<-after
+	}
 	if prev != nil {
 		prev.Stop(context.Background())
 	}
@@ -213,13 +262,17 @@ func (r *Runtime) failLocked(sp *space, msg string) {
 	sp.epoch++
 	if sp.cancel != nil {
 		sp.cancel()
+		sp.cancel = nil
 	}
+	r.retireLocked(sp.key, sp.srv, context.Background())
+	sp.srv = nil
 	sp.state, sp.err = contract.RuntimeFailed, msg
 	r.publishLocked()
 }
 
-// stopLocked stops the sidecar of sp and ends its start. It returns the server to stop outside the lock.
-func (r *Runtime) stopLocked(sp *space) *Server {
+// stopLocked stops the sidecar of sp and ends its start. The stop runs behind earlier launches of the space, and
+// the returned channel closes when it has finished.
+func (r *Runtime) stopLocked(sp *space, ctx context.Context) <-chan struct{} {
 	sp.epoch++
 	if sp.cancel != nil {
 		sp.cancel()
@@ -229,7 +282,7 @@ func (r *Runtime) stopLocked(sp *space) *Server {
 	sp.srv = nil
 	sp.state, sp.err = contract.RuntimeStopped, ""
 	r.publishLocked()
-	return srv
+	return r.retireLocked(sp.key, srv, ctx)
 }
 
 // isOpenLocked reports whether sp is still open.
@@ -242,9 +295,9 @@ func (r *Runtime) isOpenLocked(sp *space) bool {
 	return false
 }
 
-// releaseLocked drops one session of sp. The last session closes the space and stops its sidecar, and the
-// server it returns is stopped by the caller.
-func (r *Runtime) releaseLocked(sp *space) *Server {
+// releaseLocked drops one session of sp. The last session closes the space and stops its sidecar. The returned
+// channel, when not nil, closes when that stop has finished.
+func (r *Runtime) releaseLocked(sp *space) <-chan struct{} {
 	sp.refs--
 	if sp.refs > 0 {
 		return nil
@@ -255,7 +308,7 @@ func (r *Runtime) releaseLocked(sp *space) *Server {
 			break
 		}
 	}
-	return r.stopLocked(sp)
+	return r.stopLocked(sp, context.Background())
 }
 
 // Session returns a session for vector space s once its sidecar is ready. A space that is not open starts its
@@ -291,7 +344,7 @@ func (r *Runtime) Session(ctx context.Context, s contract.VectorSpace) (contract
 	r.mu.Unlock()
 
 	sess := &session{rt: r, sp: sp}
-	if err := r.waitReady(ctx, sp, true); err != nil {
+	if err := r.waitReady(ctx, sp, true, nil); err != nil {
 		_ = sess.Close()
 		return nil, err
 	}
@@ -299,16 +352,16 @@ func (r *Runtime) Session(ctx context.Context, s contract.VectorSpace) (contract
 }
 
 // waitReady waits until sp is ready. With acquire, a stop or failure ends the wait with ErrNotReady. Otherwise it
-// waits through them, until a Use starts the sidecar again. It returns when ctx ends, or with ErrStopped when the
-// lifetime ends.
-func (r *Runtime) waitReady(ctx context.Context, sp *space, acquire bool) error {
+// waits through them, until a Use starts the sidecar again. With s set, closing that handle ends the wait with
+// ErrNotReady. It returns when ctx ends, or with ErrStopped when the lifetime ends.
+func (r *Runtime) waitReady(ctx context.Context, sp *space, acquire bool, s *session) error {
 	for {
 		r.mu.Lock()
 		if r.cfg.Life.Err() != nil {
 			r.mu.Unlock()
 			return contract.ErrStopped
 		}
-		if !r.isOpenLocked(sp) {
+		if (s != nil && s.closed) || !r.isOpenLocked(sp) {
 			r.mu.Unlock()
 			return contract.ErrNotReady
 		}
@@ -332,8 +385,9 @@ func (r *Runtime) waitReady(ctx context.Context, sp *space, acquire bool) error 
 }
 
 // Use makes b the backend of every sidecar and restarts the open ones (SPEC section 8). It returns when every
-// open session is ready again, when ctx ends (the unfinished sidecars then stop), or ErrRestarting when a later Use
-// or Stop supersedes it.
+// open session is ready again, or with the context's error when ctx ends (the unfinished sidecars of this call then
+// stop). Its own restarts and the CPU fallback belong to this call. A later Use or Stop returns ErrRestarting, and
+// ErrNotReady when a sidecar fails for good.
 func (r *Runtime) Use(ctx context.Context, b contract.Backend) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -343,39 +397,39 @@ func (r *Runtime) Use(ctx context.Context, b contract.Backend) error {
 		r.mu.Unlock()
 		return contract.ErrStopped
 	}
+	r.opSeq++
+	op := r.opSeq
 	r.want, r.backend = b, b
-	type wait struct {
-		sp *space
-		ep uint64
-	}
-	var waits []wait
-	for _, sp := range r.open {
+	waits := append([]*space(nil), r.open...)
+	for _, sp := range waits {
 		sp.failures = 0
 		st := contract.RuntimeRestarting
 		if sp.state == contract.RuntimeStopped || sp.state == contract.RuntimeFailed {
 			st = contract.RuntimeStarting
 		}
 		r.startLocked(sp, st, "")
-		waits = append(waits, wait{sp, sp.epoch})
+	}
+	if len(waits) == 0 {
+		r.publishLocked()
 	}
 	r.mu.Unlock()
 
 	for {
 		r.mu.Lock()
+		if r.opSeq != op {
+			r.mu.Unlock()
+			return contract.ErrRestarting
+		}
 		done := true
-		for _, w := range waits {
-			if !r.isOpenLocked(w.sp) {
+		for _, sp := range waits {
+			if !r.isOpenLocked(sp) {
 				continue
 			}
-			if w.sp.epoch != w.ep {
-				r.mu.Unlock()
-				return contract.ErrRestarting
-			}
-			if w.sp.state == contract.RuntimeFailed {
+			if sp.state == contract.RuntimeFailed {
 				r.mu.Unlock()
 				return contract.ErrNotReady
 			}
-			if !readyState(w.sp.state) {
+			if !readyState(sp.state) {
 				done = false
 			}
 		}
@@ -389,18 +443,16 @@ func (r *Runtime) Use(ctx context.Context, b contract.Backend) error {
 		case <-ch:
 		case <-ctx.Done():
 			r.mu.Lock()
-			var srvs []*Server
-			for _, w := range waits {
-				if r.isOpenLocked(w.sp) && w.sp.epoch == w.ep && !readyState(w.sp.state) {
-					if srv := r.stopLocked(w.sp); srv != nil {
-						srvs = append(srvs, srv)
+			var dones []<-chan struct{}
+			if r.opSeq == op {
+				for _, sp := range waits {
+					if r.isOpenLocked(sp) && !readyState(sp.state) {
+						dones = append(dones, r.stopLocked(sp, context.Background()))
 					}
 				}
 			}
 			r.mu.Unlock()
-			for _, srv := range srvs {
-				srv.Stop(context.Background())
-			}
+			waitDone(dones...)
 			return ctx.Err()
 		case <-r.cfg.Life.Done():
 			return contract.ErrStopped
@@ -443,32 +495,25 @@ func (r *Runtime) Stop(ctx context.Context) error {
 		r.mu.Unlock()
 		return contract.ErrStopped
 	}
-	var srvs []*Server
+	r.opSeq++
+	var dones []<-chan struct{}
 	for _, sp := range r.open {
-		if srv := r.stopLocked(sp); srv != nil {
-			srvs = append(srvs, srv)
-		}
+		dones = append(dones, r.stopLocked(sp, ctx))
 	}
 	r.mu.Unlock()
-	for _, srv := range srvs {
-		srv.Stop(ctx)
-	}
+	waitDone(dones...)
 	return nil
 }
 
 // shutdown runs when the lifetime ends: every server stops and the streams close.
 func (r *Runtime) shutdown() {
 	r.mu.Lock()
-	var srvs []*Server
+	var dones []<-chan struct{}
 	for _, sp := range r.open {
-		if srv := r.stopLocked(sp); srv != nil {
-			srvs = append(srvs, srv)
-		}
+		dones = append(dones, r.stopLocked(sp, context.Background()))
 	}
 	r.mu.Unlock()
-	for _, srv := range srvs {
-		srv.Stop(context.Background())
-	}
+	waitDone(dones...)
 	r.streams.Close()
 }
 
@@ -484,13 +529,7 @@ func (s *session) Space() contract.VectorSpace { return s.sp.key }
 
 // Ready waits until the session's sidecar is ready again.
 func (s *session) Ready(ctx context.Context) error {
-	s.rt.mu.Lock()
-	closed := s.closed
-	s.rt.mu.Unlock()
-	if closed {
-		return contract.ErrNotReady
-	}
-	return s.rt.waitReady(ctx, s.sp, false)
+	return s.rt.waitReady(ctx, s.sp, false, s)
 }
 
 // Close releases the session. It is idempotent.
@@ -501,11 +540,10 @@ func (s *session) Close() error {
 		return nil
 	}
 	s.closed = true
-	srv := s.rt.releaseLocked(s.sp)
+	s.rt.wakeLocked()
+	done := s.rt.releaseLocked(s.sp)
 	s.rt.mu.Unlock()
-	if srv != nil {
-		srv.Stop(context.Background())
-	}
+	waitDone(done)
 	return nil
 }
 
@@ -514,6 +552,8 @@ func (s *session) begin() (*Server, uint64, error) {
 	s.rt.mu.Lock()
 	defer s.rt.mu.Unlock()
 	switch {
+	case s.rt.cfg.Life.Err() != nil:
+		return nil, 0, contract.ErrStopped
 	case s.closed:
 		return nil, 0, contract.ErrNotReady
 	case readyState(s.sp.state) && s.sp.srv != nil:
@@ -525,8 +565,9 @@ func (s *session) begin() (*Server, uint64, error) {
 	}
 }
 
-// call runs one request on the server of the session. A request cut off by a restart fails with ErrRestarting. A
-// server error (HTTP 500 for a bad image, say) is returned as it is: restarts follow process exits only.
+// call runs one request on the server of the session. A request cut off by a restart fails with ErrRestarting, and
+// one cut off by shutdown with ErrStopped. A server error (HTTP 5xx) counts as a failure of the sidecar: it restarts
+// the sidecar once, and the caller retries (SPEC section 8). A client error is returned as it is.
 func (s *session) call(ctx context.Context, fn func(*Server) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -545,6 +586,13 @@ func (s *session) call(ctx context.Context, fn func(*Server) error) error {
 		}
 		return nil
 	}
+	if s.rt.cfg.Life.Err() != nil {
+		return contract.ErrStopped
+	}
+	var se *serverError
+	if errors.As(err, &se) {
+		return s.serverFailed(srv, ep, se)
+	}
 	var ue *url.Error
 	if errors.As(err, &ue) {
 		select {
@@ -554,6 +602,21 @@ func (s *session) call(ctx context.Context, fn func(*Server) error) error {
 		}
 	}
 	return err
+}
+
+// serverFailed records a server error of epoch ep of srv. Only the first error of an epoch counts, so several requests
+// that fail together restart the sidecar once.
+func (s *session) serverFailed(srv *Server, ep uint64, cause error) error {
+	s.rt.mu.Lock()
+	defer s.rt.mu.Unlock()
+	if s.sp.epoch == ep && s.sp.srv == srv {
+		s.rt.failLocked(s.sp, cause.Error())
+	}
+	switch s.sp.state {
+	case contract.RuntimeFailed, contract.RuntimeStopped:
+		return contract.ErrNotReady
+	}
+	return contract.ErrRestarting
 }
 
 // EmbedTexts embeds prompts in the session's space.

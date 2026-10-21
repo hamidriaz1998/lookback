@@ -267,6 +267,22 @@ func (s *Server) EmbedImage(ctx context.Context, img []byte, mime string) ([]flo
 	return resp.Data[0].Embedding, resp.Usage.PromptTokens, nil
 }
 
+// serverError is an HTTP 5xx answer of llama-server: a failure of the sidecar, not of the request (SPEC section 8).
+type serverError struct {
+	status int
+	msg    string
+}
+
+func (e *serverError) Error() string { return e.msg }
+
+// httpFailure returns the error of a reply with status: a serverError for 5xx, and a plain error otherwise.
+func httpFailure(status int, msg string) error {
+	if status >= 500 {
+		return &serverError{status: status, msg: msg}
+	}
+	return errors.New(msg)
+}
+
 // post sends body as JSON and decodes the embeddings reply.
 func (s *Server) post(ctx context.Context, path string, body any) (embeddingResponse, error) {
 	var out embeddingResponse
@@ -286,13 +302,13 @@ func (s *Server) post(ctx context.Context, path string, body any) (embeddingResp
 	}
 	defer resp.Body.Close()
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return out, fmt.Errorf("runtime: decode reply (HTTP %d): %w", resp.StatusCode, err)
+		return out, httpFailure(resp.StatusCode, fmt.Sprintf("runtime: decode reply (HTTP %d): %v", resp.StatusCode, err))
 	}
 	if out.Error != nil {
-		return out, fmt.Errorf("runtime: server error (HTTP %d): %s", resp.StatusCode, out.Error.Message)
+		return out, httpFailure(resp.StatusCode, fmt.Sprintf("runtime: server error (HTTP %d): %s", resp.StatusCode, out.Error.Message))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("runtime: HTTP %d", resp.StatusCode)
+		return out, httpFailure(resp.StatusCode, fmt.Sprintf("runtime: HTTP %d", resp.StatusCode))
 	}
 	return out, nil
 }
@@ -323,7 +339,7 @@ func (s *Server) tokenize(ctx context.Context, text string) (tokenizeReply, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("runtime: tokenize HTTP %d", resp.StatusCode)
+		return out, httpFailure(resp.StatusCode, fmt.Sprintf("runtime: tokenize HTTP %d", resp.StatusCode))
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return out, err
@@ -368,13 +384,6 @@ func decodePiece(raw json.RawMessage) (string, error) {
 		bs = append(bs, byte(v))
 	}
 	return string(bs), nil
-}
-
-// rotateLog moves a log over logRotateSize to name.1 before a new server writes to it.
-func rotateLog(path string) {
-	if fi, err := os.Stat(path); err == nil && fi.Size() > logRotateSize {
-		_ = os.Rename(path, path+".1")
-	}
 }
 
 // argv returns the llama-server arguments (SPEC section 8).
