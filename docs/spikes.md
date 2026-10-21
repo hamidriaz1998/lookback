@@ -69,6 +69,10 @@ Findings and limits:
   in 2.954 s. The frame log included frames over 8 ms during decoding, including a 27.0 ms frame; this
   was not a scrolling measurement. The window session locked before Inspector-based scrolling could be
   performed, so the 60 fps gate remains open.
+- **WP6 retry (2026-10-21):** built `cmd/spike-grid` with `CGO_ENABLED=0` and launched it on the owned
+  Hyprland workspace (`16 silent`). The client was tiled at 1896×1025. The process was stopped after
+  `timeout 5 grim -T <stableId>` timed out because the hidden static window did not produce a frame.
+  No Inspector scrolling was performed and no FPS result was measured; the 60 fps gate remains open.
 - `ui.NewBitmap` runs for each of the 1,000 items. Duplicates share no bitmap, so the GPU holds 1,000
   textures of 320 px, about 230 MB of RGBA in memory. The app needs the thumbnail cache of UI guide
   section 10 (`thumbs/`), and a bitmap budget.
