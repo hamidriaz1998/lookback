@@ -180,6 +180,7 @@ func (a *application) apply(cfg Config) error {
 // registered again, and the attempt is reported through HotkeyStatus.
 func (a *application) setHotkey(acc string) error {
 	if acc == a.hotkey {
+		setHotkeyStatus(acc, nil)
 		return nil
 	}
 	old := a.hotkey
