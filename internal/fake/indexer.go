@@ -21,8 +21,8 @@ type job struct {
 	gen      int64 // the generation to write; 0 means the active generation at commit time
 	from     int64 // for a rebuild, the generation it replaces
 	queue    []contract.FileRec
-	next     int     // index of the next file to complete
-	consumed float64 // tokens processed by this job
+	next     int               // index of the next file to complete
+	consumed float64           // tokens processed by this job
 	begun    *contract.FileRec // the file at index begunIdx as it was when it became the next file
 	begunIdx int
 }
@@ -505,7 +505,9 @@ func (x *Indexer) Resume(reason contract.PauseReason) {
 }
 
 // Subscribe streams the snapshots of the active generation's job.
-func (x *Indexer) Subscribe(ctx context.Context) <-chan contract.Progress { return x.streams.subscribe(ctx) }
+func (x *Indexer) Subscribe(ctx context.Context) <-chan contract.Progress {
+	return x.streams.subscribe(ctx)
+}
 
 // SubscribeRebuild streams the snapshots of the building generation. It is quiet when no rebuild runs.
 func (x *Indexer) SubscribeRebuild(ctx context.Context) <-chan contract.Progress {
