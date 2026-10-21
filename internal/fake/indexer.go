@@ -112,6 +112,9 @@ func (x *Indexer) run(ctx context.Context) {
 	ticker := time.NewTicker(x.interval)
 	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		p, rp := x.step()
 		x.streams.publish(p)
 		if rp != nil {
@@ -175,8 +178,8 @@ func (x *Indexer) step() (contract.Progress, *contract.Progress) {
 	}
 	// The rebuild is complete: its generation takes over, and the old one's items go.
 	rp := x.snapshot(x.rebuild, x.rebuild.gen, false)
-	_ = x.store.ActivateGeneration(context.Background(), x.rebuild.gen)
-	_ = x.store.DeleteItems(context.Background(), x.rebuild.from)
+	_ = x.store.ActivateGeneration(x.lifetime(), x.rebuild.gen)
+	_ = x.store.DeleteItems(x.lifetime(), x.rebuild.from)
 	x.rebuild = nil
 	old := x.activeSess
 	x.activeSess, x.rebuildSess = x.rebuildSess, nil
@@ -307,22 +310,31 @@ func (x *Indexer) enqueueLocked(files ...contract.FileRec) {
 	}
 }
 
-// checkStarted returns the error for a command that needs a started indexer, or the context's error.
-func (x *Indexer) checkStarted(ctx context.Context) error {
+// checkLocked returns the error for a command that needs a started indexer: the context's error when ctx is
+// done, ErrNotStarted before Start, and ErrStopped once the lifetime has ended. The caller holds x.mu.
+func (x *Indexer) checkLocked(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if !x.started {
 		return contract.ErrNotStarted
 	}
+	if x.stoppedLocked() {
+		return contract.ErrStopped
+	}
 	return nil
+}
+
+// stoppedLocked reports whether the lifetime has ended. The caller holds x.mu.
+func (x *Indexer) stoppedLocked() bool {
+	return x.life != nil && x.life.Err() != nil
 }
 
 // Retry clears the rows of the given files in the active generation and queues them.
 func (x *Indexer) Retry(ctx context.Context, fileIDs []int64) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if err := x.checkStarted(ctx); err != nil {
+	if err := x.checkLocked(ctx); err != nil {
 		return err
 	}
 	files := make([]contract.FileRec, 0, len(fileIDs))
@@ -335,7 +347,7 @@ func (x *Indexer) Retry(ctx context.Context, fileIDs []int64) error {
 	}
 	gen := x.store.activeGenID()
 	for _, f := range files {
-		if err := x.store.ClearFileIndex(ctx, f.ID, gen); err != nil {
+		if err := x.store.ClearFileIndex(x.lifetime(), f.ID, gen); err != nil {
 			return err
 		}
 	}
@@ -346,6 +358,10 @@ func (x *Indexer) Retry(ctx context.Context, fileIDs []int64) error {
 // RetryAll retries every file with an error row in the active generation.
 func (x *Indexer) RetryAll(ctx context.Context) error {
 	x.mu.Lock()
+	if err := x.checkLocked(ctx); err != nil {
+		x.mu.Unlock()
+		return err
+	}
 	ids := x.store.errRows(x.store.activeGenID())
 	x.mu.Unlock()
 	return x.Retry(ctx, ids)
@@ -355,7 +371,7 @@ func (x *Indexer) RetryAll(ctx context.Context) error {
 func (x *Indexer) Rescan(ctx context.Context, folderID int64) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if err := x.checkStarted(ctx); err != nil {
+	if err := x.checkLocked(ctx); err != nil {
 		return err
 	}
 	if !x.store.folderKnown(folderID) {
@@ -378,7 +394,7 @@ func (x *Indexer) Rescan(ctx context.Context, folderID int64) error {
 func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if err := x.checkStarted(ctx); err != nil {
+	if err := x.checkLocked(ctx); err != nil {
 		return 0, err
 	}
 	if x.rebuild != nil {
@@ -394,7 +410,7 @@ func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64,
 		Space:     space,
 		CreatedAt: time.Date(2026, 10, 21, 9, 30, 0, 0, time.UTC),
 	}
-	if err := x.store.NewGeneration(ctx, &g); err != nil {
+	if err := x.store.NewGeneration(x.lifetime(), &g); err != nil {
 		_ = sess.Close()
 		return 0, err
 	}
@@ -403,20 +419,22 @@ func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64,
 	return g.ID, nil
 }
 
-// Pause stops the job for reason.
+// Pause stops the job for reason. After the lifetime ends it changes nothing.
 func (x *Indexer) Pause(reason contract.PauseReason) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if reason != contract.PauseNone {
+	if reason != contract.PauseNone && !x.stoppedLocked() {
 		x.reasons[reason] = true
 	}
 }
 
-// Resume lifts the pause for reason.
+// Resume lifts the pause for reason. After the lifetime ends it changes nothing.
 func (x *Indexer) Resume(reason contract.PauseReason) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	delete(x.reasons, reason)
+	if !x.stoppedLocked() {
+		delete(x.reasons, reason)
+	}
 }
 
 // Subscribe streams the snapshots of the active generation's job.

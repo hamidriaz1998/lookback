@@ -208,7 +208,9 @@ func TestIndexerCompletesIntoStore(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
 	x := newIndexer(s, NewRuntime(), time.Second)
-	if err := x.Start(ctx); err != nil {
+	life, stop := context.WithCancel(ctx)
+	defer stop()
+	if err := x.Start(life); err != nil {
 		t.Fatal(err)
 	}
 	p, _ := x.step()
@@ -263,7 +265,9 @@ func TestIndexerCompletesIntoStore(t *testing.T) {
 func TestIndexerETACountsDown(t *testing.T) {
 	ctx := context.Background()
 	x := newIndexer(NewStore(), NewRuntime(), time.Second)
-	_ = x.Start(ctx)
+	life, stop := context.WithCancel(ctx)
+	defer stop()
+	_ = x.Start(life)
 	var etas []time.Duration
 	for i := 0; i < 200; i++ {
 		p, _ := x.step()
@@ -290,7 +294,9 @@ func TestRebuildRunsBesideActiveJob(t *testing.T) {
 	if _, err := x.Rebuild(ctx, contract.QuantBF16, contract.QuantBF16); !errors.Is(err, contract.ErrNotStarted) {
 		t.Fatalf("Rebuild before Start: %v", err)
 	}
-	_ = x.Start(ctx)
+	life, stop := context.WithCancel(ctx)
+	defer stop()
+	_ = x.Start(life)
 	gen, err := x.Rebuild(ctx, contract.QuantBF16, contract.QuantBF16)
 	if err != nil {
 		t.Fatal(err)

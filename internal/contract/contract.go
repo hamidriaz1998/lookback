@@ -344,6 +344,11 @@ type Extractor interface {
 // Indexer runs the indexing job: queue, pipeline, pauses, progress, and the user commands from
 // Activity and Folders. Commands return ErrNotStarted before Start, and the context's error when ctx
 // is already done. They queue work and return; the job does the work in the background.
+//
+// Lifetime: Start takes the job's lifetime context, and the job, its commits and its generation changes
+// all use it. Start rejects a context that is already done. When the lifetime ends, the job stops and
+// its streams close. After that every command returns ErrStopped and changes nothing, and Pause and Resume
+// change nothing.
 type Indexer interface {
 	// Start begins the job in the background. Call it once; a second call is an error.
 	Start(ctx context.Context) error

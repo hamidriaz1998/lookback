@@ -2,6 +2,7 @@ package fake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync/atomic"
@@ -19,7 +20,9 @@ func TestBackendSwitchDuringIndexingKeepsSpaces(t *testing.T) {
 	s := NewStore()
 	rt := NewRuntime()
 	x := newIndexer(s, rt, time.Second)
-	if err := x.Start(ctx); err != nil {
+	life, stop := context.WithCancel(ctx)
+	defer stop()
+	if err := x.Start(life); err != nil {
 		t.Fatal(err)
 	}
 	gen, err := x.Rebuild(ctx, contract.QuantQ8_0, contract.QuantQ8_0)
@@ -105,4 +108,69 @@ func embedKey(t *testing.T, sess contract.Session, key, modality string) []float
 		t.Fatal(err)
 	}
 	return vs[0]
+}
+
+// Start rejects a context that is already done, and changes nothing (review finding 8).
+func TestStartRejectsCanceledContext(t *testing.T) {
+	x := newIndexer(NewStore(), NewRuntime(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := x.Start(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start with a canceled context: %v", err)
+	}
+	life, stop := context.WithCancel(context.Background())
+	defer stop()
+	if err := x.Start(life); err != nil {
+		t.Fatalf("Start after the rejected one: %v", err)
+	}
+}
+
+// After the lifetime ends, every command returns ErrStopped and changes the store and the pauses nothing
+// (review finding 8).
+func TestCommandsAfterStopChangeNothing(t *testing.T) {
+	s := NewStore()
+	x := newIndexer(s, NewRuntime(), time.Second)
+	life, stop := context.WithCancel(context.Background())
+	if err := x.Start(life); err != nil {
+		t.Fatal(err)
+	}
+	ch := x.Subscribe(context.Background())
+	stop()
+	for range ch { // the stream closes when the job has stopped
+	}
+
+	bg := context.Background()
+	rowsBefore, _ := s.ListFileIndex(bg, 1)
+	gensBefore, _ := s.ListGenerations(bg)
+	filesBefore, _ := s.ListFiles(bg, 1)
+	fileID := filesBefore[0].ID
+
+	if err := x.Retry(bg, []int64{fileID}); !errors.Is(err, contract.ErrStopped) {
+		t.Fatalf("Retry after stop: %v, want ErrStopped", err)
+	}
+	if err := x.RetryAll(bg); !errors.Is(err, contract.ErrStopped) {
+		t.Fatalf("RetryAll after stop: %v, want ErrStopped", err)
+	}
+	if err := x.Rescan(bg, 1); !errors.Is(err, contract.ErrStopped) {
+		t.Fatalf("Rescan after stop: %v, want ErrStopped", err)
+	}
+	if _, err := x.Rebuild(bg, contract.QuantQ8_0, contract.QuantQ8_0); !errors.Is(err, contract.ErrStopped) {
+		t.Fatalf("Rebuild after stop: %v, want ErrStopped", err)
+	}
+	x.Pause(contract.PauseUser)
+	if x.pauseReason() != contract.PauseNone {
+		t.Fatal("Pause after stop took effect")
+	}
+
+	rowsAfter, _ := s.ListFileIndex(bg, 1)
+	gensAfter, _ := s.ListGenerations(bg)
+	if len(rowsAfter) != len(rowsBefore) || len(gensAfter) != len(gensBefore) {
+		t.Fatal("a command after stop changed the store")
+	}
+	if ix, ok := s.fileIndexRow(fileID, 1); !ok || ix.Status != contract.StatusDone {
+		t.Fatal("Retry after stop cleared the file's row")
+	}
+	if errs := s.errRows(1); len(errs) != 1 {
+		t.Fatalf("RetryAll after stop changed the error rows: %d left", len(errs))
+	}
 }
