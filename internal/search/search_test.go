@@ -301,11 +301,14 @@ func TestDeletedFileLeavesResults(t *testing.T) {
 }
 
 func TestRunErrors(t *testing.T) {
+	empty, err := store.Open(t.TempDir())
+	must(t, err)
+	t.Cleanup(func() { empty.Close() })
+	if _, err := New(empty).Run(bg, &stubSession{vec: unitAt(0)}, "q", nil); !errors.Is(err, ErrNoActive) {
+		t.Fatalf("no generation: %v", err)
+	}
 	fx := newFixture(t)
 	s := New(fx.st)
-	if _, err := s.Run(bg, &stubSession{vec: unitAt(0)}, "q", nil); !errors.Is(err, ErrNoActive) {
-		t.Fatalf("no active generation: %v", err)
-	}
 	fx.activate(t, fx.gen.ID)
 	other := &stubSession{vec: unitAt(0)}
 	if _, err := s.Run(bg, otherSpace{other}, "q", nil); err == nil {
@@ -447,4 +450,14 @@ func randVec(r *rand.Rand) []float32 {
 		v[i] /= float32(math.Sqrt(n))
 	}
 	return v
+}
+
+// While the first index builds, search serves the files indexed so far (review WP8 r1 #6).
+func TestFirstBuildingGenerationIsSearchable(t *testing.T) {
+	fx := newFixture(t)
+	fx.add(t, fx.gen.ID, "/root/done.png", contract.KindImage, unitAt(0))
+	res, err := New(fx.st).Run(bg, &stubSession{vec: unitAt(0)}, "q", nil)
+	if err != nil || len(res) != 1 || res[0].Path != "/root/done.png" {
+		t.Fatalf("first building generation: %v %v", res, err)
+	}
 }
