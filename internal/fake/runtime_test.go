@@ -88,8 +88,8 @@ func TestUseCancelAbandonsRestart(t *testing.T) {
 	}
 }
 
-// Competing transitions: the first Use returns ErrRestarting, the latest one wins, and no status of the superseded
-// start is published as Ready (review finding 4).
+// Competing transitions: a Use that a later Use supersedes returns ErrRestarting, the latest backend wins, and
+// once the backend has switched to the CPU no start of the superseded backend publishes Ready (review finding 4).
 func TestCompetingTransitionsKeepTheLatest(t *testing.T) {
 	ctx := context.Background()
 	r := NewRuntime(ctx)
@@ -99,7 +99,13 @@ func TestCompetingTransitionsKeepTheLatest(t *testing.T) {
 	events := r.Subscribe(ctx)
 	first := make(chan error, 1)
 	go func() { first <- r.Use(ctx, contract.BackendVulkan) }()
-	time.Sleep(transitionTime / 10)
+	deadline := time.Now().Add(time.Second)
+	for r.Status().State != contract.RuntimeRestarting {
+		if time.Now().After(deadline) {
+			t.Fatal("the first Use never started a restart")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if err := r.Use(ctx, cpuBackend); err != nil {
 		t.Fatal(err)
 	}
@@ -107,23 +113,30 @@ func TestCompetingTransitionsKeepTheLatest(t *testing.T) {
 		t.Fatalf("superseded Use: %v, want ErrRestarting", err)
 	}
 	waitState(t, r, contract.RuntimeReady)
-	time.Sleep(3 * transitionTime / 2)
-	if st := r.Status(); st.State != contract.RuntimeReady || st.Backend != cpuBackend {
-		t.Fatalf("final status %s on %s, want ready on %s", st.State, st.Backend, cpuBackend)
-	}
-	timeout := time.After(time.Second)
-	for {
+	// Read the stream for a while after the switch: a late Ready of the superseded backend would show here.
+	window := time.After(3 * transitionTime / 2)
+	switched := false
+	for done := false; !done; {
 		select {
 		case st, ok := <-events:
 			if !ok {
 				t.Fatal("stream closed")
 			}
-			if st.State == contract.RuntimeReady && st.Backend == contract.BackendVulkan {
-				t.Fatal("the superseded start published Ready")
+			if st.Backend == cpuBackend {
+				switched = true
 			}
-		case <-timeout:
-			return
+			if switched && st.State == contract.RuntimeReady && st.Backend == contract.BackendVulkan {
+				t.Fatal("the superseded start published Ready after the switch")
+			}
+		case <-window:
+			done = true
 		}
+	}
+	if !switched {
+		t.Fatal("the switch to the CPU never reached the status stream")
+	}
+	if st := r.Status(); st.Backend != cpuBackend {
+		t.Fatalf("final backend %s, want %s", st.Backend, cpuBackend)
 	}
 }
 
