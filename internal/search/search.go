@@ -38,6 +38,10 @@ const queryPrefix = "task: search result | query: "
 // ErrNoActive is returned when no generation is active, so there is nothing to search.
 var ErrNoActive = errors.New("search: no active generation")
 
+// ErrGenerationChanged means the active vector space changed while the query was being embedded or searched.
+// The caller should acquire a session for the new active space and retry the query.
+var ErrGenerationChanged = errors.New("search: active generation changed; retry")
+
 // Result is one file in a result list. ItemID, Unit, Modality and Snippet describe the file's best item.
 type Result struct {
 	FileID   int64
@@ -79,6 +83,13 @@ func (s *Searcher) Run(ctx context.Context, sess contract.Session, query string,
 	hits, err := s.store.Search(ctx, gen.ID, vec, kinds, candidates)
 	if err != nil {
 		return nil, err
+	}
+	current, err := s.active(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if current.ID != gen.ID {
+		return nil, ErrGenerationChanged
 	}
 	words := queryWords(query)
 	out := make([]Result, 0, len(hits))

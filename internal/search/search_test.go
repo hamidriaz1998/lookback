@@ -48,9 +48,13 @@ type stubSession struct {
 	vec       []float32
 	restarts  int
 	readyCall int
+	onEmbed   func()
 }
 
 func (s *stubSession) EmbedTexts(ctx context.Context, prompts []string) ([][]float32, int, error) {
+	if s.onEmbed != nil {
+		s.onEmbed()
+	}
 	if s.restarts > 0 {
 		s.restarts--
 		return nil, 0, contract.ErrRestarting
@@ -330,6 +334,23 @@ func TestRunWaitsForRestart(t *testing.T) {
 	}
 	if sess.readyCall != 1 {
 		t.Fatalf("Ready called %d times, want 1", sess.readyCall)
+	}
+}
+
+// Run reports a retry if the old generation is retired while the query is being embedded.
+func TestRunDetectsGenerationHandoverDuringEmbedding(t *testing.T) {
+	fx := newFixture(t)
+	f := fx.add(t, fx.gen.ID, "/root/a.png", contract.KindImage, unitAt(0))
+	fx.activate(t, fx.gen.ID)
+	g2 := contract.Generation{Space: space}
+	must(t, fx.st.NewGeneration(bg, &g2))
+	sess := &stubSession{vec: unitAt(0), onEmbed: func() {
+		fx.commit(t, g2.ID, f, unitAt(0))
+		must(t, fx.st.ActivateGeneration(bg, g2.ID))
+		must(t, fx.st.DeleteItems(bg, fx.gen.ID))
+	}}
+	if _, err := New(fx.st).Run(bg, sess, "q", nil); !errors.Is(err, ErrGenerationChanged) {
+		t.Fatalf("Run during handover: %v, want ErrGenerationChanged", err)
 	}
 }
 

@@ -86,6 +86,19 @@ func TestOpenMigratesOnce(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsQuestionMarkInDataRoot(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "lookback?x")
+	if _, err := Open(root); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("Open(%q) = %v, want explicit unsupported path error", root, err)
+	}
+	for _, p := range []string{root, filepath.Join(parent, "lookback"), filepath.Join(root, "lib")} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("Open touched %q before rejecting the root: %v", p, err)
+		}
+	}
+}
+
 // TestRawEmptyStatusIsIncomplete covers a row whose status is not terminal, which the write path refuses. Only
 // the database can hold one, so the test writes it directly. Completeness and activation must refuse it.
 func TestRawEmptyStatusIsIncomplete(t *testing.T) {
@@ -179,6 +192,74 @@ func TestSearchAndCommitConcurrently(t *testing.T) {
 	hits, err := s.Search(context.Background(), g.ID, vecFor(0), nil, 100)
 	if err != nil || len(hits) != 40 {
 		t.Fatalf("after the commits: %d hits, err %v; want 40", len(hits), err)
+	}
+}
+
+// Similar must observe either a complete seed snapshot or a missing seed while indexing clears and replaces it.
+func TestSimilarAndSeedReplacementConcurrently(t *testing.T) {
+	s, err := Open(t.TempDir())
+	must(t, err)
+	defer s.Close()
+	ctx := context.Background()
+	fo := addFolder(t, s, "/suite/similar-race")
+	seed := addFile(t, s, fo.ID, "seed.png", contract.KindImage, 1)
+	other := addFile(t, s, fo.ID, "other.png", contract.KindImage, 2)
+	g := newGen(t, s)
+	commitOne(t, s, g.ID, seed, 1)
+	commitOne(t, s, g.ID, other, 2)
+	must(t, s.ActivateGeneration(ctx, g.ID))
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			if err := s.ClearFileIndex(ctx, seed.ID, g.ID); err != nil {
+				errs <- err
+				return
+			}
+			if err := s.CommitFile(ctx, contract.FileIndex{FileID: seed.ID, Gen: g.ID, Size: seed.Size, MTime: seed.MTime, Status: contract.StatusDone}, []contract.Item{{Gen: g.ID, FileID: seed.ID, Modality: "image", Start: -1, End: -1, Vector: vecFor(1)}}); err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			recent, err := s.RecentItems(ctx, g.ID, 10)
+			if err != nil {
+				errs <- err
+				return
+			}
+			var seedID int64
+			for _, h := range recent {
+				if h.FileID == seed.ID {
+					seedID = h.ItemID
+					break
+				}
+			}
+			if seedID == 0 {
+				continue
+			}
+			hits, err := s.Similar(ctx, g.ID, seedID, nil, 10)
+			if errors.Is(err, contract.ErrStaleItem) {
+				continue
+			}
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(hits) != 1 || hits[0].FileID != other.ID {
+				errs <- fmt.Errorf("inconsistent Similar result: %+v", hits)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
 

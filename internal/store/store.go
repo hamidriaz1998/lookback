@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
@@ -35,6 +36,9 @@ var _ contract.Store = (*Store)(nil)
 // it loads its native library on the first Open of the process, so the first root wins for the process:
 // call Open with the data root before any other Turso use.
 func Open(dataRoot string) (*Store, error) {
+	if strings.Contains(dataRoot, "?") {
+		return nil, fmt.Errorf("store: data root %q contains unsupported '?'", dataRoot)
+	}
 	lib := filepath.Join(dataRoot, "lib")
 	if err := os.MkdirAll(lib, 0o755); err != nil {
 		return nil, fmt.Errorf("store: create %s: %w", lib, err)

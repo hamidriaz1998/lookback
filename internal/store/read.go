@@ -65,10 +65,15 @@ func (s *Store) Similar(ctx context.Context, gen int64, itemID int64, kinds []co
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	var seedFile int64
-	err := s.db.QueryRowContext(ctx, `SELECT file_id FROM items WHERE id = ? AND gen = ?`, itemID, gen).Scan(&seedFile)
+	err = tx.QueryRowContext(ctx, `SELECT file_id FROM items WHERE id = ? AND gen = ?`, itemID, gen).Scan(&seedFile)
 	if errors.Is(err, sql.ErrNoRows) {
-		if _, gerr := s.generation(ctx, gen); gerr != nil {
+		if _, gerr := generation(ctx, tx, gen); gerr != nil {
 			return nil, gerr
 		}
 		return nil, contract.ErrStaleItem
@@ -81,13 +86,28 @@ func (s *Store) Similar(ctx context.Context, gen int64, itemID int64, kinds []co
 		vector_distance_cos(i.embedding, (SELECT embedding FROM items WHERE id = ? AND gen = ?)) AS d
 		FROM items i JOIN files f ON f.id = i.file_id
 		WHERE i.gen = ? AND i.file_id <> ?` + where + ` ORDER BY d`
-	return s.hits(ctx, sqlText, append([]any{itemID, gen, gen, seedFile}, args...), limit)
+	hits, err := hits(ctx, tx, sqlText, append([]any{itemID, gen, gen, seedFile}, args...), limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return hits, nil
 }
 
 // generation returns contract.ErrUnknownGen when gen does not exist.
 func (s *Store) generation(ctx context.Context, gen int64) (string, error) {
+	return generation(ctx, s.db, gen)
+}
+
+type rowQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func generation(ctx context.Context, q rowQueryer, gen int64) (string, error) {
 	var state string
-	err := s.db.QueryRowContext(ctx, `SELECT state FROM generations WHERE id = ?`, gen).Scan(&state)
+	err := q.QueryRowContext(ctx, `SELECT state FROM generations WHERE id = ?`, gen).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", contract.ErrUnknownGen
 	}
@@ -98,7 +118,15 @@ func (s *Store) generation(ctx context.Context, gen int64) (string, error) {
 // file, up to limit files. It stops reading once it has them, so it never builds the full list.
 // Each row is: item id, file id, path, kind, modality, unit, snippet, d.
 func (s *Store) hits(ctx context.Context, sqlText string, args []any, limit int) ([]contract.Hit, error) {
-	rows, err := s.db.QueryContext(ctx, sqlText, args...)
+	return hits(ctx, s.db, sqlText, args, limit)
+}
+
+type rowsQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func hits(ctx context.Context, q rowsQueryer, sqlText string, args []any, limit int) ([]contract.Hit, error) {
+	rows, err := q.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
 	}
