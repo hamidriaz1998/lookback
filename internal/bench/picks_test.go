@@ -17,6 +17,7 @@ import (
 type fakeServer struct {
 	mu      sync.Mutex
 	prompts []string
+	images  int
 }
 
 func unitVector() []float32 {
@@ -40,6 +41,9 @@ func (f *fakeServer) EmbedTexts(ctx context.Context, prompts []string) ([][]floa
 }
 
 func (f *fakeServer) EmbedImage(ctx context.Context, img []byte, mime string) ([]float32, int, error) {
+	f.mu.Lock()
+	f.images++
+	f.mu.Unlock()
 	return unitVector(), 1, ctx.Err()
 }
 

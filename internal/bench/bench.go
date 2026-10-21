@@ -4,6 +4,7 @@
 package bench
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -15,17 +16,18 @@ import (
 	"time"
 
 	"github.com/hamidriaz1998/lookback/assets"
+	"github.com/hamidriaz1998/lookback/internal/chunk"
 	"github.com/hamidriaz1998/lookback/internal/contract"
+	"github.com/hamidriaz1998/lookback/internal/extract"
 	"github.com/hamidriaz1998/lookback/internal/runtime"
 )
 
 // Limits from SPEC section 6.
 const (
-	maxExtra       = 10
-	textBatch      = 8        // chunks per request (SPEC section 9)
-	qualityBar     = 0.99     // Recommend needs at least this quality
-	extraTextBytes = 8192     // bytes read from a user-picked text file
-	maxPickBytes   = 50 << 20 // largest user-picked file, the index's own limit (SPEC section 9)
+	maxExtra     = 10
+	textBatch    = 8        // chunks per request (SPEC section 9)
+	qualityBar   = 0.99     // Recommend needs at least this quality
+	maxPickBytes = 50 << 20 // largest user-picked file, the index's own limit (SPEC section 9)
 )
 
 // embedder is the part of the sidecar that a run uses. *runtime.Server has these methods.
@@ -57,6 +59,12 @@ type Lab struct {
 	active *run   // the run that holds the lab, or nil
 	closed bool   // the lifetime ended, so no run starts
 	runs   sync.WaitGroup
+
+	// picks holds the vectors of the latest BF16 run of picked files, keyed by the files' paths, sizes and times.
+	// A later run of the same files compares against it; with none, its quality is n/a (SPEC section 6).
+	// ponytail: one remembered set; per-set references if the lab must compare several picks at once.
+	picksKey  string
+	picksVecs [][]float32
 }
 
 // run is one queued or running test.
@@ -107,6 +115,9 @@ func (l *Lab) Run(ctx context.Context, c contract.Combo, extra []string) (contra
 	for _, p := range extra {
 		if _, err := checkPick(p); err != nil {
 			return 0, err
+		}
+		if _, ok := extract.KindOf(p); !ok {
+			return 0, fmt.Errorf("%s: %w", filepath.Base(p), extract.ErrUnsupported)
 		}
 	}
 	if _, err := l.files(c); err != nil {
@@ -224,7 +235,9 @@ func (l *Lab) execute(r *run) contract.LabStep {
 	return contract.LabStep{State: contract.LabDone, Step: "Done", Result: &result}
 }
 
-// measure embeds the sample and the user's files, and returns the numbers of the test table.
+// measure embeds the sample and the user's files, and returns the numbers of the test table. The picked files go
+// through the same extraction and chunking as the index (SPEC section 9), and their vectors and timings join the
+// sample's.
 func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, error) {
 	var res contract.BenchResult
 	images, err := assets.Images()
@@ -252,40 +265,148 @@ func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, error) {
 		vecs = append(vecs, v)
 	}
 	l.emit(r, contract.LabStep{State: contract.LabEmbedding, Step: fmt.Sprintf("Embedding %d text chunks", len(chunks))})
-	var tokens int
-	var textWall time.Duration
-	for start := 0; start < len(chunks); start += textBatch {
-		end := min(start+textBatch, len(chunks))
-		var prompts []string
-		for _, c := range chunks[start:end] {
-			prompts = append(prompts, Prompt(c.Name, c.Text))
-		}
-		t0 := time.Now()
-		out, n, err := srv.EmbedTexts(r.ctx, prompts)
-		textWall += time.Since(t0)
-		if err != nil {
-			return res, fmt.Errorf("text chunks: %w", err)
-		}
-		tokens += n
-		vecs = append(vecs, out...)
+	var prompts []string
+	for _, c := range chunks {
+		prompts = append(prompts, Prompt(c.Name, c.Text))
 	}
+	out, tokens, textWall, err := embedTexts(r.ctx, srv, prompts)
+	if err != nil {
+		return res, fmt.Errorf("text chunks: %w", err)
+	}
+	vecs = append(vecs, out...)
+
+	var userVecs [][]float32
+	var key strings.Builder
+	reg := extract.NewRegistry()
+	defer reg.Close()
 	for i, p := range r.extra {
 		l.emit(r, contract.LabStep{State: contract.LabEmbedding, Step: fmt.Sprintf("Embedding your file %d of %d", i+1, len(r.extra))})
-		if err := embedUserFile(r.ctx, srv, p); err != nil {
-			return res, fmt.Errorf("%s: %w", filepath.Base(p), err)
+		name := filepath.Base(p)
+		fi, err := checkPick(p)
+		if err != nil {
+			return res, err
 		}
+		fmt.Fprintf(&key, "%s|%d|%d\n", p, fi.Size(), fi.ModTime().UnixNano())
+		units, err := extractPick(r.ctx, reg, p, fi)
+		if err != nil {
+			return res, fmt.Errorf("%s: %w", name, err)
+		}
+		var texts []string
+		for _, u := range units {
+			if u.Image != nil {
+				mime := "image/jpeg"
+				if bytes.HasPrefix(u.Image, []byte("\x89PNG\r\n\x1a\n")) {
+					mime = "image/png"
+				}
+				t0 := time.Now()
+				v, _, err := srv.EmbedImage(r.ctx, u.Image, mime)
+				if err != nil {
+					return res, fmt.Errorf("%s: %w", name, err)
+				}
+				msPerImage = append(msPerImage, float64(time.Since(t0))/float64(time.Millisecond))
+				userVecs = append(userVecs, v)
+				continue
+			}
+			wins, err := chunk.Split(r.ctx, u.Text, Prompt(name, ""), srv.Tokenize)
+			if err != nil {
+				return res, fmt.Errorf("%s: %w", name, err)
+			}
+			for _, w := range wins {
+				texts = append(texts, Prompt(name, u.Text[w.Start:w.End]))
+			}
+		}
+		out, n, wall, err := embedTexts(r.ctx, srv, texts)
+		if err != nil {
+			return res, fmt.Errorf("%s: %w", name, err)
+		}
+		userVecs = append(userVecs, out...)
+		tokens += n
+		textWall += wall
 	}
 
 	res.ImageMS = median(msPerImage)
 	if textWall > 0 {
 		res.TextTokensPerSec = float64(tokens) / textWall.Seconds()
 	}
-	q, err := quality(vecs, ref)
-	if err != nil {
-		return res, err
+	if len(r.extra) == 0 {
+		q, err := quality(vecs, ref)
+		if err != nil {
+			return res, err
+		}
+		res.Quality = &q
+		return res, nil
 	}
-	res.Quality = &q
+	// With picked files, quality is their own: the vectors against a BF16 run of the same files.
+	if r.combo.TextQuant == contract.QuantBF16 && r.combo.EncQuant == contract.QuantBF16 {
+		l.keepPicks(key.String(), userVecs)
+	}
+	base, ok := l.picksReference(key.String())
+	switch {
+	case !ok:
+		res.QualityReason = "needs a BF16 run of these files first"
+	case len(userVecs) == 0:
+		res.QualityReason = "the picked files have no text or images to compare"
+	default:
+		q, err := quality(userVecs, assets.Reference{Vectors: base})
+		if err != nil {
+			return res, err
+		}
+		res.Quality = &q
+	}
 	return res, nil
+}
+
+// keepPicks remembers the vectors of a BF16 run of the picked files.
+func (l *Lab) keepPicks(key string, vecs [][]float32) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.picksKey, l.picksVecs = key, vecs
+}
+
+// picksReference returns the remembered BF16 vectors when they belong to the same picked files.
+func (l *Lab) picksReference(key string) ([][]float32, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.picksVecs == nil || l.picksKey != key {
+		return nil, false
+	}
+	return l.picksVecs, true
+}
+
+// embedTexts sends prompts in batches of textBatch (SPEC section 9). It returns their vectors, the prompt tokens
+// and the wall time of the requests.
+func embedTexts(ctx context.Context, srv embedder, prompts []string) ([][]float32, int, time.Duration, error) {
+	var vecs [][]float32
+	var tokens int
+	var wall time.Duration
+	for start := 0; start < len(prompts); start += textBatch {
+		end := min(start+textBatch, len(prompts))
+		t0 := time.Now()
+		out, n, err := srv.EmbedTexts(ctx, prompts[start:end])
+		wall += time.Since(t0)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		tokens += n
+		vecs = append(vecs, out...)
+	}
+	return vecs, tokens, wall, nil
+}
+
+// extractPick returns the units of a picked file through the registry, the same extractors the index uses. fi is
+// the file's checked info.
+func extractPick(ctx context.Context, reg *extract.Registry, p string, fi os.FileInfo) ([]contract.Unit, error) {
+	kind, ok := extract.KindOf(p)
+	if !ok {
+		return nil, extract.ErrUnsupported
+	}
+	f := contract.FileRec{Path: p, Kind: kind, Size: fi.Size(), MTime: fi.ModTime().UnixNano()}
+	var units []contract.Unit
+	err := reg.Extract(ctx, f, func(u contract.Unit) error {
+		units = append(units, u)
+		return nil
+	})
+	return units, err
 }
 
 // checkPick returns the info of a user-picked file. It must be a regular file of at most maxPickBytes. Stat does
@@ -302,29 +423,6 @@ func checkPick(p string) (os.FileInfo, error) {
 		return nil, fmt.Errorf("%s: %d bytes, over the %d-byte limit", filepath.Base(p), fi.Size(), int64(maxPickBytes))
 	}
 	return fi, nil
-}
-
-// embedUserFile embeds one picked file, for its timing only: images as images, anything else as its first bytes.
-func embedUserFile(ctx context.Context, srv embedder, p string) error {
-	if _, err := checkPick(p); err != nil {
-		return err
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return err
-	}
-	switch strings.ToLower(filepath.Ext(p)) {
-	case ".png":
-		_, _, err = srv.EmbedImage(ctx, b, "image/png")
-	case ".jpg", ".jpeg":
-		_, _, err = srv.EmbedImage(ctx, b, "image/jpeg")
-	default:
-		if len(b) > extraTextBytes {
-			b = b[:extraTextBytes]
-		}
-		_, _, err = srv.EmbedTexts(ctx, []string{Prompt(filepath.Base(p), string(b))})
-	}
-	return err
 }
 
 // vramFree returns the free VRAM of the first device of backend b, or 0 when it is unknown.
