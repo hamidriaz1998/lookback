@@ -200,8 +200,12 @@ func (r *Runtime) boot(ctx context.Context, sp *space, ep uint64, b contract.Bac
 	if after != nil {
 		<-after
 	}
+	// ctx ends when a later epoch or a stop supersedes this one. Stopping prev under ctx then escalates to SIGKILL at once.
 	if prev != nil {
-		prev.Stop(context.Background())
+		prev.Stop(ctx)
+	}
+	if ctx.Err() != nil {
+		return // superseded before the launch: the superseding epoch owns the space state
 	}
 	files, err := r.cfg.Files(b, sp.key)
 	var srv *Server
@@ -212,7 +216,7 @@ func (r *Runtime) boot(ctx context.Context, sp *space, ep uint64, b contract.Bac
 	if sp.epoch != ep {
 		r.mu.Unlock()
 		if srv != nil {
-			srv.Stop(context.Background())
+			srv.Stop(ctx)
 		}
 		return
 	}
@@ -368,6 +372,9 @@ func (r *Runtime) waitReady(ctx context.Context, sp *space, acquire bool, s *ses
 		st := sp.state
 		ch := r.changed
 		r.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		switch {
 		case readyState(st):
 			return nil
@@ -447,7 +454,7 @@ func (r *Runtime) Use(ctx context.Context, b contract.Backend) error {
 			if r.opSeq == op {
 				for _, sp := range waits {
 					if r.isOpenLocked(sp) && !readyState(sp.state) {
-						dones = append(dones, r.stopLocked(sp, context.Background()))
+						dones = append(dones, r.stopLocked(sp, ctx)) // ctx has ended: the stop escalates at once
 					}
 				}
 			}
@@ -565,9 +572,11 @@ func (s *session) begin() (*Server, uint64, error) {
 	}
 }
 
-// call runs one request on the server of the session. A request cut off by a restart fails with ErrRestarting, and
-// one cut off by shutdown with ErrStopped. A server error (HTTP 5xx) counts as a failure of the sidecar: it restarts
-// the sidecar once, and the caller retries (SPEC section 8). A client error is returned as it is.
+// call runs one request on the server of the session. Every completion, successful or not, is checked under the
+// lock before its result is returned: the runtime's lifetime first (ErrStopped), then the epoch (ErrRestarting). So a
+// request cut off by a restart or by shutdown fails with the lifecycle error, even when its reply was partly read. A
+// server error (HTTP 5xx) counts as a failure of the sidecar: it restarts the sidecar once, and the caller retries
+// (SPEC section 8). A client error is returned as it is.
 func (s *session) call(ctx context.Context, fn func(*Server) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -577,24 +586,22 @@ func (s *session) call(ctx context.Context, fn func(*Server) error) error {
 		return err
 	}
 	err = fn(srv)
-	if err == nil {
-		s.rt.mu.Lock()
-		stale := s.sp.epoch != ep
-		s.rt.mu.Unlock()
-		if stale {
-			return contract.ErrRestarting
-		}
-		return nil
-	}
-	if s.rt.cfg.Life.Err() != nil {
-		return contract.ErrStopped
-	}
 	var se *serverError
 	if errors.As(err, &se) {
 		return s.serverFailed(srv, ep, se)
 	}
+	if e := s.completed(ep); e != nil {
+		return e
+	}
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	var ue *url.Error
 	if errors.As(err, &ue) {
+		// The server may have died before the watch recorded the new epoch. Give the exit a moment to show.
 		select {
 		case <-srv.Exited():
 			return contract.ErrRestarting
@@ -604,11 +611,28 @@ func (s *session) call(ctx context.Context, fn func(*Server) error) error {
 	return err
 }
 
+// completed reports why a request of epoch ep must not return its result: the lifetime has ended (ErrStopped), or
+// the epoch has moved on (ErrRestarting). It returns nil when the request may return its result.
+func (s *session) completed(ep uint64) error {
+	s.rt.mu.Lock()
+	defer s.rt.mu.Unlock()
+	switch {
+	case s.rt.cfg.Life.Err() != nil:
+		return contract.ErrStopped
+	case s.sp.epoch != ep:
+		return contract.ErrRestarting
+	}
+	return nil
+}
+
 // serverFailed records a server error of epoch ep of srv. Only the first error of an epoch counts, so several requests
-// that fail together restart the sidecar once.
+// that fail together restart the sidecar once. A failure during shutdown is not restarted.
 func (s *session) serverFailed(srv *Server, ep uint64, cause error) error {
 	s.rt.mu.Lock()
 	defer s.rt.mu.Unlock()
+	if s.rt.cfg.Life.Err() != nil {
+		return contract.ErrStopped
+	}
 	if s.sp.epoch == ep && s.sp.srv == srv {
 		s.rt.failLocked(s.sp, cause.Error())
 	}

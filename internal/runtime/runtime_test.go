@@ -509,3 +509,19 @@ func TestUseWithoutSessionsPublishesBackend(t *testing.T) {
 		t.Fatalf("new subscription after Use starts with backend %s", st.Backend)
 	}
 }
+
+// TestReadyOnReadySessionHonorsCanceledContext: Ready reports the caller's ctx error when that context has ended,
+// even when the sidecar is already ready.
+func TestReadyOnReadySessionHonorsCanceledContext(t *testing.T) {
+	r, _ := testRuntime(t, contract.BackendVulkan)
+	sess, err := r.Session(context.Background(), spaceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sess.Ready(dead); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ready with a canceled context on a ready session: %v, want context.Canceled", err)
+	}
+}

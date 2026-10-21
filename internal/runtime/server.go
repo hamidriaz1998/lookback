@@ -113,7 +113,7 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 		if err == nil {
 			return srv, nil
 		}
-		srv.Stop(context.Background())
+		srv.Stop(startCtx) // ends at once when the start has ended
 		lastErr = err
 		if proc.bindCollision() {
 			continue

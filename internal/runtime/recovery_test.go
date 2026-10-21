@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -158,10 +159,16 @@ func TestUseIsSupersededOnlyByLaterUseOrStop(t *testing.T) {
 	}
 }
 
-// TestConcurrentServerErrorsCountOnce: four requests on one sidecar all fail with a server error. Only the first
-// counts, so the sidecar restarts once and stays on the GPU backend.
+// TestConcurrentServerErrorsCountOnce: four requests of one epoch all fail with a server error. Each returns a
+// controlled serverError after all four have captured the epoch, so the outcome does not depend on HTTP timing. Only
+// the first counts: the sidecar restarts once (two launches in all) and stays on the GPU backend. Removing the epoch
+// guard in serverFailed makes the second failure fall back to the CPU, and this test fails.
 func TestConcurrentServerErrorsCountOnce(t *testing.T) {
-	r, _ := testRuntime(t, contract.BackendVulkan)
+	var launches atomic.Int32
+	r, _ := countedRuntime(t, contract.BackendVulkan, func(_ int, _ contract.Backend, s contract.VectorSpace) (Files, error) {
+		launches.Add(1)
+		return fakeFiles(t, s), nil
+	})
 	ctx := context.Background()
 	sess, err := r.Session(ctx, spaceA)
 	if err != nil {
@@ -177,14 +184,11 @@ func TestConcurrentServerErrorsCountOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// All requests pass the same epoch before any of them fails.
-			err := sess.(*session).call(ctx, func(srv *Server) error {
+			errs[i] = sess.(*session).call(ctx, func(*Server) error {
 				arrived.Done()
-				arrived.Wait()
-				_, _, e := srv.EmbedImage(ctx, []byte("BAD image"), "image/png")
-				return e
+				arrived.Wait() // every request has captured the epoch before any of them fails
+				return &serverError{status: http.StatusInternalServerError, msg: "runtime: server error (HTTP 500)"}
 			})
-			errs[i] = err
 		}()
 	}
 	wg.Wait()
@@ -199,6 +203,9 @@ func TestConcurrentServerErrorsCountOnce(t *testing.T) {
 	if r.Backend() != contract.BackendVulkan || r.Status().State != contract.RuntimeReady {
 		t.Fatalf("after four errors of one epoch: backend %s, state %s; want one restart on vulkan",
 			r.Backend(), r.Status().State)
+	}
+	if n := launches.Load(); n != 2 {
+		t.Fatalf("%d launches, want 2 (the first start and one restart)", n)
 	}
 }
 
@@ -247,5 +254,117 @@ wait $!
 	}
 	if _, _, err := sess.EmbedTexts(ctx, []string{"after overlap"}); err != nil {
 		t.Fatalf("embed after overlapping Use calls: %v", err)
+	}
+}
+
+// TestPartialReplyInterruptedByRestartIsRestarting: a reply that has sent HTTP 200 and part of its body, when a Use
+// restarts the sidecar, is cut off by the restart. The caller gets ErrRestarting, not a decode error.
+func TestPartialReplyInterruptedByRestartIsRestarting(t *testing.T) {
+	r, _ := testRuntime(t, contract.BackendVulkan)
+	ctx := context.Background()
+	sess, err := r.Session(ctx, spaceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	marker := filepath.Join(t.TempDir(), "partial")
+	req := make(chan error, 1)
+	go func() {
+		_, _, err := sess.EmbedImage(ctx, []byte("PARTIAL:"+marker), "image/png")
+		req <- err
+	}()
+	waitFor(t, "the partial reply", func() bool { _, err := os.Stat(marker); return err == nil })
+	if err := r.Use(ctx, contract.BackendCPU); err != nil {
+		t.Fatalf("Use: %v", err)
+	}
+	select {
+	case err := <-req:
+		if !errors.Is(err, contract.ErrRestarting) {
+			t.Fatalf("interrupted reply: %v, want ErrRestarting", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the interrupted request did not return")
+	}
+}
+
+// TestSuccessfulCallEndingWithLifetimeIsStopped: a request that completes successfully after the runtime's lifetime
+// has ended reports ErrStopped, not success or ErrRestarting.
+func TestSuccessfulCallEndingWithLifetimeIsStopped(t *testing.T) {
+	r, endLife := testRuntime(t, contract.BackendVulkan)
+	ctx := context.Background()
+	sess, err := r.Session(ctx, spaceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	err = sess.(*session).call(ctx, func(srv *Server) error {
+		_, _, e := srv.EmbedTexts(ctx, []string{"finished"})
+		endLife() // the lifetime ends while the request is completing
+		return e
+	})
+	if !errors.Is(err, contract.ErrStopped) {
+		t.Fatalf("call completing after shutdown: %v, want ErrStopped", err)
+	}
+}
+
+// TestUseDeadlineBoundsRetiringSlowServer: a ready server that ignores TERM for a minute is retired at once when the
+// Use that replaces it runs out of time. The next launch then starts only after that server has gone.
+func TestUseDeadlineBoundsRetiringSlowServer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the 10 s stop grace of the final cleanup")
+	}
+	dir := t.TempDir()
+	pids := filepath.Join(dir, "pids")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The wrapper keeps running for a minute after TERM, far longer than the stop grace of 10 s.
+	wrapper := writeScript(t, fmt.Sprintf(`trap 'sleep 60; exit 0' TERM
+echo $$ >> %q
+%q "$@" &
+wait $!
+`, pids, self))
+	var overlaps atomic.Int32
+	r, _ := countedRuntime(t, contract.BackendVulkan, func(int, contract.Backend, contract.VectorSpace) (Files, error) {
+		if raw, err := os.ReadFile(pids); err == nil {
+			for _, f := range strings.Fields(string(raw)) {
+				pid, _ := strconv.Atoi(f)
+				if syscall.Kill(pid, 0) == nil {
+					overlaps.Add(1)
+				}
+			}
+		}
+		return Files{Server: wrapper, Model: "m", MMProj: "p"}, nil
+	})
+	ctx := context.Background()
+	sess, err := r.Session(ctx, spaceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	slow := pidOf(r, spaceA)
+
+	uctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	begin := time.Now()
+	if err := r.Use(uctx, contract.BackendCPU); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Use past its deadline: %v, want DeadlineExceeded", err)
+	}
+	if d := time.Since(begin); d > 5*time.Second {
+		t.Fatalf("Use returned %s after a 300 ms deadline", d)
+	}
+	if syscall.Kill(slow, 0) == nil {
+		t.Fatal("the slow server still runs after Use returned")
+	}
+
+	if err := r.Use(ctx, contract.BackendCPU); err != nil {
+		t.Fatalf("next Use: %v", err)
+	}
+	if n := overlaps.Load(); n != 0 {
+		t.Fatalf("%d launches started while an earlier server was still running", n)
+	}
+	if _, _, err := sess.EmbedTexts(ctx, []string{"after the deadline"}); err != nil {
+		t.Fatalf("embed after the next Use: %v", err)
 	}
 }

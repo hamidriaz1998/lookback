@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -90,6 +92,15 @@ func fakeLlama(args []string) {
 				url := item.Content[0].ImageURL.URL
 				_, b64, _ := strings.Cut(url, ";base64,")
 				raw, err := base64.StdEncoding.DecodeString(b64)
+				if marker, ok := strings.CutPrefix(string(raw), "PARTIAL:"); ok && err == nil {
+					// Send HTTP 200 and the start of the JSON body, create marker, and never finish the reply.
+					w.WriteHeader(http.StatusOK)
+					fmt.Fprint(w, `{"data":[{"index":0,"embedding":[`)
+					w.(http.Flusher).Flush()
+					_ = os.WriteFile(marker, nil, 0o644)
+					time.Sleep(time.Hour)
+					return
+				}
 				if err != nil || strings.HasPrefix(string(raw), "BAD") {
 					http.Error(w, `{"error":{"message":"Failed to load image or audio file","type":"server_error","code":500}}`, http.StatusInternalServerError)
 					return
