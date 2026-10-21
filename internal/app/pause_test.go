@@ -97,3 +97,34 @@ func TestNilIndexerTracksOnly(t *testing.T) {
 		t.Fatal("reason not tracked without an indexer")
 	}
 }
+
+// runnableWatch records when the indexer would become runnable: a Resume that leaves no reason set.
+type runnableWatch struct {
+	*stackIndexer
+	runnable bool
+}
+
+func (w *runnableWatch) Resume(r contract.PauseReason) {
+	w.stackIndexer.Resume(r)
+	if len(w.reasons) == 0 {
+		w.runnable = true
+	}
+}
+
+// A suspend that started on AC and a resume on battery: the indexer never becomes runnable, because the
+// battery reason is taken before the suspend reason is released.
+func TestResumeOnBatteryNeverRunnable(t *testing.T) {
+	w := &runnableWatch{stackIndexer: newStackIndexer()}
+	p := newPauses(w)
+	p.set(contract.PauseSuspend, true)
+	resumePauses(p, true, true)
+	if w.runnable {
+		t.Fatal("the indexer was runnable during the resume on battery")
+	}
+	if got, want := w.held(), []string{"battery"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("held = %v, want %v", got, want)
+	}
+	if got, want := w.calls, []string{"pause:suspend", "pause:battery", "resume:suspend"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+}

@@ -136,10 +136,7 @@ func (a *application) start() {
 	setHotkeyStatus(a.cfg.Hotkey, err)
 
 	mygo.Power.OnSuspend(func() { a.pause.set(contract.PauseSuspend, true) })
-	mygo.Power.OnResume(func() {
-		a.pause.set(contract.PauseSuspend, false)
-		a.checkBattery()
-	})
+	mygo.Power.OnResume(func() { a.resume(mygo.Power.IsOnBattery()) })
 	a.checkBattery()
 	go func() {
 		for range time.Tick(batteryInterval) {
@@ -150,7 +147,24 @@ func (a *application) start() {
 
 // checkBattery sets the battery pause from the power source. It is safe from any goroutine.
 func (a *application) checkBattery() {
-	a.pause.set(contract.PauseBattery, a.cfg.PauseOnBattery && mygo.Power.IsOnBattery())
+	reconcileBattery(a.pause, a.cfg.PauseOnBattery, mygo.Power.IsOnBattery())
+}
+
+// resume lifts the suspend pause after the battery reason is refreshed.
+func (a *application) resume(onBattery bool) {
+	resumePauses(a.pause, a.cfg.PauseOnBattery, onBattery)
+}
+
+// resumePauses sets the battery reason while the suspend reason still holds the indexer, then lifts the
+// suspend reason, so the indexer never becomes runnable between the two.
+func resumePauses(p *pauses, enabled, onBattery bool) {
+	reconcileBattery(p, enabled, onBattery)
+	p.set(contract.PauseSuspend, false)
+}
+
+// reconcileBattery sets the battery reason from the setting and the power source.
+func reconcileBattery(p *pauses, enabled, onBattery bool) {
+	p.set(contract.PauseBattery, enabled && onBattery)
 }
 
 // show shows and focuses the window.
