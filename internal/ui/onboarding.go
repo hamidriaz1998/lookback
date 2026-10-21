@@ -261,7 +261,7 @@ func (a *App) labTable(c *ui.Context, combos []contract.Combo) {
 	o := a.onb
 	recommended := a.recommendedLabCombo()
 	cols := []ui.TableColumn{
-		{Title: "Combination", Width: 290}, {Title: "Image ms", Width: 130, Align: ui.End},
+		{Title: "Combination", Width: 290}, {Title: "Image ms", Width: 170, Align: ui.End},
 		{Title: "Tokens/s", Width: 100, Align: ui.End}, {Title: "RAM", Width: 90, Align: ui.End},
 		{Title: "VRAM", Width: 90, Align: ui.End}, {Title: "Quality", Width: 90, Align: ui.End},
 		{Title: "Download", Width: 110, Align: ui.End},
@@ -287,7 +287,7 @@ func (a *App) labTable(c *ui.Context, combos []contract.Combo) {
 		case 1:
 			switch {
 			case has && (step.State == contract.LabEmbedding || step.State == contract.LabStarting || step.State == contract.LabQueued):
-				ui.Row(c).Gap(t.Space(1)).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).Gap(t.Space(1)).AlignItems(ui.Center).Justify(ui.End).Children(func() {
 					ui.Spinner(c)
 					ui.Text(c, step.Step).SingleLine()
 				})
