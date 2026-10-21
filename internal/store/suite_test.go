@@ -557,6 +557,19 @@ func caseDeleteFolder(t *testing.T, s contract.Store) {
 	commitOne(t, s, g.ID, f, 1)
 	commitOne(t, s, g.ID, k, 2)
 	must(t, s.DeleteFolder(bg, fo.ID))
+	stale := f
+	if err := s.SaveFile(bg, &stale); !errors.Is(err, contract.ErrUnknownFile) {
+		t.Fatalf("SaveFile for deleted file: %v, want ErrUnknownFile", err)
+	}
+	discovery := f
+	discovery.ID = 0
+	if err := s.SaveFile(bg, &discovery); !errors.Is(err, contract.ErrUnknownFolder) {
+		t.Fatalf("SaveFile into deleted folder: %v, want ErrUnknownFolder", err)
+	}
+	missing := contract.FileRec{ID: 1 << 40, FolderID: keep.ID, Path: "/suite/missing.png", Kind: contract.KindImage}
+	if err := s.SaveFile(bg, &missing); !errors.Is(err, contract.ErrUnknownFile) {
+		t.Fatalf("SaveFile for unknown ID: %v, want ErrUnknownFile", err)
+	}
 	if files, _ := s.ListFiles(bg, fo.ID); len(files) != 0 {
 		t.Fatalf("DeleteFolder left %d files", len(files))
 	}

@@ -381,6 +381,48 @@ func TestIDsAreNotReused(t *testing.T) {
 	})
 }
 
+// SaveFile cannot resurrect rows from scans that finish after a folder or file was removed.
+func TestSaveFileRejectsStaleWrites(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	must(t, err)
+	defer s.Close()
+	folder := addFolder(t, s, "/suite/removed")
+	keepFolder := addFolder(t, s, "/suite/kept")
+	removed := addFile(t, s, folder.ID, "removed.png", contract.KindImage, 1)
+	kept := addFile(t, s, keepFolder.ID, "kept.png", contract.KindImage, 2)
+	g := newGen(t, s)
+	commitOne(t, s, g.ID, removed, 1)
+	commitOne(t, s, g.ID, kept, 2)
+	must(t, s.ActivateGeneration(ctx, g.ID))
+	newDiscovery := removed
+	newDiscovery.ID = 0
+	staleUpdate := removed
+	must(t, s.DeleteFolder(ctx, folder.ID))
+	if err := s.SaveFile(ctx, &newDiscovery); !errors.Is(err, contract.ErrUnknownFolder) {
+		t.Fatalf("zero-ID discovery after folder removal: %v, want ErrUnknownFolder", err)
+	}
+	if err := s.SaveFile(ctx, &staleUpdate); !errors.Is(err, contract.ErrUnknownFile) {
+		t.Fatalf("nonzero-ID update after folder removal: %v, want ErrUnknownFile", err)
+	}
+	missing := contract.FileRec{ID: 1 << 40, FolderID: keepFolder.ID, Path: "/suite/kept/missing.png", Kind: contract.KindImage}
+	if err := s.SaveFile(ctx, &missing); !errors.Is(err, contract.ErrUnknownFile) {
+		t.Fatalf("update of missing file: %v, want ErrUnknownFile", err)
+	}
+	files, err := s.ListFiles(ctx, keepFolder.ID)
+	if err != nil || len(files) != 1 || files[0].ID != kept.ID {
+		t.Fatalf("kept folder files after stale writes: %+v, err %v", files, err)
+	}
+	indexes, err := s.ListFileIndex(ctx, g.ID)
+	if err != nil || len(indexes) != 1 || indexes[0].FileID != kept.ID {
+		t.Fatalf("generation rows after stale writes: %+v, err %v", indexes, err)
+	}
+	hits, err := s.Search(ctx, g.ID, vecFor(1), nil, 10)
+	if err != nil || len(hits) != 1 || hits[0].FileID != kept.ID {
+		t.Fatalf("search after stale writes: %+v, err %v", hits, err)
+	}
+}
+
 // TestMigrationKeepsIDs checks that a database written by migration 1 keeps its IDs, and that its sequences
 // continue above them after migration 2 runs.
 func TestMigrationKeepsIDs(t *testing.T) {

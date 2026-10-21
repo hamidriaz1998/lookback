@@ -201,20 +201,29 @@ func (s *Store) DeleteFolder(ctx context.Context, id int64) error {
 	})
 }
 
-// SaveFile inserts f when f.ID is 0, keyed by path, and upserts it otherwise. It sets f.ID.
+// SaveFile inserts f when f.ID is 0, keyed by path, and updates an existing file otherwise. It sets f.ID.
 func (s *Store) SaveFile(ctx context.Context, f *contract.FileRec) error {
 	return s.write(ctx, func(tx *sql.Tx) error {
 		if f.ID == 0 {
+			if err := requireFolder(tx, f.FolderID); err != nil {
+				return err
+			}
 			return tx.QueryRow(`INSERT INTO files (folder_id, path, kind, size, mtime) VALUES (?, ?, ?, ?, ?)
 				ON CONFLICT (path) DO UPDATE SET folder_id = excluded.folder_id, kind = excluded.kind,
 				  size = excluded.size, mtime = excluded.mtime
 				RETURNING id`, f.FolderID, f.Path, string(f.Kind), f.Size, f.MTime).Scan(&f.ID)
 		}
-		_, err := tx.Exec(`INSERT INTO files (id, folder_id, path, kind, size, mtime) VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT (id) DO UPDATE SET folder_id = excluded.folder_id, path = excluded.path,
-			  kind = excluded.kind, size = excluded.size, mtime = excluded.mtime`,
-			f.ID, f.FolderID, f.Path, string(f.Kind), f.Size, f.MTime)
-		return err
+		result, err := tx.Exec(`UPDATE files SET folder_id = ?, path = ?, kind = ?, size = ?, mtime = ? WHERE id = ?`,
+			f.FolderID, f.Path, string(f.Kind), f.Size, f.MTime, f.ID)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			return contract.ErrUnknownFile
+		}
+		return requireFolder(tx, f.FolderID)
 	})
 }
 
@@ -325,6 +334,16 @@ func requireFile(tx *sql.Tx, id int64) error {
 	err := tx.QueryRow(`SELECT 1 FROM files WHERE id = ?`, id).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contract.ErrUnknownFile
+	}
+	return err
+}
+
+// requireFolder returns contract.ErrUnknownFolder when no folder has the ID.
+func requireFolder(tx *sql.Tx, id int64) error {
+	var one int
+	err := tx.QueryRow(`SELECT 1 FROM folders WHERE id = ?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return contract.ErrUnknownFolder
 	}
 	return err
 }
