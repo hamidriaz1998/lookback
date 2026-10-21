@@ -343,8 +343,9 @@ type Extractor interface {
 // Streams. Every Subscribe method returns its own channel. The channel starts with the current snapshot
 // and then carries each later update, in the order the state changed. A reader that falls behind gets the
 // newest value per key: an update it has not read is replaced by a newer one with the same key. A terminal
-// value is never replaced or dropped; each stream names its terminal values. The channel closes when the
-// subscriber's ctx ends or the service stops. Each service's own type documents its keys and terminal values.
+// value is never replaced or dropped while the service and subscription are live; each stream names its
+// terminal values. When the subscriber's ctx ends or the service stops, pending values may be discarded and
+// the channel closes. Each service's own type documents its keys and terminal values.
 //
 // Indexer runs the indexing job: queue, pipeline, pauses, progress, and the user commands from
 // Activity and Folders. Commands return ErrNotStarted before Start, and the context's error when ctx

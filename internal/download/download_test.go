@@ -435,30 +435,49 @@ func TestShutdownClosesUnreadSubscription(t *testing.T) {
 	if err := d.Ensure(context.Background(), []contract.Asset{a}); err != nil {
 		t.Fatal(err)
 	}
-	cancel()
 	deadline := time.After(time.Second)
 	for {
+		d.mu.Lock()
+		finished := d.files[a.Key()].phase == contract.FileDone
+		d.mu.Unlock()
 		d.streams.mu.Lock()
-		closed := d.streams.closed
+		pendingTerminal := false
+		for sub := range d.streams.subs {
+			for _, e := range sub.queue {
+				pendingTerminal = pendingTerminal || d.streams.terminal(e.v)
+			}
+		}
 		d.streams.mu.Unlock()
-		if closed {
+		if finished && pendingTerminal {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatal("downloader shutdown blocked on the unread subscription")
+			t.Fatal("test did not queue a terminal event for the unread subscription")
 		case <-time.After(time.Millisecond):
 		}
 	}
+	cancel()
 	for {
-		select {
-		case _, ok := <-ch:
-			if !ok {
-				return
-			}
-		case <-deadline:
-			t.Fatal("unread subscription did not close after downloader shutdown")
+		d.streams.mu.Lock()
+		closed, subscribers := d.streams.closed, len(d.streams.subs)
+		d.streams.mu.Unlock()
+		if closed && subscribers == 0 {
+			break
 		}
+		select {
+		case <-deadline:
+			t.Fatal("shutdown did not release the unread delivery pump")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("unread event remained deliverable after the pump closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unread subscription channel did not close")
 	}
 }
 
