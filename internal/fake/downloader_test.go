@@ -44,7 +44,7 @@ func TestEnsureIsKeyedBySHA(t *testing.T) {
 	d.mu.Lock()
 	df := d.files[fresh.Key()]
 	count := len(d.order)
-	state := df.state
+	state := d.state(df)
 	d.mu.Unlock()
 	if state != contract.FileDownloading || count != len(mustAssets(contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}))+1 {
 		t.Fatalf("duplicate Ensure changed the download: state %s, %d entries", state, count)
@@ -65,7 +65,7 @@ func TestEnsureIsKeyedBySHA(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.mu.Lock()
-	if d.files[pinned.Key()].state != contract.FileQueued || d.files[old.Key()].state != contract.FileDone {
+	if d.state(d.files[pinned.Key()]) != contract.FileQueued || d.state(d.files[old.Key()]) != contract.FileDone {
 		t.Fatal("a new pin did not queue a new download beside the verified file")
 	}
 	d.mu.Unlock()
@@ -102,17 +102,104 @@ func TestRepeatedEnsureKeepsEveryState(t *testing.T) {
 	for _, st := range []contract.FileState{contract.FileQueued, contract.FileDownloading, contract.FilePaused,
 		contract.FileOffline, contract.FileVerifying, contract.FileDone, contract.FileFailed} {
 		d.mu.Lock()
-		d.files[a.Key()].state = st
-		d.files[a.Key()].done = 7
+		df := d.files[a.Key()]
+		df.phase, df.userPaused, df.done = contract.FileDownloading, false, 7
+		d.off = st == contract.FileOffline
+		switch st {
+		case contract.FilePaused:
+			df.userPaused = true
+		case contract.FileQueued:
+			df.phase = st
+		case contract.FileDownloading, contract.FileOffline:
+		default:
+			df.phase = st
+		}
 		d.mu.Unlock()
 		if err := d.Ensure(bg, []contract.Asset{a}); err != nil {
 			t.Fatal(err)
 		}
 		d.mu.Lock()
-		got, done := d.files[a.Key()].state, d.files[a.Key()].done
+		got, done := d.state(df), df.done
+		d.off = false
 		d.mu.Unlock()
 		if got != st || done != 7 {
 			t.Fatalf("Ensure in state %s moved it to %s with %d bytes", st, got, done)
 		}
+	}
+}
+
+// The user's pause and the connection are independent (review finding 5). A file paused with PauseAll
+// stays paused across a connection change, and bytes do not move until an explicit resume.
+func TestPauseSurvivesConnectionChanges(t *testing.T) {
+	bg := context.Background()
+	d := newDownloader()
+	a := bf16Text(t)
+	a.SHA256 = strings.Repeat("34", 32)
+
+	// A new file ensured during PauseAll starts paused and does not move.
+	d.PauseAll()
+	if err := d.Ensure(bg, []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		d.tick()
+	}
+	d.mu.Lock()
+	if st, done := d.state(d.files[a.Key()]), d.files[a.Key()].done; st != contract.FilePaused || done != 0 {
+		t.Fatalf("new file during PauseAll: state %s with %d bytes, want paused with 0", st, done)
+	}
+	d.mu.Unlock()
+	d.ResumeAll()
+	d.tick()
+	d.mu.Lock()
+	if st := d.state(d.files[a.Key()]); st != contract.FileDownloading {
+		t.Fatalf("after ResumeAll the file is %s, want downloading", st)
+	}
+	d.mu.Unlock()
+
+	// Offline, then PauseAll, then back online: the file stays paused and its bytes do not change.
+	d.SetOffline(true)
+	d.PauseAll()
+	d.SetOffline(false)
+	d.mu.Lock()
+	before := d.files[a.Key()].done
+	if st := d.state(d.files[a.Key()]); st != contract.FilePaused {
+		t.Fatalf("back online after PauseAll: state %s, want paused", st)
+	}
+	d.mu.Unlock()
+	for i := 0; i < 5; i++ {
+		d.tick()
+	}
+	d.mu.Lock()
+	if d.files[a.Key()].done != before {
+		t.Fatal("a paused file moved after the connection came back")
+	}
+	d.mu.Unlock()
+
+	// Individual pause while offline: the file shows offline, and after the network returns it is still paused.
+	d.ResumeAll()
+	d.SetOffline(true)
+	if err := d.Pause(a.Key()); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	if st := d.state(d.files[a.Key()]); st != contract.FileOffline {
+		t.Fatalf("offline paused file shows %s, want offline", st)
+	}
+	d.mu.Unlock()
+	d.SetOffline(false)
+	d.mu.Lock()
+	if st := d.state(d.files[a.Key()]); st != contract.FilePaused {
+		t.Fatalf("back online after an individual pause: %s, want paused", st)
+	}
+	d.mu.Unlock()
+	if err := d.Resume(a.Key()); err != nil {
+		t.Fatal(err)
+	}
+	d.tick()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.files[a.Key()].done <= before {
+		t.Fatal("an explicit resume did not move the bytes")
 	}
 }
