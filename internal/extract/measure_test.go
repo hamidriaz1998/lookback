@@ -131,7 +131,7 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// largestPNGs returns the n largest PNG files in dir, by size, largest first.
+// largestPNGs returns the n largest screenshot PNG files in dir, by size, largest first.
 func largestPNGs(t *testing.T, dir string, n int) []string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(dir, "screenshot*.png"))
@@ -147,7 +147,7 @@ func largestPNGs(t *testing.T, dir string, n int) []string {
 		matches = matches[:n]
 	}
 	if len(matches) == 0 {
-		t.Fatalf("no PNG files in %s", dir)
+		t.Fatalf("no screenshot PNG files in %s", dir)
 	}
 	return matches
 }
