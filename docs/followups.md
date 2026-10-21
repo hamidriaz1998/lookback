@@ -62,3 +62,11 @@ See `.review/wp4-r3.md`.
 | Reference vectors embedding (`tools/mkref`) | WP10 | Generate the reference vectors in the release job and embed them in the binary. Not started. |
 | Icon artwork | WP10 | `resources/icon.png` is a 1024 px tile made from the 32 px tray glyph (upscaled). Replace it with designed artwork. |
 | Windows installer | WP10 (Windows phase) | Out of scope on Linux. |
+
+## From WP10 review round 1 (final round under the 2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| R1-#1 (high, fixed): `.deb` lacked the tray library | done | `mygo.json` now declares `libayatana-appindicator3-1`. Still to add: a packaging check that fails if a rebuild drops it, and a prerequisite check/message in `scripts/install.sh` for the tarball/source paths. |
+| R1-#2 (medium): accepted installation paths produce a broken desktop command | WP10 | Quote or reject install prefixes with spaces/special characters in the desktop entry `Exec` line; test with such a prefix. See `.review/wp10-r1.md`. |
+| R1-#3 (medium): source installer registers the launcher outside the configured XDG data dir | WP10 | Honor `XDG_DATA_HOME` for the desktop entry and icon; test with it set. |

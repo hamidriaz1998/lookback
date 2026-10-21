@@ -7,8 +7,14 @@
   "out": "dist",
   "linux": {
     "comment": "Semantic search over your local files",
-    "categories": ["Utility", "FileTools"],
+    "categories": [
+      "Utility",
+      "FileTools"
+    ],
     "command": "lookback",
-    "webview": false
+    "webview": false,
+    "depends": [
+      "libayatana-appindicator3-1"
+    ]
   }
 }
