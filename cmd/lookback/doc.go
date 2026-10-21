@@ -1,3 +1,3 @@
-// Command lookback is the Lookback desktop app. The window is the UI package; flags, startup and the tray
-// are added by WP7 (PLAN.md).
+// Command lookback is the Lookback desktop app. Its flags (such as --toggle) and startup live in main.go;
+// the lifecycle, tray and hotkey live in internal/app.
 package main
