@@ -125,3 +125,5 @@ See `.review/wp4-r3.md`.
 |---|---|---|
 | R1-#4 (medium): first-building search does not refresh as files arrive | WP9 | While the first generation builds, re-run the current query (throttled) when progress reports new files, so results grow without retyping. See `.review/wp9-r1.md`. |
 | R1-#5 (medium): settings changes never reach the app shell | WP9 | Route hotkey and battery-pause setting writes from the UI to `app.ApplySettings`, so the shell re-registers the shortcut and updates pause policy without restart. |
+| R1-#2/#3 (high, fixed in code at 27b88e5, untested) | WP9 | Add the regression tests the fixes lack: a folder save during a gated `index.Start` is scanned and watched; `Services.Close` returns promptly while a PDF extraction/embedding is blocked, and the sidecar exits. |
+| Data folders without `onboard_combo` no longer start indexing | WP9 | Installs made before the first-run fix have no `onboard_combo`; derive it from the active generation's space (or the only installed combination) at startup. |
