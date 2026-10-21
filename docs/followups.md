@@ -52,3 +52,10 @@ findings block a merge). Each item names its owner. The full findings are in the
 | R3-#4 (low): the PDF waiter regression depends on a 15 s cold-start deadline | WP9 | Replace the wall-clock bound with a readiness signal so parallel load cannot fail it. |
 
 See `.review/wp4-r3.md`.
+
+## From WP8 review round 1 (final round under the 2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| R1-#7 (medium): removing the configured root leaves deleted files searchable | WP9 | `scanFolder` returns on a missing root before the deletion pass, and its caller ignores the error. Distinguish a confirmed missing root from permission or transient I/O errors, delete the tracked files on confirmed disappearance, and surface the unavailable-folder error. Add a test that deletes the root, not only a file inside it. See `.review/wp8-r1.md`. |
+| R1-#8 (medium): progress counts stale rows as done and drops the running file from the ETA | WP8 | `snapshotLocked` counts every existing row in FilesDone, including stale ones. Count only rows that match the current size and mtime (the `NeedsWork` rule), and include the running file's remaining cost in the ETA. Add a snapshot test with stale rows and one in-flight file. See `.review/wp8-r1.md`. |

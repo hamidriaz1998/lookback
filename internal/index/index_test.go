@@ -288,9 +288,10 @@ func TestRebuildKeepsOldGenerationUntilHandover(t *testing.T) {
 	if !sawBuilding {
 		t.Log("the rebuild finished before the poll saw it building; the invariant held at every poll")
 	}
-	if got := len(r.hitPaths(t, old)); got != 0 {
-		t.Errorf("retired generation still has %d hits after DeleteItems", got)
-	}
+	// DeleteItems runs on the worker just after the handover commits, so the retired items go a moment later.
+	waitFor(t, 5*time.Second, "DeleteItems of the retired generation", func() bool {
+		return len(r.hitPaths(t, old)) == 0
+	})
 	if got := len(r.hitPaths(t, newGen)); got != 2 {
 		t.Errorf("new generation has %d hits, want 2", got)
 	}
