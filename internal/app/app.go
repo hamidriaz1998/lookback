@@ -2,6 +2,7 @@ package app
 
 import (
 	_ "embed"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -51,6 +52,25 @@ func HotkeyStatus() (accelerator string, err error) {
 	return hotkeyState.accelerator, hotkeyState.err
 }
 
+// ErrNotStarted is returned by ApplySettings before the app starts or after it quits.
+var ErrNotStarted = errors.New("app is not running")
+
+// current is the running app. It is set and read on the main thread only.
+var current *application
+
+// ApplySettings applies cfg to the running app: it re-registers the hotkey when it changed, and recomputes
+// the battery pause at once. It may be called from any goroutine. It returns the hotkey error (nil when the
+// new shortcut is active); when registration fails, the previous shortcut stays active.
+func ApplySettings(cfg Config) error {
+	var err error = ErrNotStarted
+	mygo.RunOnMain(func() {
+		if current != nil {
+			err = current.apply(cfg)
+		}
+	})
+	return err
+}
+
 // application holds the state of the running app. Its window, tray and shortcut are used on the main
 // thread only, which MyGo runs their callbacks on.
 type application struct {
@@ -59,6 +79,7 @@ type application struct {
 	win      *mygo.Window
 	tray     *mygo.Tray
 	commands *commandRouter // second-instance commands; runs them once the window exists
+	hotkey   string         // the accelerator that is registered, "" when none is
 	quitting bool           // set before the windows close on a quit, so close-to-tray lets them close
 }
 
@@ -129,23 +150,59 @@ func (a *application) start() {
 		a.tray = tray
 	}
 
-	err = mygo.GlobalShortcut.Register(a.cfg.Hotkey, a.toggle)
-	if err != nil {
-		log.Printf("hotkey %q: %v", a.cfg.Hotkey, err) // once, at start; Settings shows the bind tip
+	current = a
+	if err := a.setHotkey(a.cfg.Hotkey); err != nil {
+		log.Printf("hotkey %q: %v", a.cfg.Hotkey, err) // once per change; Settings shows the bind tip
 	}
-	setHotkeyStatus(a.cfg.Hotkey, err)
 
 	mygo.Power.OnSuspend(func() { a.pause.set(contract.PauseSuspend, true) })
 	mygo.Power.OnResume(func() { a.resume(mygo.Power.IsOnBattery()) })
 	a.checkBattery()
 	go func() {
 		for range time.Tick(batteryInterval) {
-			a.checkBattery()
+			mygo.RunOnMain(a.checkBattery) // the config is read on the main thread only
 		}
 	}()
 }
 
-// checkBattery sets the battery pause from the power source. It is safe from any goroutine.
+// apply takes a settings change on the main thread.
+func (a *application) apply(cfg Config) error {
+	a.cfg.PauseOnBattery = cfg.PauseOnBattery
+	a.checkBattery()
+	err := a.setHotkey(cfg.Hotkey)
+	if err == nil {
+		a.cfg.Hotkey = cfg.Hotkey
+	}
+	return err
+}
+
+// setHotkey makes acc the global shortcut that toggles the window. On failure the previous shortcut is
+// registered again, and the attempt is reported through HotkeyStatus.
+func (a *application) setHotkey(acc string) error {
+	if acc == a.hotkey {
+		return nil
+	}
+	old := a.hotkey
+	if old != "" {
+		mygo.GlobalShortcut.Unregister(old)
+		a.hotkey = ""
+	}
+	err := mygo.GlobalShortcut.Register(acc, a.toggle)
+	if err != nil && old != "" {
+		if restoreErr := mygo.GlobalShortcut.Register(old, a.toggle); restoreErr == nil {
+			a.hotkey = old
+		} else {
+			log.Printf("hotkey %q: restoring %q failed: %v", acc, old, restoreErr)
+		}
+	}
+	if err == nil {
+		a.hotkey = acc
+	}
+	setHotkeyStatus(acc, err)
+	return err
+}
+
+// checkBattery sets the battery pause from the power source. It runs on the main thread.
 func (a *application) checkBattery() {
 	reconcileBattery(a.pause, a.cfg.PauseOnBattery, mygo.Power.IsOnBattery())
 }

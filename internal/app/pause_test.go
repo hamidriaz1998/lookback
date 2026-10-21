@@ -128,3 +128,19 @@ func TestResumeOnBatteryNeverRunnable(t *testing.T) {
 		t.Fatalf("calls = %v, want %v", got, want)
 	}
 }
+
+// A settings change to pause-on-battery reaches the running controller: turning the setting off releases
+// the battery reason, and turning it on takes it again.
+func TestSettingChangeUpdatesRunningBatteryPause(t *testing.T) {
+	s := newStackIndexer()
+	p := newPauses(s)
+	reconcileBattery(p, true, true)
+	reconcileBattery(p, false, true) // the user turns pause-on-battery off while on battery
+	if got := s.held(); len(got) != 0 {
+		t.Fatalf("held after turning the setting off = %v", got)
+	}
+	reconcileBattery(p, true, true)
+	if got, want := s.held(), []string{"battery"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("held after turning the setting on = %v, want %v", got, want)
+	}
+}
