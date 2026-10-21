@@ -57,3 +57,28 @@ func TestUnpackRefusesEscapingLinks(t *testing.T) {
 		})
 	}
 }
+
+// Ordered entries: a -> ., then b -> a/.. (lexically inside, really the parent once a is followed), then a
+// regular file written through b. Root must refuse the write; the parent of dest must stay clean.
+func TestUnpackRefusesChainedSymlinkEscape(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	tw.WriteHeader(&tar.Header{Name: "a", Typeflag: tar.TypeSymlink, Linkname: ".", Mode: 0o777})
+	tw.WriteHeader(&tar.Header{Name: "b", Typeflag: tar.TypeSymlink, Linkname: "a/..", Mode: 0o777})
+	tw.WriteHeader(&tar.Header{Name: "b/escape.txt", Typeflag: tar.TypeReg, Size: 3, Mode: 0o644})
+	tw.Write([]byte("bad"))
+	tw.Close()
+	gz.Close()
+
+	dir := t.TempDir()
+	arc := filepath.Join(dir, "chain.tar.gz")
+	os.WriteFile(arc, buf.Bytes(), 0o644)
+	dest := filepath.Join(dir, "out")
+	if err := unpack(arc, "chain.tar.gz", dest); err == nil {
+		t.Fatal("a chained symlink escape was extracted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "escape.txt")); err == nil {
+		t.Fatal("escape.txt was written outside the runtime folder")
+	}
+}

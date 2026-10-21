@@ -16,8 +16,9 @@ import (
 // errUnsafe is returned for an archive entry that would write outside the destination folder.
 var errUnsafe = errors.New("archive entry leaves the runtime folder")
 
-// unpack extracts the archive at path, whose asset name is name, into dest. It refuses any entry whose
-// path leaves dest, and any link whose target leaves dest (SPEC section 7).
+// unpack extracts the archive at path, whose asset name is name, into dest. Every filesystem operation goes
+// through an os.Root on dest, so symlinks already extracted cannot redirect a later entry outside it. Entry
+// names and link targets are also checked lexically, so the refusal does not depend on the order of entries.
 func unpack(path, name, dest string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -27,6 +28,11 @@ func unpack(path, name, dest string) error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	switch {
 	case strings.HasSuffix(name, ".tar.gz"):
 		gz, err := gzip.NewReader(f)
@@ -34,7 +40,7 @@ func unpack(path, name, dest string) error {
 			return err
 		}
 		defer gz.Close()
-		return untar(tar.NewReader(gz), dest)
+		return untar(tar.NewReader(gz), root)
 	case strings.HasSuffix(name, ".zip"):
 		st, err := f.Stat()
 		if err != nil {
@@ -44,30 +50,24 @@ func unpack(path, name, dest string) error {
 		if err != nil {
 			return err
 		}
-		return unzip(zr, dest)
+		return unzip(zr, root)
 	}
 	return fmt.Errorf("download: %s is not a .tar.gz or .zip archive", name)
 }
 
-// within reports whether p, a cleaned path, lies inside dir.
-func within(dir, p string) bool {
-	rel, err := filepath.Rel(dir, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+// entryName cleans an archive name and refuses one that is absolute or climbs out of the archive root.
+func entryName(name string) (string, error) {
+	if name == "" || strings.HasPrefix(name, "/") || filepath.IsAbs(name) {
+		return "", fmt.Errorf("%w: %s", errUnsafe, name)
+	}
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %s", errUnsafe, name)
+	}
+	return clean, nil
 }
 
-// target maps an archive entry name to a path under dest, or errUnsafe.
-func target(dest, name string) (string, error) {
-	if filepath.IsAbs(name) || strings.HasPrefix(name, "/") {
-		return "", errUnsafe
-	}
-	p := filepath.Join(dest, filepath.FromSlash(name))
-	if !within(dest, p) {
-		return "", errUnsafe
-	}
-	return p, nil
-}
-
-func untar(tr *tar.Reader, dest string) error {
+func untar(tr *tar.Reader, root *os.Root) error {
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -76,33 +76,34 @@ func untar(tr *tar.Reader, dest string) error {
 		if err != nil {
 			return err
 		}
-		p, err := target(dest, hdr.Name)
+		name, err := entryName(hdr.Name)
 		if err != nil {
-			return fmt.Errorf("%w: %s", err, hdr.Name)
+			return err
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(p, 0o755); err != nil {
+			if err := root.MkdirAll(name, 0o755); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if err := writeFile(p, tr, fs.FileMode(hdr.Mode)); err != nil {
+			if err := writeFile(root, name, tr, fs.FileMode(hdr.Mode)); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
-			// Relative links are fine when they stay inside dest; llama.cpp ships libraries as links.
-			if filepath.IsAbs(hdr.Linkname) || !within(dest, filepath.Join(filepath.Dir(p), hdr.Linkname)) {
+			// Llama.cpp ships libraries as links. A target is only accepted when it is relative and stays
+			// inside the archive lexically; Root confines the operations themselves.
+			if filepath.IsAbs(hdr.Linkname) || !within(".", filepath.Join(filepath.Dir(name), hdr.Linkname)) {
 				return fmt.Errorf("%w: link %s -> %s", errUnsafe, hdr.Name, hdr.Linkname)
 			}
-			if err := makeLink(p, func() error { return os.Symlink(hdr.Linkname, p) }); err != nil {
+			if err := makeLink(root, name, func() error { return root.Symlink(hdr.Linkname, name) }); err != nil {
 				return err
 			}
 		case tar.TypeLink:
-			src, err := target(dest, hdr.Linkname)
+			src, err := entryName(hdr.Linkname)
 			if err != nil {
-				return fmt.Errorf("%w: hard link %s", err, hdr.Name)
+				return err
 			}
-			if err := makeLink(p, func() error { return os.Link(src, p) }); err != nil {
+			if err := makeLink(root, name, func() error { return root.Link(src, name) }); err != nil {
 				return err
 			}
 		default:
@@ -111,17 +112,17 @@ func untar(tr *tar.Reader, dest string) error {
 	}
 }
 
-func unzip(zr *zip.Reader, dest string) error {
+func unzip(zr *zip.Reader, root *os.Root) error {
 	for _, zf := range zr.File {
-		p, err := target(dest, zf.Name)
+		name, err := entryName(zf.Name)
 		if err != nil {
-			return fmt.Errorf("%w: %s", err, zf.Name)
+			return err
 		}
 		if zf.Mode()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("download: archive entry %s is a link, which is refused", zf.Name)
 		}
 		if zf.FileInfo().IsDir() {
-			if err := os.MkdirAll(p, 0o755); err != nil {
+			if err := root.MkdirAll(name, 0o755); err != nil {
 				return err
 			}
 			continue
@@ -130,7 +131,7 @@ func unzip(zr *zip.Reader, dest string) error {
 		if err != nil {
 			return err
 		}
-		err = writeFile(p, rc, zf.Mode())
+		err = writeFile(root, name, rc, zf.Mode())
 		rc.Close()
 		if err != nil {
 			return err
@@ -139,16 +140,16 @@ func unzip(zr *zip.Reader, dest string) error {
 	return nil
 }
 
-// writeFile writes r to p with the owner's read and write bits set. It replaces an existing entry rather
-// than writing through a link.
-func writeFile(p string, r io.Reader, mode fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+// writeFile writes r to name under root, with the owner's read and write bits set. It creates the parents
+// and replaces an existing entry instead of writing through it.
+func writeFile(root *os.Root, name string, r io.Reader, mode fs.FileMode) error {
+	if err := mkParents(root, name); err != nil {
 		return err
 	}
-	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode.Perm()|0o600)
+	f, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode.Perm()|0o600)
 	if err != nil {
 		return err
 	}
@@ -159,13 +160,27 @@ func writeFile(p string, r io.Reader, mode fs.FileMode) error {
 	return f.Close()
 }
 
-// makeLink replaces whatever is at p with the link that create makes.
-func makeLink(p string, create func() error) error {
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+// makeLink replaces whatever is at name with the link that create makes.
+func makeLink(root *os.Root, name string, create func() error) error {
+	if err := mkParents(root, name); err != nil {
 		return err
 	}
-	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return create()
+}
+
+func mkParents(root *os.Root, name string) error {
+	dir := filepath.Dir(name)
+	if dir == "." {
+		return nil
+	}
+	return root.MkdirAll(dir, 0o755)
+}
+
+// within reports whether p, a cleaned path, lies inside dir.
+func within(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
