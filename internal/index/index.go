@@ -237,11 +237,24 @@ func (x *Indexer) Resume(reason contract.PauseReason) {
 	x.signalLocked()
 }
 
+// bound returns a context that ends when ctx ends or the Indexer lifetime ends, so a command that is already
+// running stops with the Indexer. The caller calls the returned cancel function.
+func (x *Indexer) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	x.mu.Lock()
+	life := x.life
+	x.mu.Unlock()
+	c, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(life, cancel)
+	return c, func() { stop(); cancel() }
+}
+
 // Retry queues the files for indexing again in the active generation, after clearing their rows.
 func (x *Indexer) Retry(ctx context.Context, fileIDs []int64) error {
 	if err := x.live(); err != nil {
 		return err
 	}
+	ctx, cancel := x.bound(ctx)
+	defer cancel()
 	x.mu.Lock()
 	for _, id := range fileIDs {
 		if _, ok := x.files[id]; !ok {
@@ -301,6 +314,8 @@ func (x *Indexer) Rescan(ctx context.Context, folderID int64) error {
 	if !ok {
 		return contract.ErrUnknownFolder
 	}
+	ctx, cancel := x.bound(ctx)
+	defer cancel()
 	return x.scanFolder(ctx, fs.f)
 }
 
@@ -310,6 +325,8 @@ func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64,
 	if err := x.live(); err != nil {
 		return 0, err
 	}
+	ctx, cancel := x.bound(ctx)
+	defer cancel()
 	x.mu.Lock()
 	if x.rebuild != nil || x.rebuildBusy {
 		x.mu.Unlock()
@@ -332,12 +349,24 @@ func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64,
 	if err != nil {
 		return fail(err)
 	}
+	// The lifetime may have ended while the session opened. Checking here, under x.mu, means shutdown either
+	// sees the job this call installs or this call sees the ended lifetime.
+	if ctx.Err() != nil || x.life.Err() != nil {
+		_ = sess.Close()
+		return fail(contract.ErrStopped)
+	}
 	g := &contract.Generation{Space: space, State: contract.GenBuilding, CreatedAt: time.Now()}
 	if err := x.store.NewGeneration(ctx, g); err != nil {
 		_ = sess.Close()
 		return fail(err)
 	}
 	x.mu.Lock()
+	if x.life.Err() != nil {
+		x.rebuildBusy = false
+		x.mu.Unlock()
+		_ = sess.Close()
+		return 0, contract.ErrStopped
+	}
 	x.rebuild = newJob(g.ID, space, sess, nil)
 	x.rebuildBusy = false
 	x.queueNeedingWorkLocked()
@@ -581,15 +610,26 @@ func (x *Indexer) finishRebuild(ctx context.Context) bool {
 		return true
 	}
 
+	// Promote the rebuild job itself. Every file that still needs work in the new generation is queued again,
+	// so work queued during activation (in the old job or the rebuild) is kept.
 	x.mu.Lock()
 	old := x.active
-	x.active = &job{gen: reb.gen, space: reb.space, sess: reb.sess, queued: map[int64]bool{},
-		rows: reb.rows, begun: time.Now(), tokens: 0}
-	x.rebuild = nil
 	p := x.snapshotLocked(reb)
 	p.FilesDone = p.FilesTotal
 	p.ETA = 0
 	x.rebStream.publish(p, true)
+	x.active = reb
+	x.rebuild = nil
+	reb.begun, reb.items, reb.tokens, reb.curr = time.Now(), 0, 0, ""
+	for _, id := range x.sortedFileIDsLocked() {
+		var row *contract.FileIndex
+		if r, has := reb.rows[id]; has {
+			row = &r
+		}
+		if contract.NeedsWork(x.files[id], row) {
+			reb.push(id)
+		}
+	}
 	x.mu.Unlock()
 
 	if old != nil {
