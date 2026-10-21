@@ -533,18 +533,17 @@ func (a *App) runQuery(ctx context.Context, q string, kinds []contract.Kind, sd 
 	}
 }
 
-// activeGeneration returns the active generation, or nil when there is none.
+// activeGeneration returns the generation searches use (search.Current: the active one, or the first index
+// while it builds), or nil when there is none.
 func activeGeneration(ctx context.Context, st contract.Store) (*contract.Generation, error) {
-	gens, err := st.ListGenerations(ctx)
+	g, err := search.Current(ctx, st)
+	if errors.Is(err, search.ErrNoActive) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	for i := range gens {
-		if gens[i].State == contract.GenActive {
-			return &gens[i], nil
-		}
-	}
-	return nil, nil
+	return &g, nil
 }
 
 // toHits converts search results to the hits the screens show.
