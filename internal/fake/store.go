@@ -10,6 +10,10 @@ import (
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
+// fixtureSpace is the vector space of the fixture's generation: the reference laptop's BF16 text model and
+// Q8_0 encoder.
+var fixtureSpace = contract.VectorSpace{TextQuant: contract.QuantBF16, EncQuant: contract.QuantQ8_0, ModelRev: modelRev}
+
 // Store is an in-memory contract.Store. NewStore seeds it with the UI fixture: 300 indexed
 // screenshots, a failed PDF, 101 files still pending, one active generation, and two installed
 // combinations with test results. Every write checks ctx before and after taking the lock, and
@@ -45,8 +49,7 @@ func NewStore() *Store {
 		nextGen:    2,
 	}
 	s.gens[1] = contract.Generation{
-		ID: 1, TextQuant: contract.QuantBF16, EncQuant: contract.QuantQ8_0,
-		ModelRev: modelRev, State: contract.GenActive, CreatedAt: added,
+		ID: 1, Space: fixtureSpace, State: contract.GenActive, CreatedAt: added,
 	}
 	for _, f := range indexedFiles() {
 		s.files[f.ID] = f

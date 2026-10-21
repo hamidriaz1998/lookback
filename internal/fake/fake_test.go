@@ -72,7 +72,7 @@ func TestRecentItemsAreIndexedOnly(t *testing.T) {
 func TestCommitFileAllocatesAndIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	gen2 := contract.Generation{TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0}
+	gen2 := contract.Generation{Space: contract.VectorSpace{TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0, ModelRev: modelRev}}
 	if err := s.NewGeneration(ctx, &gen2); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestCanceledWritesChangeNothing(t *testing.T) {
 func TestActivateGenerationIsSingle(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	g := contract.Generation{TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}
+	g := contract.Generation{Space: contract.VectorSpace{TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16, ModelRev: modelRev}}
 	if err := s.NewGeneration(ctx, &g); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestSimilarStaleAndCount(t *testing.T) {
 	if err != nil || len(rows) != 10 {
 		t.Fatalf("similar: %d rows, err %v; want 10", len(rows), err)
 	}
-	gen2 := contract.Generation{TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0}
+	gen2 := contract.Generation{Space: contract.VectorSpace{TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0, ModelRev: modelRev}}
 	_ = s.NewGeneration(ctx, &gen2)
 	ix, items := simulate(indexedFiles()[0], gen2.ID)
 	_ = s.CommitFile(ctx, ix, items)
@@ -354,7 +354,7 @@ func TestRebuildRunsBesideActiveJob(t *testing.T) {
 func TestStoreOwnsValues(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	gen := contract.Generation{TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0}
+	gen := contract.Generation{Space: contract.VectorSpace{TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0, ModelRev: modelRev}}
 	if err := s.NewGeneration(ctx, &gen); err != nil {
 		t.Fatal(err)
 	}

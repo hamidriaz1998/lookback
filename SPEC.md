@@ -277,6 +277,21 @@ llama-server -m <text.gguf> --mmproj <mmproj.gguf> --embeddings --pooling mean
   alive with `runtime.LockOSThread`, because `Pdeathsig` follows that thread. Windows phase: a job object with
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
 
+### Vector spaces and sessions
+
+A vector space is one precision pair and one model revision (`contract.VectorSpace`). Vectors from two
+spaces are not comparable, so the runtime never mixes them:
+
+- The runtime keeps one `llama-server` per open vector space, and at most two spaces are open: the active
+  space and, during a rebuild, the building space. A third space returns `ErrTooManySpaces`.
+- Callers embed through a `Session` for one space (`Runtime.Session`). Every vector it returns belongs to
+  `Session.Space()`. Callers search and store those vectors only in a generation whose space equals it.
+- The backend is runtime-wide. `Use` on a new backend restarts every open sidecar. A request in flight on a
+  restarting sidecar fails with `ErrRestarting`, and the caller retries after `Use` returns. A stopped or
+  failed sidecar fails with `ErrNotReady`.
+- The test lab runs in its own temporary session, and the indexer pauses with reason `lab` while a run
+  lasts. Search keeps working on the active session.
+
 ### Embedder API
 
 ```

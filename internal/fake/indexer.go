@@ -289,7 +289,7 @@ func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64,
 	}
 	from := x.store.activeGenID()
 	g := contract.Generation{
-		TextQuant: text, EncQuant: enc, ModelRev: modelRev,
+		Space: contract.VectorSpace{TextQuant: text, EncQuant: enc, ModelRev: modelRev},
 		CreatedAt: time.Date(2026, 10, 21, 9, 30, 0, 0, time.UTC),
 	}
 	if err := x.store.NewGeneration(ctx, &g); err != nil {

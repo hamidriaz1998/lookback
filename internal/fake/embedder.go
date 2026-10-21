@@ -16,6 +16,8 @@ type Embedder struct {
 	// ByteFallback makes Tokenize split every non-ASCII rune into one token per byte, as llama.cpp does
 	// for characters outside its vocabulary. WP4 uses it to test chunk cuts inside a character.
 	ByteFallback bool
+
+	salt uint64 // mixed into every vector; sessions of different vector spaces use different salts
 }
 
 // NewEmbedder returns an Embedder that tokenizes by word.
@@ -32,7 +34,7 @@ func (e *Embedder) EmbedTexts(ctx context.Context, prompts []string) ([][]float3
 	vecs := make([][]float32, len(prompts))
 	tokens := 0
 	for i, p := range prompts {
-		vecs[i] = unitVector(hashSeed(p))
+		vecs[i] = unitVector(hashSeed(p) ^ e.salt)
 		tokens += 2*len(strings.Fields(p)) + 4
 	}
 	return vecs, tokens, nil
@@ -46,7 +48,7 @@ func (e *Embedder) EmbedImage(ctx context.Context, img []byte, mime string) ([]f
 	if len(img) == 0 {
 		return nil, 0, errors.New("fake embedder: empty image")
 	}
-	return unitVector(hashSeed(string(img))), 256 + len(img)/64, nil
+	return unitVector(hashSeed(string(img)) ^ e.salt), 256 + len(img)/64, nil
 }
 
 // Tokenize splits text into tokens with byte ranges. Words are tokens. With ByteFallback, each

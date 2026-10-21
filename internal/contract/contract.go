@@ -243,13 +243,20 @@ func NeedsWork(f FileRec, ix *FileIndex) bool {
 	return ix == nil || ix.Size != f.Size || ix.MTime != f.MTime
 }
 
-// Generation is one vector space: one precision pair (SPEC section 10, Q26).
-type Generation struct {
-	ID                  int64
+// VectorSpace is the identity of a vector space: the precisions and the model revision (SPEC sections 10
+// and 17). Vectors from different spaces are not comparable, so a generation has one space and a
+// Session returns vectors of one space.
+type VectorSpace struct {
 	TextQuant, EncQuant Quant
 	ModelRev            string
-	State               GenState
-	CreatedAt           time.Time
+}
+
+// Generation is one vector space's index: one set of items for every indexed file (SPEC section 10, Q26).
+type Generation struct {
+	ID        int64
+	Space     VectorSpace
+	State     GenState
+	CreatedAt time.Time
 }
 
 // Store persists folders, files, items and settings (SPEC section 10). Reads of items are scoped to
@@ -568,20 +575,41 @@ type RuntimeStatus struct {
 	Since   time.Time
 }
 
-// Runtime is the sidecar for the active combination. It is the Embedder the indexer and search use.
-type Runtime interface {
+// Session embeds text and images in one vector space. Every vector it returns belongs to Space, and callers
+// search and store those vectors only in a generation whose Space equals it.
+type Session interface {
 	Embedder
+	// Space returns the vector space of the session.
+	Space() VectorSpace
+	// Close releases the session. The sidecar of its space stops when no session of that space is open.
+	Close() error
+}
+
+// Runtime runs the sidecars. The backend (cpu, vulkan, cuda) is runtime-wide. The runtime keeps one
+// sidecar per open vector space, and at most two spaces are open: the active space and, during a rebuild,
+// the building space. Embedding goes through a Session.
+//
+// Readiness: a session embeds only while its sidecar is ready (or on the CPU fallback). A request that
+// is in flight while the sidecar starts or restarts fails with ErrRestarting, and the caller retries after
+// Use returns. A session whose sidecar is stopped or failed fails with ErrNotReady.
+type Runtime interface {
 	// Active returns the combination the sidecar runs, or the one it is starting.
 	Active() Combo
 	// Status returns the current status.
 	Status() RuntimeStatus
-	// Subscribe streams status changes, keyed by nothing: one stream for the sidecar. Stopped and failed
-	// are terminal.
+	// Subscribe streams status changes. Stopped and failed are terminal.
 	Subscribe(ctx context.Context) <-chan RuntimeStatus
-	// Use stops the sidecar and starts combination c ("Make active").
+	// Session opens a session for vector space s. Opening a space that is open shares its sidecar.
+	// It returns ErrTooManySpaces when two other spaces are open.
+	Session(ctx context.Context, s VectorSpace) (Session, error)
+	// Use makes the backend of c the backend of every sidecar, and restarts the open ones ("Make active").
+	// It returns when every open session is ready again, or when ctx ends. ctx also bounds the restart:
+	// when it ends first, the restart is abandoned and the sidecar is stopped. A Use that a later Use or
+	// Stop supersedes returns ErrRestarting. With no session open, Use returns at once.
 	Use(ctx context.Context, c Combo) error
 	// RetryGPU tries the GPU backend again after a CPU fallback ("Try GPU again").
 	RetryGPU(ctx context.Context) error
-	// Stop stops the sidecar when the app quits.
+	// Stop stops every sidecar when the app quits. It ends a pending restart, and sessions fail with
+	// ErrNotReady until Use starts the sidecar again.
 	Stop(ctx context.Context) error
 }
