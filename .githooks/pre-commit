@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# Fast checks on every commit: format, vet, color rule, and short tests of the touched packages.
+# Fast checks on what this commit records. The index is exported to a temp dir, and the checks run there, so
+# an unstaged fix cannot approve a broken staged file.
 set -euo pipefail
 export CGO_ENABLED=0
 
-mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+git checkout-index -a --prefix="$tmp/src/"
+git diff --cached --name-only -z --diff-filter=ACMR -- '*.go' > "$tmp/files.nul"
+mapfile -d '' -t files < "$tmp/files.nul"
+
+cd "$tmp/src"
 if ((${#files[@]})); then
-	bad=$(gofmt -l "${files[@]}")
+	bad=$(gofmt -l -- "${files[@]}")
 	if [[ -n $bad ]]; then
 		printf 'pre-commit: run gofmt on:\n%s\n' "$bad" >&2
 		exit 1

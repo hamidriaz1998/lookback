@@ -43,10 +43,12 @@ implementations into the UI. WP10 ships it.
 
 There is no hosted CI. Git hooks in `.githooks/` run the checks locally:
 
-- **pre-commit** (a few seconds): `gofmt` on staged Go files, `go vet ./...`, `go test -short` on the
-  touched packages, and `scripts/check-colors.sh`.
-- **pre-push** (about 30–90 s): `go vet`, the full `go test ./...`, `GOOS=windows go build ./...`, the
-  color check, and `go test -race -short` (with cgo) on the packages the push changes.
+- **pre-commit** (a few seconds): on the staged snapshot, exported with `git checkout-index` to a temp dir: `gofmt`
+  on staged Go files, `go vet ./...`, `go test -short` on the touched packages, and `scripts/check-colors.sh`.
+  Heavy simulations skip under `-short`. `scripts/test-hooks.sh` tests the hooks on a throwaway repository.
+- **pre-push** (about 30–90 s): for each pushed commit, exported with `git archive`: `go vet`, the full
+  `go test ./...`, `GOOS=windows go build ./...`, the color check, and `go test -race -short` (with cgo) on the
+  packages the commit changes.
 
 The hooks are enabled for this clone and every worktree with `git config core.hooksPath .githooks`. Run
 that once after cloning, including on Windows. Never bypass them with `--no-verify`. The orchestrator

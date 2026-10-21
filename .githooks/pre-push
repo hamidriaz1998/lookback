@@ -1,28 +1,45 @@
 #!/usr/bin/env bash
-# Full checks before code leaves the machine: all tests, the Windows cross-build (keeps Linux-only code
-# out of shared packages), and the race detector on the Go packages this push changes.
+# Full checks on each commit that is pushed. Each commit is exported from git, so the checks run on the tree
+# that is pushed, not on the working tree, whichever branch is checked out.
 set -euo pipefail
 export CGO_ENABLED=0
 
-go vet ./...
-go test ./...
-GOOS=windows go build ./...
-bash scripts/check-colors.sh
+zero=0000000000000000000000000000000000000000
+
+# check_commit <sha> <remote sha>: vet, all tests, the Windows build, the color check, and the race detector on
+# the packages the commit changes.
+check_commit() {
+	local sha=$1 remote=$2 tmp base
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' RETURN
+	git archive "$sha" | tar -x -C "$tmp"
+	(
+		cd "$tmp"
+		go vet ./...
+		go test ./...
+		GOOS=windows go build ./...
+		bash scripts/check-colors.sh
+	)
+	base=$remote
+	[[ $base == "$zero" ]] && base=$(git merge-base "$sha" origin/main 2>/dev/null || echo "")
+	if [[ -n $base ]]; then
+		local changed=()
+		mapfile -t changed < <(git diff --name-only "$base" "$sha" -- '*.go')
+		if ((${#changed[@]})); then
+			local pkgs=()
+			mapfile -t pkgs < <(cd "$tmp" && printf './%s\n' "${changed[@]}" | xargs -n1 dirname | sort -u | xargs go list 2>/dev/null || true)
+			if ((${#pkgs[@]})); then
+				(cd "$tmp" && CGO_ENABLED=1 go test -race -short "${pkgs[@]}") # the race detector needs cgo
+			fi
+		fi
+	fi
+}
 
 # stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per pushed ref.
-zero=0000000000000000000000000000000000000000
-changed=()
+declare -A seen=()
 while read -r _ local_sha _ remote_sha; do
 	[[ $local_sha == "$zero" ]] && continue # deleting a ref
-	base=$remote_sha
-	[[ $base == "$zero" ]] && base=$(git merge-base "$local_sha" origin/main 2>/dev/null || echo "")
-	if [[ -n $base ]]; then
-		mapfile -t -O "${#changed[@]}" changed < <(git diff --name-only "$base" "$local_sha" -- '*.go')
-	fi
+	[[ -n ${seen[$local_sha]:-} ]] && continue
+	seen[$local_sha]=1
+	check_commit "$local_sha" "$remote_sha"
 done
-if ((${#changed[@]})); then
-	mapfile -t pkgs < <(printf './%s\n' "${changed[@]}" | xargs -n1 dirname | sort -u | xargs go list 2>/dev/null || true)
-	if ((${#pkgs[@]})); then
-		CGO_ENABLED=1 go test -race -short "${pkgs[@]}" # the race detector needs cgo
-	fi
-fi
