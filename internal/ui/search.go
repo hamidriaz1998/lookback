@@ -301,7 +301,7 @@ func (a *App) emptyState(c *ui.Context, title, body string, toFolders bool) {
 	t := c.Theme()
 	ui.Column(c).Grow(1).Center().Gap(t.Space(2)).Children(func() {
 		ui.Text(c, title).Bold().FontSize(t.Rem(1.15))
-		ui.Text(c, body).TextColor(t.TextMuted).MaxWidth(640).Lines(1, 4)
+		ui.Text(c, body).TextColor(t.TextMuted).MaxWidth(640).MaxLines(4)
 		if toFolders && ui.PrimaryButton(c, "Add folder").Clicked() {
 			a.page = pageFolders
 		}
@@ -365,7 +365,7 @@ func (a *App) grid(c *ui.Context, items []contract.Hit) {
 // the other files show their icon.
 func (a *App) thumbnail(c *ui.Context, h contract.Hit, edge, decodeEdge float32) {
 	t := c.Theme()
-	ui.Box(c).Size(edge, edge).Radius(8).Background(t.Surface).Center().Children(func() {
+	ui.Box(c).Size(edge, edge).Radius(8).Background(t.Surface).Center().Clip().Children(func() {
 		if page, ok := pictureOf(h); ok {
 			bm, _, got := a.thumbs.get(a.pictureKey(h, page, int(decodeEdge)))
 			if got && bm != nil {
@@ -376,7 +376,7 @@ func (a *App) thumbnail(c *ui.Context, h contract.Hit, edge, decodeEdge float32)
 		if h.Kind != contract.KindImage && h.Snippet != "" {
 			ui.Column(c).Fill().Gap(t.Space(1)).Padding(t.Space(2)).Children(func() {
 				ui.Icon(c, fileIcon(h.Kind)).Size(t.Rem(1.2), t.Rem(1.2)).TextColor(t.TextMuted)
-				ui.Text(c, h.Snippet).TextColor(t.TextMuted).FontSize(t.Rem(0.8)).Lines(1, 6)
+				ui.Text(c, h.Snippet).TextColor(t.TextMuted).FontSize(t.Rem(0.8)).MaxLines(6)
 			})
 			return
 		}

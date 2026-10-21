@@ -295,7 +295,7 @@ func (a *App) noticeView(c *ui.Context) {
 		ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Padding(t.Space(2)).Radius(8).Background(t.Surface).Children(func() {
 			ui.Icon(c, icon("triangle-alert")).TextColor(t.Warning)
 			ui.Text(c, "Lookback could not refresh its data. Showing the last data it read: "+a.loadErr.Error()).
-				TextColor(t.Warning).Grow(1).Lines(1, 2)
+				TextColor(t.Warning).Grow(1).MaxLines(2)
 			if ui.Button(c, "Retry").Clicked() {
 				a.reload()
 			}
@@ -307,7 +307,7 @@ func (a *App) noticeView(c *ui.Context) {
 	}
 	ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Padding(t.Space(2)).Radius(8).Background(t.Surface).Children(func() {
 		ui.Icon(c, icon("triangle-alert")).TextColor(t.Danger)
-		ui.Text(c, "Could not finish: "+n.msg).TextColor(t.Danger).Grow(1).Lines(1, 2)
+		ui.Text(c, "Could not finish: "+n.msg).TextColor(t.Danger).Grow(1).MaxLines(2)
 		if n.retry != nil && ui.Button(c, "Retry").Clicked() {
 			a.notice = nil
 			n.retry()
@@ -323,7 +323,7 @@ func (a *App) loadFailed(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Fill().Center().Gap(t.Space(2)).Children(func() {
 		ui.Text(c, "Lookback could not read its data.").Bold()
-		ui.Text(c, a.loadErr.Error()).TextColor(t.Danger).MaxWidth(640).Lines(1, 4)
+		ui.Text(c, a.loadErr.Error()).TextColor(t.Danger).MaxWidth(640).MaxLines(4)
 		if ui.PrimaryButton(c, "Retry").Clicked() {
 			a.reload()
 		}

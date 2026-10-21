@@ -51,7 +51,7 @@ func (a *App) indexingCard(c *ui.Context) {
 		ui.Progress(c, st.fraction)
 		ui.Text(c, count(p.FilesDone)+" / "+count(p.FilesTotal)+" files · "+percent(st.fraction)).FontFeatures("tnum")
 		ui.Text(c, "ETA "+eta(p.ETA)+" · "+speed(p.FilesPerSec)+" · "+tokens(p.TokensPerSec)).
-			TextColor(t.TextMuted).FontFeatures("tnum").Lines(1, 2)
+			TextColor(t.TextMuted).FontFeatures("tnum").MaxLines(2)
 		if p.Current != "" {
 			ui.Text(c, "Now: "+p.Current).TextColor(t.TextMuted).SingleLine().FontSize(t.Rem(0.85))
 		}
@@ -161,7 +161,7 @@ func (a *App) errorList(c *ui.Context) {
 		ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, icon("triangle-alert")).TextColor(t.Danger)
 			ui.Text(c, filepath.Base(e.file.Path)).SingleLine().Basis(260)
-			ui.Text(c, e.msg).TextColor(t.TextMuted).Grow(1).Lines(1, 2)
+			ui.Text(c, e.msg).TextColor(t.TextMuted).Grow(1).MaxLines(2)
 			if ui.Button(c, "Retry").Clicked() {
 				a.retryFile(e.file.ID)
 			}

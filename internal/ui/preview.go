@@ -76,8 +76,8 @@ func (a *App) previewBody(c *ui.Context, h contract.Hit) {
 // snippetCard shows the matched text of a result, with the query's words highlighted.
 func (a *App) snippetCard(c *ui.Context, h contract.Hit) {
 	t := c.Theme()
-	ui.Column(c).Fill().Radius(8).Background(t.Surface).Padding(t.Space(3)).Gap(t.Space(2)).Children(func() {
-		ui.RichText(c, highlight(h.Snippet, a.search.query, t)...).Lines(1, 0)
+	ui.Column(c).Fill().Radius(8).Background(t.Surface).Padding(t.Space(3)).Gap(t.Space(2)).Clip().Children(func() {
+		ui.RichText(c, highlight(h.Snippet, a.search.query, t)...).MaxLines(0)
 	})
 }
 
@@ -97,7 +97,7 @@ func (a *App) previewMeta(c *ui.Context, h contract.Hit) {
 			meta += " · " + size(f.Size)
 			meta += " · " + time.Unix(0, f.MTime).Format("2 Jan 2006 15:04")
 		}
-		ui.Text(c, meta).TextColor(t.TextMuted).FontSize(t.Rem(0.85)).FontFeatures("tnum").Lines(1, 2)
+		ui.Text(c, meta).TextColor(t.TextMuted).FontSize(t.Rem(0.85)).FontFeatures("tnum").MaxLines(2)
 	})
 }
 

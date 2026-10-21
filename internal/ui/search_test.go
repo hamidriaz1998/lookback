@@ -96,3 +96,29 @@ func TestSearchGridStaysBelowHeader(t *testing.T) {
 		t.Errorf("the first result row ends below the window: y=%.0f h=%.0f", tile.Y, tile.H)
 	}
 }
+
+// TestSearchDocumentTileTextStaysInTile checks that a long document snippet is cut inside its tile and does not
+// draw over the file name below it.
+func TestSearchDocumentTileTextStaysInTile(t *testing.T) {
+	h := newHarness(t, nil)
+	h.wait("snapshot", func() bool { return h.app.data.ready })
+	h.app.search.query = "hotspot"
+	h.app.search.submit = true
+	h.wait("results", func() bool { return len(h.app.search.hits) > 0 && !h.app.search.searching })
+	snippet := strings.Repeat("If the laptop cannot join the phone hotspot, forget the network and join again. ", 12)
+	h.app.search.hits = []contract.Hit{{FileID: 1, ItemID: 1, Path: "/notes/hotspot.txt", Kind: contract.KindText,
+		Modality: "text", Snippet: snippet, Score: 0.8}}
+	h.pump(0)
+
+	text, ok := h.tt.Find(snippet)
+	if !ok {
+		t.Fatal("the snippet is not on screen")
+	}
+	cell, ok := h.tt.Find("hotspot.txt") // the grid cell, labeled with the file name
+	if !ok {
+		t.Fatal("the result tile is not on screen")
+	}
+	if tileBottom := cell.Y + h.app.thumbSize; text.Y+text.H > tileBottom {
+		t.Errorf("the snippet ends at y=%.0f, below its tile that ends at y=%.0f", text.Y+text.H, tileBottom)
+	}
+}
