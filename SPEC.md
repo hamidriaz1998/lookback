@@ -243,8 +243,9 @@ any combination with **Use this combination**.
 
 `internal/download` downloads one file per goroutine.
 
-- Write to `downloads/<sha256>.part`, and save `downloads/<sha256>.part.json` with
-  `{url, size, sha256, revision}` before the first byte.
+- Write to `downloads/<sha256>.part`, and save `downloads/<sha256>.part.json` with the asset
+  descriptor (URL, size, SHA-256, and the name, part, backend and archive flag the app needs to resume and
+  unpack it) before the first byte. A verified file's `downloads/<sha256>.done` marker records the install.
 - On start or resume, request `Range: bytes=<partSize>-`. If the server answers `200` instead of
   `206`, truncate and restart that file.
 - Hash the whole file at the end. On a match, rename it atomically into place. On a mismatch, delete it
