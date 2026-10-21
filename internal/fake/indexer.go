@@ -185,9 +185,9 @@ func (x *Indexer) snapshot(j *job, gen int64, active bool) contract.Progress {
 	return p
 }
 
-// pauseReason returns the first active reason in the order user, battery, suspend. The caller holds x.mu.
+// pauseReason returns the first active reason in the order user, battery, suspend, lab. The caller holds x.mu.
 func (x *Indexer) pauseReason() contract.PauseReason {
-	for _, r := range []contract.PauseReason{contract.PauseUser, contract.PauseBattery, contract.PauseSuspend} {
+	for _, r := range []contract.PauseReason{contract.PauseUser, contract.PauseBattery, contract.PauseSuspend, contract.PauseLab} {
 		if x.reasons[r] {
 			return r
 		}

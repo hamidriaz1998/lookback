@@ -164,6 +164,7 @@ const (
 	PauseUser    PauseReason = "user"
 	PauseBattery PauseReason = "battery"
 	PauseSuspend PauseReason = "suspend"
+	PauseLab     PauseReason = "lab" // a test lab run is using the runtime (SPEC section 8)
 )
 
 // Progress is a snapshot of one indexing job: the active generation, or the building one during a rebuild.
@@ -516,7 +517,7 @@ type Detector interface {
 	Probe(ctx context.Context, b Backend) (BackendProbe, error)
 }
 
-// LabState is the state of one combination in the test lab.
+// LabState is the state of one run of the test lab.
 type LabState string
 
 // The lab states, which the test table shows in its row.
@@ -526,10 +527,15 @@ const (
 	LabEmbedding LabState = "embedding"
 	LabDone      LabState = "done"
 	LabFailed    LabState = "failed"
+	LabCanceled  LabState = "canceled"
 )
+
+// RunID identifies one run of the test lab. Runs get IDs in the order they are started.
+type RunID int64
 
 // LabStep is one update of a test run.
 type LabStep struct {
+	RunID  RunID
 	Combo  Combo
 	State  LabState
 	Step   string     // the live step, such as "Embedding image 3 of 8"
@@ -539,16 +545,24 @@ type LabStep struct {
 
 // LabResult is one row of the test table (SPEC section 6, step 2).
 type LabResult struct {
+	RunID RunID
 	Combo Combo
 	Bench BenchResult
 }
 
 // Lab runs the test lab: it starts a combination, embeds the bundled sample and records the numbers.
+//
+// Runs are serialized: a run starts when the run before it has finished, and a run canceled while it
+// waits never starts. Each run embeds in its own temporary session, opened with Runtime.Session for the
+// vector space of its combination, and the indexer is paused with PauseLab while the run uses the
+// runtime. A run that cannot open its session fails with that error. Every step and result carries its
+// RunID. A run's ctx bounds that run: when it ends, the run emits a canceled step.
 type Lab interface {
-	// Run tests combination c. extra holds up to 10 user-picked files to embed as well. It returns once the
-	// run has started; progress arrives on Progress.
-	Run(ctx context.Context, c Combo, extra []string) error
-	// Subscribe streams the steps of all runs. Done, failed and canceled are terminal.
+	// Run queues a test of combination c. extra holds up to 10 user-picked files to embed as well. It returns
+	// the run's ID at once; progress arrives on Subscribe. It returns ErrUnknownCombo for a combination the
+	// lab cannot test, and ErrStopped after the lab's lifetime ends.
+	Run(ctx context.Context, c Combo, extra []string) (RunID, error)
+	// Subscribe streams the steps of all runs, keyed by RunID. Done, failed and canceled are terminal.
 	Subscribe(ctx context.Context) <-chan LabStep
 	// Recommend returns the fastest result whose quality is at least 0.99. Results with n/a quality do not qualify.
 	Recommend(results []LabResult) (Combo, bool)
