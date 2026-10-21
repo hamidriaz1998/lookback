@@ -73,27 +73,26 @@ func (f *fakeServer) userPrompts(name string) []string {
 	return out
 }
 
-// fakeStarts records the model of each server a run starts.
+// fakeStarts records the options of each server a run starts.
 type fakeStarts struct {
-	mu     sync.Mutex
-	models []string
+	mu   sync.Mutex
+	opts []runtime.Options
 }
 
 // newFakeLab returns a lab whose servers are fakes. The files name the model, and a BF16 server embeds along another
-// dimension than the others, so a picked-file quality from a BF16 reference is not 1. bf16 says whether BF16 is
-// installed.
-func newFakeLab(t *testing.T, bf16 bool, starts *fakeStarts) *Lab {
+// dimension than the others, so a picked-file quality from a BF16 reference is not 1. installed says which
+// combinations are installed.
+func newFakeLab(t *testing.T, installed func(contract.Combo) bool, starts *fakeStarts) *Lab {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	files := func(c contract.Combo) (runtime.Files, error) {
 		return runtime.Files{Model: string(c.TextQuant)}, nil
 	}
-	installed := func(c contract.Combo) bool { return bf16 && isBF16(c) }
 	l := New(ctx, &recordingIndexer{}, nil, files, installed, "", 1)
 	l.start = func(_ context.Context, o runtime.Options) (server, error) {
 		starts.mu.Lock()
-		starts.models = append(starts.models, o.Files.Model)
+		starts.opts = append(starts.opts, o)
 		starts.mu.Unlock()
 		srv := &fakeServer{}
 		if o.Files.Model == string(contract.QuantBF16) {
@@ -106,7 +105,7 @@ func newFakeLab(t *testing.T, bf16 bool, starts *fakeStarts) *Lab {
 
 func newTestLab(t *testing.T) *Lab {
 	t.Helper()
-	return newFakeLab(t, false, &fakeStarts{})
+	return newFakeLab(t, func(contract.Combo) bool { return false }, &fakeStarts{})
 }
 
 func newRun(extra []string, c contract.Combo) *run {

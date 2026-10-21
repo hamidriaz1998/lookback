@@ -251,9 +251,17 @@ func (l *Lab) execute(r *run) contract.LabStep {
 		return fail(err)
 	}
 	if len(r.extra) > 0 {
-		res.Quality, res.QualityReason, err = l.pickQuality(r, picks)
+		// The run's quality is the lower of the sample's and the picked files' (a broken backend cannot score 1
+		// through its own picks). Without a BF16 reference for the picks, the quality is n/a (SPEC section 6).
+		pq, reason, err := l.pickQuality(r, picks)
 		if err != nil {
 			return fail(err)
+		}
+		switch {
+		case pq == nil:
+			res.Quality, res.QualityReason = nil, reason
+		case res.Quality == nil || *pq < *res.Quality:
+			res.Quality = pq
 		}
 	}
 	result := contract.LabResult{RunID: r.id, Combo: r.combo, Bench: res}
@@ -267,8 +275,8 @@ type timings struct {
 	wall       time.Duration // wall time of the text requests
 }
 
-// measure embeds the bundled sample and the user's files, and returns the numbers of the test table. With no picked
-// files, Quality is the sample's. The picked files' vectors are returned for pickQuality.
+// measure embeds the bundled sample and the user's files, and returns the numbers of the test table. Quality is the
+// sample's; the picked files' vectors are returned for pickQuality.
 func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, [][]float32, error) {
 	var res contract.BenchResult
 	images, err := assets.Images()
@@ -317,13 +325,11 @@ func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, [][]float32, 
 	if tm.wall > 0 {
 		res.TextTokensPerSec = float64(tm.tokens) / tm.wall.Seconds()
 	}
-	if len(r.extra) == 0 {
-		q, err := quality(vecs, ref)
-		if err != nil {
-			return res, nil, err
-		}
-		res.Quality = &q
+	q, err := quality(vecs, ref)
+	if err != nil {
+		return res, nil, err
 	}
+	res.Quality = &q
 	return res, picks, nil
 }
 
@@ -380,8 +386,8 @@ func (l *Lab) pickQuality(r *run, picks [][]float32) (*float64, string, error) {
 	}
 	ref := picks
 	if !isBF16(r.combo) {
-		bf := contract.Combo{Backend: r.combo.Backend, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}
-		if l.installed == nil || !l.installed(bf) {
+		bf, ok := l.installedBF16(r.combo.Backend)
+		if !ok {
 			return nil, "needs an installed BF16 combination", nil
 		}
 		files, err := l.files(bf)
@@ -403,6 +409,30 @@ func (l *Lab) pickQuality(r *run, picks [][]float32) (*float64, string, error) {
 		return nil, "", err
 	}
 	return &q, "", nil
+}
+
+// backends are the compute backends the lab can test on.
+var backends = []contract.Backend{contract.BackendCPU, contract.BackendVulkan, contract.BackendCUDA12, contract.BackendCUDA13}
+
+// installedBF16 returns an installed BF16 combination: on the run's backend when there is one, else on any other
+// backend (SPEC section 6 needs a BF16 combination, not one on the same backend).
+func (l *Lab) installedBF16(first contract.Backend) (contract.Combo, bool) {
+	if l.installed == nil {
+		return contract.Combo{}, false
+	}
+	order := []contract.Backend{first}
+	for _, b := range backends {
+		if b != first {
+			order = append(order, b)
+		}
+	}
+	for _, b := range order {
+		c := contract.Combo{Backend: b, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}
+		if l.installed(c) {
+			return c, true
+		}
+	}
+	return contract.Combo{}, false
 }
 
 // isBF16 reports whether c runs both parts at BF16.

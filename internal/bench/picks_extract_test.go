@@ -54,11 +54,17 @@ func TestPickedDocumentIsExtractedBeforeEmbedding(t *testing.T) {
 	}
 }
 
+// noBF16 installs no combination.
+func noBF16(contract.Combo) bool { return false }
+
+// anyBF16 installs BF16 on every backend.
+func anyBF16(c contract.Combo) bool { return isBF16(c) }
+
 // TestPickedFileQualityNeedsAnInstalledBF16Combination: without an installed BF16 combination a picked-file run is n/a
 // with a reason, and no BF16 server starts.
 func TestPickedFileQualityNeedsAnInstalledBF16Combination(t *testing.T) {
 	starts := &fakeStarts{}
-	l := newFakeLab(t, false, starts)
+	l := newFakeLab(t, noBF16, starts)
 	picked := writePick(t, "a.txt", "alpha beta gamma")
 	step := l.execute(newRun([]string{picked}, combo(contract.QuantQ8_0)))
 	if step.State != contract.LabDone {
@@ -67,8 +73,8 @@ func TestPickedFileQualityNeedsAnInstalledBF16Combination(t *testing.T) {
 	if res := step.Result.Bench; res.Quality != nil || res.QualityReason != "needs an installed BF16 combination" {
 		t.Fatalf("quality %v, reason %q; want n/a with the installed-BF16 reason", res.Quality, res.QualityReason)
 	}
-	if got := starts.models; len(got) != 1 {
-		t.Fatalf("servers started %v, want only the run's own", got)
+	if got := starts.opts; len(got) != 1 {
+		t.Fatalf("servers started %d, want only the run's own", len(got))
 	}
 }
 
@@ -77,7 +83,7 @@ func TestPickedFileQualityNeedsAnInstalledBF16Combination(t *testing.T) {
 // point along another dimension, so the quality is 0, not 1.
 func TestPickedFileQualityComparesWithInstalledBF16(t *testing.T) {
 	starts := &fakeStarts{}
-	l := newFakeLab(t, true, starts)
+	l := newFakeLab(t, anyBF16, starts)
 	picked := writePick(t, "a.txt", "alpha beta gamma")
 	step := l.execute(newRun([]string{picked}, combo(contract.QuantQ8_0)))
 	if step.State != contract.LabDone {
@@ -87,26 +93,46 @@ func TestPickedFileQualityComparesWithInstalledBF16(t *testing.T) {
 	if res.Quality == nil || *res.Quality > 1e-9 {
 		t.Fatalf("quality %v, want 0 against the BF16 reference", res.Quality)
 	}
-	if got := starts.models; len(got) != 2 || got[0] != "q8_0" || got[1] != "bf16" {
+	if got := starts.opts; len(got) != 2 || got[0].Files.Model != "q8_0" || got[1].Files.Model != "bf16" {
 		t.Fatalf("servers started %v, want the run then a BF16 reference", got)
 	}
 }
 
-// TestBF16RunIsItsOwnPickReference: a BF16 run of picked files is their reference, so its quality is 1 and it starts
-// no second server.
-func TestBF16RunIsItsOwnPickReference(t *testing.T) {
+// TestPickedFileQualityFallsBackToBF16OnAnotherBackend: BF16 installed on Vulkan only still gives a CPU run its
+// quality. The reference server is the Vulkan BF16 one (GPU on).
+func TestPickedFileQualityFallsBackToBF16OnAnotherBackend(t *testing.T) {
 	starts := &fakeStarts{}
-	l := newFakeLab(t, true, starts)
+	vulkanBF16 := func(c contract.Combo) bool { return c.Backend == contract.BackendVulkan && isBF16(c) }
+	l := newFakeLab(t, vulkanBF16, starts)
+	picked := writePick(t, "a.txt", "alpha beta gamma")
+	step := l.execute(newRun([]string{picked}, combo(contract.QuantQ8_0)))
+	if step.State != contract.LabDone {
+		t.Fatalf("run ended %v: %s", step.State, step.Err)
+	}
+	if q := step.Result.Bench.Quality; q == nil || *q > 1e-9 {
+		t.Fatalf("quality %v, want 0 against the Vulkan BF16 reference", q)
+	}
+	if got := starts.opts; len(got) != 2 || got[1].Files.Model != "bf16" || !got[1].GPU {
+		t.Fatalf("servers started %+v, want the run then a Vulkan BF16 reference", got)
+	}
+}
+
+// TestBF16RunIsCheckedAgainstTheEmbeddedReference: a BF16 run with picked files is its own reference for them, but
+// its sample vectors are still checked against the embedded reference, and the quality is the lower of the two. The
+// fake's BF16 vectors do not match the reference, so the quality must be below the bar; the picks alone would say 1.
+func TestBF16RunIsCheckedAgainstTheEmbeddedReference(t *testing.T) {
+	starts := &fakeStarts{}
+	l := newFakeLab(t, anyBF16, starts)
 	picked := writePick(t, "a.txt", "alpha beta gamma")
 	step := l.execute(newRun([]string{picked}, combo(contract.QuantBF16)))
 	if step.State != contract.LabDone {
 		t.Fatalf("run ended %v: %s", step.State, step.Err)
 	}
-	if q := step.Result.Bench.Quality; q == nil || *q < 0.999999 {
-		t.Fatalf("quality %v, want 1", q)
+	if q := step.Result.Bench.Quality; q == nil || *q >= qualityBar {
+		t.Fatalf("quality %v, want below %v: the sample does not match the reference", q, qualityBar)
 	}
-	if got := starts.models; len(got) != 1 {
-		t.Fatalf("servers started %v, want the run only", got)
+	if got := starts.opts; len(got) != 1 {
+		t.Fatalf("servers started %d, want the run only", len(got))
 	}
 }
 
