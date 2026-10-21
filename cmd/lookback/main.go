@@ -1,0 +1,45 @@
+// Command lookback is the Lookback desktop app. Flags, startup and the window are added by WP7 (PLAN.md).
+// Until WP9 wires the real services, -fake runs the window on the in-memory services of internal/fake
+// (UI development), with thumbnails taken from the screenshots in ~/Pictures.
+package main
+
+import (
+	"context"
+	"flag"
+	"log"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+	lookui "github.com/hamidriaz1998/lookback/internal/ui"
+)
+
+func main() {
+	fake := flag.Bool("fake", true, "run on the in-memory fakes of internal/fake")
+	firstRun := flag.Bool("first-run", false, "start with the onboarding flow")
+	flag.Parse()
+	if !*fake {
+		log.Fatal("only -fake is wired until WP9")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deps, err := fakeDeps(ctx, *firstRun)
+	if err != nil {
+		log.Fatal(err)
+	}
+	app := lookui.New(deps)
+	mygo.App.WhenReady(func() {
+		win := mygo.NewWindow(mygo.WindowOptions{
+			Title:     "Lookback",
+			Width:     1280,
+			Height:    800,
+			MinWidth:  720,
+			MinHeight: 480,
+			Content:   ui.View(app.View),
+		})
+		app.Start(ctx, win.Update)
+	})
+	if err := mygo.App.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
