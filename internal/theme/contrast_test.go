@@ -42,9 +42,17 @@ func TestSystemContrast(t *testing.T) {
 
 func TestSystemUsesDesktopAccent(t *testing.T) {
 	for _, accent := range []ui.Color{mustHex("#b91c1c"), mustHex("#047857")} {
-		got := systemTheme(ui.LightTheme(), accent)
+		base := ui.LightTheme()
+		before := *base
+		got := systemTheme(base, accent)
 		if got.Accent != accent {
 			t.Errorf("System Accent = %v, want desktop accent %v", got.Accent, accent)
+		}
+		if want := accent.Alpha(0.24); got.Selection != want {
+			t.Errorf("System Selection = %v, want Accent at 24%% alpha %v", got.Selection, want)
+		}
+		if *base != before {
+			t.Error("System theme construction changed its base")
 		}
 	}
 }

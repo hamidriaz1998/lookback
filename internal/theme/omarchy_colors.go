@@ -60,6 +60,10 @@ func parseColors(data []byte) (map[string]string, error) {
 // omarchyTheme maps a parsed colors.toml onto a copy of base (SPEC section 15). A key that is
 // missing takes the base's value.
 func omarchyTheme(base *ui.Theme, kv map[string]string) *ui.Theme {
+	if kv == nil {
+		t := *base
+		return &t
+	}
 	col := func(key string, def ui.Color) ui.Color {
 		if v, ok := kv[key]; ok {
 			if c, err := parseHex(v); err == nil {

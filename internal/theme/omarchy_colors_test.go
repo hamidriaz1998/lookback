@@ -83,6 +83,39 @@ func TestMissingModeUsesRelativeLuminanceForWarning(t *testing.T) {
 	}
 }
 
+func TestOmarchyMissingKeysUseSystemAndKeepExplicitOverrides(t *testing.T) {
+	desktopAccent := mustHex("#b91c1c")
+	system := systemTheme(ui.LightTheme(), desktopAccent)
+	base := map[string]string{
+		"mode": "light", "background": "#ffffff", "lighter_background": "#e9e9ec",
+		"foreground": "#18181b",
+	}
+	got := omarchyTheme(system, base)
+	if got.Accent != system.Accent {
+		t.Errorf("missing accent = %v, want System accent %v", got.Accent, system.Accent)
+	}
+	if got.Selection != system.Selection {
+		t.Errorf("missing selection = %v, want System selection %v", got.Selection, system.Selection)
+	}
+
+	explicit := map[string]string{
+		"mode": "light", "background": "#ffffff", "lighter_background": "#e9e9ec",
+		"foreground": "#18181b", "accent": "#047857", "selection": "#123456",
+	}
+	got = omarchyTheme(system, explicit)
+	if want := mustHex("#047857"); got.Accent != want {
+		t.Errorf("explicit accent = %v, want %v", got.Accent, want)
+	}
+	if want := mustHex("#123456"); got.Selection != want {
+		t.Errorf("explicit selection = %v, want %v", got.Selection, want)
+	}
+
+	got = omarchyTheme(system, nil)
+	if got.Accent != system.Accent || got.Selection != system.Selection {
+		t.Errorf("no-palette fallback = (accent %v, selection %v), want System (%v, %v)", got.Accent, got.Selection, system.Accent, system.Selection)
+	}
+}
+
 // The first step of the guard on the reference machine: #53685B mixed 35% toward #C1C497 is
 // about #7a8870 (SPEC section 15).
 func TestMutedGuardFirstStepExample(t *testing.T) {

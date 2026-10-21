@@ -64,16 +64,12 @@ func (s *omarchy) Name() string { return "Omarchy" }
 
 func (s *omarchy) Changed() <-chan struct{} { return s.changed }
 
-// Theme maps the last good colors.toml. Before one has read, it is a copy of base.
+// Theme maps the last good colors.toml over the current System theme.
 func (s *omarchy) Theme(base *ui.Theme) *ui.Theme {
 	s.mu.Lock()
 	kv := s.kv
 	s.mu.Unlock()
-	if kv == nil {
-		t := *base
-		return &t
-	}
-	return omarchyTheme(base, kv)
+	return omarchyTheme(systemTheme(base, desktopAccent()), kv)
 }
 
 // readOmarchy reads and parses the colors.toml that current/theme holds. A symlink or a real
