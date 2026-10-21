@@ -240,6 +240,10 @@ type Generation struct {
 
 // Store persists folders, files, items and settings (SPEC section 10). Reads of items are scoped to
 // one generation. Every write method is atomic: on error (including a canceled context) nothing changes.
+//
+// Value ownership: the store copies what it keeps. CommitFile copies each item's vector, so the caller
+// may reuse its buffer after the call returns. SaveCombo copies the benchmark and its quality, and
+// ListCombos returns copies, so a caller that changes a returned value changes nothing in the store.
 type Store interface {
 	// GetSetting returns the value of key; ok is false when it is not set.
 	GetSetting(ctx context.Context, key string) (value string, ok bool, err error)

@@ -281,6 +281,7 @@ func (s *Store) commitLocked(idx contract.FileIndex, items []contract.Item) {
 	for _, it := range items {
 		it.ID = s.nextItem
 		s.nextItem++
+		it.Vector = append([]float32(nil), it.Vector...) // the store owns its copy (contract.Store)
 		s.items[it.ID] = it
 	}
 	s.index[[2]int64{idx.FileID, idx.Gen}] = idx
@@ -360,14 +361,27 @@ func (s *Store) DeleteItems(ctx context.Context, gen int64) error {
 	return nil
 }
 
-// SaveCombo inserts or replaces an installed combination.
+// SaveCombo inserts or replaces an installed combination. It keeps its own copy of the benchmark.
 func (s *Store) SaveCombo(ctx context.Context, in contract.Installed) error {
 	if err := s.lock(ctx); err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
-	s.combos[in.Combo.ID()] = in
+	s.combos[in.Combo.ID()] = cloneInstalled(in)
 	return nil
+}
+
+// cloneInstalled returns a copy of in that shares no memory with it: the benchmark and its quality.
+func cloneInstalled(in contract.Installed) contract.Installed {
+	if in.Bench != nil {
+		b := *in.Bench
+		if b.Quality != nil {
+			q := *b.Quality
+			b.Quality = &q
+		}
+		in.Bench = &b
+	}
+	return in
 }
 
 // ListCombos returns every installed combination, by ID.
@@ -379,7 +393,7 @@ func (s *Store) ListCombos(ctx context.Context) ([]contract.Installed, error) {
 	defer s.mu.Unlock()
 	out := make([]contract.Installed, 0, len(s.combos))
 	for _, c := range s.combos {
-		out = append(out, c)
+		out = append(out, cloneInstalled(c))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Combo.ID() < out[j].Combo.ID() })
 	return out, nil

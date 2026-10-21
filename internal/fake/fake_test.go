@@ -348,3 +348,54 @@ func TestRebuildRunsBesideActiveJob(t *testing.T) {
 		t.Fatalf("new generation search returned %d hits, want 300", len(hits))
 	}
 }
+
+// The store owns its values (review finding 11): reusing a vector buffer after CommitFile, or changing a
+// benchmark it returned, leaves the stored results unchanged.
+func TestStoreOwnsValues(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore()
+	gen := contract.Generation{TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0}
+	if err := s.NewGeneration(ctx, &gen); err != nil {
+		t.Fatal(err)
+	}
+	f := indexedFiles()[0]
+	ix, items := simulate(f, gen.ID)
+	buf := append([]float32(nil), items[0].Vector...)
+	items[0].Vector = buf
+	if err := s.CommitFile(ctx, ix, items); err != nil {
+		t.Fatal(err)
+	}
+	want := append([]float32(nil), buf...)
+	for i := range buf {
+		buf[i] = 0 // the caller reuses its buffer
+	}
+	hits, _ := s.Search(ctx, gen.ID, want, nil, 1)
+	if len(hits) != 1 || hits[0].FileID != f.ID || hits[0].Score < 0.999 {
+		t.Fatalf("stored vector changed after the caller reused its buffer: %+v", hits)
+	}
+
+	combo := contract.Combo{Backend: contract.BackendCPU, TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0}
+	q := 0.5
+	in := contract.Installed{Combo: combo, Bench: &contract.BenchResult{ImageMS: 100, Quality: &q}}
+	if err := s.SaveCombo(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	in.Bench.ImageMS, *in.Bench.Quality = 1, 1 // the caller changes its value after saving
+	got, _ := s.ListCombos(ctx)
+	var saved contract.Installed
+	for _, c := range got {
+		if c.Combo == combo {
+			saved = c
+		}
+	}
+	if saved.Bench == nil || saved.Bench.ImageMS != 100 || *saved.Bench.Quality != 0.5 {
+		t.Fatalf("SaveCombo kept the caller's value: %+v", saved.Bench)
+	}
+	saved.Bench.ImageMS, *saved.Bench.Quality = 2, 2 // the caller changes a returned value
+	again, _ := s.ListCombos(ctx)
+	for _, c := range again {
+		if c.Combo == combo && (c.Bench.ImageMS != 100 || *c.Bench.Quality != 0.5) {
+			t.Fatalf("ListCombos returned a value that aliases the store: %+v", c.Bench)
+		}
+	}
+}
