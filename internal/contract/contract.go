@@ -30,6 +30,20 @@ var (
 	ErrUnknownCombo = errors.New("combination not in the catalog")
 	// ErrUnknownAsset is returned by Downloader for an asset it does not hold.
 	ErrUnknownAsset = errors.New("unknown asset")
+	// ErrConflict is returned by Downloader.Ensure when a key is held with a different descriptor.
+	ErrConflict = errors.New("asset key is held with a different descriptor")
+	// ErrNotReady is returned by a Session that is not ready to embed (its sidecar is stopped or failed).
+	ErrNotReady = errors.New("runtime is not ready")
+	// ErrRestarting is returned by a Session whose sidecar is starting or restarting. Callers retry after
+	// Runtime.Use returns.
+	ErrRestarting = errors.New("runtime is restarting")
+	// ErrTooManySpaces is returned by Runtime.Session when two other vector spaces are already open.
+	ErrTooManySpaces = errors.New("two vector spaces are already open")
+	// ErrIncomplete is returned by Store.ActivateGeneration for a generation that does not cover every file.
+	ErrIncomplete = errors.New("generation does not cover every file")
+	// ErrStopped is returned by Indexer commands after the indexer's lifetime ends, and by Runtime waits
+	// that are cut short by Stop.
+	ErrStopped = errors.New("service is stopped")
 )
 
 // Backend is a llama.cpp compute backend.
@@ -369,7 +383,7 @@ const (
 
 // Asset is one pinned file the app may download (SPEC section 4).
 type Asset struct {
-	Name    string  // the file name in its release or repository; the key in Downloader
+	Name    string  // the file name in its release or repository; for display
 	URL     string  // the pinned URL
 	Bytes   int64   // expected size
 	SHA256  string  // hex; empty for runtime archives until WP1 pins them
@@ -377,6 +391,16 @@ type Asset struct {
 	Backend Backend // runtime assets only
 	Quant   Quant   // model assets only
 	Archive bool    // .tar.gz or .zip: unpacked into runtimes/<tag>-<backend>/
+}
+
+// Key returns the identity of the asset, which Downloader uses for everything it tracks. It is the
+// SHA-256. An unpinned asset, such as a runtime archive until WP1 pins it, has no SHA-256, so its key
+// is its URL, which names the release tag. A new pin has a new SHA-256, so it is a new asset (SPEC section 17).
+func (a Asset) Key() string {
+	if a.SHA256 != "" {
+		return a.SHA256
+	}
+	return a.URL
 }
 
 // Catalog lists the pinned assets. It is compiled into the binary (SPEC section 4).
@@ -404,7 +428,8 @@ const (
 
 // DownloadProgress is one update for one file. Publishers send at most 4 updates per second per file.
 type DownloadProgress struct {
-	Name        string    // Asset.Name
+	Key         string    // Asset.Key(), the identity every Downloader command takes
+	Name        string    // Asset.Name, for display
 	State       FileState // the current state
 	Done, Total int64     // bytes
 	BytesPerSec float64
@@ -413,20 +438,28 @@ type DownloadProgress struct {
 }
 
 // Downloader fetches assets with resume, verification and pause (SPEC section 7). Files are keyed by
-// Asset.Name, so a file shared by two combinations downloads once.
+// Asset.Key(), so an asset shared by two combinations downloads once, and a new pin downloads again.
+//
+// Lifetime: downloads run under the Downloader's own lifetime, set when it is constructed. The ctx of
+// a command only bounds that command's call.
+//
+// Repeated Ensure with the same descriptor does nothing to an asset that is already tracked. It keeps
+// queued, downloading, paused, offline and verifying files as they are, keeps done files done, and
+// keeps failed files failed until Retry. Ensure with a key that is tracked under a different descriptor
+// returns ErrConflict, and then queues nothing from that call.
 type Downloader interface {
-	// Ensure queues the assets that are not yet verified on disk. Calling it again is safe.
+	// Ensure queues the assets that are not yet verified on disk. Calling it again is safe (see above).
 	Ensure(ctx context.Context, assets []Asset) error
-	// Pause pauses one file. ErrUnknownAsset when Ensure has not queued it.
-	Pause(name string) error
+	// Pause pauses one file by key. ErrUnknownAsset when Ensure has not queued it.
+	Pause(key string) error
 	// Resume resumes one paused file from the bytes it has.
-	Resume(name string) error
+	Resume(key string) error
 	// PauseAll pauses every file ("Pause all").
 	PauseAll()
 	// ResumeAll resumes every paused file.
 	ResumeAll()
 	// Retry queues a failed file again, from zero.
-	Retry(ctx context.Context, name string) error
+	Retry(ctx context.Context, key string) error
 	// Progress returns the stream of updates for all files.
 	Progress() <-chan DownloadProgress
 }

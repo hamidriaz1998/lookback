@@ -39,6 +39,13 @@ type Downloader struct {
 
 // NewDownloader returns the fixture downloader. It stops when ctx ends.
 func NewDownloader(ctx context.Context) *Downloader {
+	d := newDownloader()
+	go d.run(ctx)
+	return d
+}
+
+// newDownloader returns the fixture downloader without its timer, so tests can call tick themselves.
+func newDownloader() *Downloader {
 	d := &Downloader{files: map[string]*download{}, ch: make(chan contract.DownloadProgress, 256)}
 	now := time.Now()
 	for _, a := range mustAssets(contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}) {
@@ -51,7 +58,6 @@ func NewDownloader(ctx context.Context) *Downloader {
 		}
 		d.add(df)
 	}
-	go d.run(ctx)
 	return d
 }
 
@@ -66,8 +72,8 @@ func mustAssets(c contract.Combo) []contract.Asset {
 
 // add stores a download, keeping the order of insertion.
 func (d *Downloader) add(df *download) {
-	d.files[df.asset.Name] = df
-	d.order = append(d.order, df.asset.Name)
+	d.files[df.asset.Key()] = df
+	d.order = append(d.order, df.asset.Key())
 }
 
 // run advances every downloading file once per tick and publishes the changes.
@@ -122,14 +128,15 @@ func (d *Downloader) publishLocked(df *download) {
 	}
 	select {
 	case d.ch <- contract.DownloadProgress{
-		Name: df.asset.Name, State: df.state, Done: df.done, Total: df.asset.Bytes,
+		Key: df.asset.Key(), Name: df.asset.Name, State: df.state, Done: df.done, Total: df.asset.Bytes,
 		BytesPerSec: speed, ResumedFrom: df.resumedFrom, Err: df.err,
 	}:
 	default:
 	}
 }
 
-// Ensure queues the assets that are not verified on disk.
+// Ensure queues the assets that are not verified on disk. It checks every asset before it queues any, so a
+// conflict queues nothing. A tracked key with the same descriptor is left as it is.
 func (d *Downloader) Ensure(ctx context.Context, assets []contract.Asset) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -137,10 +144,12 @@ func (d *Downloader) Ensure(ctx context.Context, assets []contract.Asset) error 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, a := range assets {
-		if df, ok := d.files[a.Name]; ok && df.state == contract.FileDone {
-			continue
+		if df, ok := d.files[a.Key()]; ok && df.asset != a {
+			return contract.ErrConflict
 		}
-		if _, ok := d.files[a.Name]; !ok {
+	}
+	for _, a := range assets {
+		if _, ok := d.files[a.Key()]; !ok {
 			d.add(&download{asset: a, state: contract.FileQueued})
 		}
 	}
@@ -148,10 +157,10 @@ func (d *Downloader) Ensure(ctx context.Context, assets []contract.Asset) error 
 }
 
 // Pause pauses one file.
-func (d *Downloader) Pause(name string) error {
+func (d *Downloader) Pause(key string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	df, ok := d.files[name]
+	df, ok := d.files[key]
 	if !ok {
 		return contract.ErrUnknownAsset
 	}
@@ -163,10 +172,10 @@ func (d *Downloader) Pause(name string) error {
 }
 
 // Resume resumes one paused file from the bytes it has, and shows "Resumed at" for a few seconds.
-func (d *Downloader) Resume(name string) error {
+func (d *Downloader) Resume(key string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	df, ok := d.files[name]
+	df, ok := d.files[key]
 	if !ok {
 		return contract.ErrUnknownAsset
 	}
@@ -208,13 +217,13 @@ func (d *Downloader) ResumeAll() {
 }
 
 // Retry queues a failed file again, from zero.
-func (d *Downloader) Retry(ctx context.Context, name string) error {
+func (d *Downloader) Retry(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	df, ok := d.files[name]
+	df, ok := d.files[key]
 	if !ok {
 		return contract.ErrUnknownAsset
 	}
