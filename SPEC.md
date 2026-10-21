@@ -530,11 +530,12 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 - Watching (Q5): one recursive `mygo.WatchFiles` per folder, with the exclusion rules as its `Ignore`.
   Batches of events are debounced for 1 s.
 - Startup rescan: walk each folder and compare size and mtime with `files`; queue the differences.
-- Global hotkey (Q30): Super+Shift+Space by default, configurable, through MyGo's global shortcuts.
+- Global hotkey (Q30): Super+. by default, configurable, through MyGo's global shortcuts. Under Hyprland the
+  portal path needs an installed desktop entry (WP10); until then registration fails, is logged once, and Settings shows the bind tip.
 - Single instance: `lookback --toggle` shows or hides the running window and exits. Use MyGo's
   single-instance support if it has one; otherwise a Unix socket in the
   data folder. On Hyprland, where global shortcuts may not reach apps, the user binds:
-  `bind = SUPER SHIFT, SPACE, exec, lookback --toggle`.
+  `bind = SUPER, period, exec, lookback --toggle`.
 
 ## 14. Settings
 
@@ -544,7 +545,7 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 | Active combination | From onboarding |
 | Installed combinations | Delete unused ones (frees disk) |
 | Pause indexing on battery | On |
-| Global hotkey | Super+Shift+Space |
+| Global hotkey | Super+. (period) |
 | Max image edge | 1600 px |
 | Folders and ignore lists | From onboarding |
 | Data folder | Platform default (moving it moves the files) |
