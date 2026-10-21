@@ -244,8 +244,9 @@ them start after M0 merges.
   ODT, ODP, ODS, RTF. Measure the 1600 px image cap against the sample (time and quality) and record
   the numbers in the commit message.
 - **Acceptance:** fixture files for every type in `internal/extract/testdata` (self-made); tests check
-  the unit count, page numbers and text; a scanned-page fixture comes back as an image unit; a chunking
-  test checks the 512/64 windows and the byte offsets.
+  the unit count, page numbers and text; a scanned-page fixture comes back as an image unit; the chunk
+  regression (SPEC section 9) checks coverage, valid UTF-8, termination, overlap of at least 64 tokens and
+  the 512-token cap, with byte offsets, on text that includes byte-fallback characters.
 
 ### WP5: themes
 

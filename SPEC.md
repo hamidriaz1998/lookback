@@ -330,15 +330,21 @@ files over 50 MB, images under 64×64 px, and symlinks that resolve outside the 
 - Document prompt: `title: <file name> | text: <chunk>`. Query prompt: `task: search result | query: <q>`.
   Both come from the model's `config_sentence_transformers.json`. The file name as the title is allowed
   by the format and helps short chunks.
-- Windows of 512 tokens including the prompt prefix, overlapping by 64 tokens. Use `/tokenize` with
-  `with_pieces` to map each window back to byte offsets in the UTF-8 text. A token can split a character
-  (byte-fallback pieces), so offsets are bytes, not runes.
-- **UTF-8 boundaries.** A window's start and end must be character starts: a cut that falls inside a
-  character moves back (end) or forward (start) to the nearest character start. The text is never
-  re-encoded, so every chunk is valid UTF-8 and its bytes are the source bytes.
+- Windows of at most 512 tokens including the prompt prefix. The overlap is at least 64 tokens; 64 is a
+  minimum, not an exact count. Use `/tokenize` with `with_pieces` to map each window back to byte offsets
+  in the UTF-8 text. A token can split a character (byte-fallback pieces), so offsets are bytes, not runes.
+- **UTF-8 boundaries.** A window's start and end must be character starts. The text is never re-encoded,
+  so every chunk is valid UTF-8 and its bytes are the source bytes.
+  - A window's end moves back to the nearest character start at or before the cut.
+  - The next window starts at the nearest character start at or before the token that lies 64 tokens
+    before the previous window's end. That keeps the overlap at least 64 tokens and skips no text.
+  - Every window advances by at least one character, so chunking always ends.
 - **Token cap.** The chunker counts tokens on the full prompt (prefix plus the window's text) and tokenizes
-  that again after cutting. If it is over 512 tokens, the window shrinks and is checked again. The 512 cap
-  applies to what is embedded, not to the window's text alone.
+  that again after cutting. If it is over 512 tokens, the window end shrinks to an earlier character start
+  and the check runs again. The 512 cap applies to what is embedded, not to the window's text alone.
+- **Chunk regression (WP4).** The chunk test checks, on a text with multi-byte characters and byte-fallback
+  tokens, together: coverage of every source byte, valid UTF-8 for each chunk, termination, overlap of at
+  least 64 tokens between consecutive windows, and a cap of 512 tokens on every prompt.
 - Store, per chunk: the unit (page, slide or sheet), the byte range in the text, and a
   snippet (the first 300 characters, whitespace collapsed).
 - Send text chunks in batches of up to 8 per request. Send images one per request, to keep payloads small.
@@ -687,7 +693,7 @@ laptop. It replaces the `_windows.go` stubs; nothing in the shared code should n
 | Q9 | Backend choice | Detect candidates, self-test, keep the fastest; settings override; no ROCm |
 | Q10 | Precision | Auto by RAM/VRAM |
 | Q11 | PDF pages | Text per page; low-text pages embedded as images |
-| Q12 | Chunking | 512 tokens, 64 overlap; grouped by file with the best snippet |
+| Q12 | Chunking | 512 tokens, at least 64 overlap; grouped by file with the best snippet |
 | Q13 | Precision timing | Decided once at setup; switching re-indexes |
 | Q14 | File types | Modern set (section 9); no HEIC, no legacy Office |
 | Q15 | Exclusions | Sensible defaults, editable per folder |
