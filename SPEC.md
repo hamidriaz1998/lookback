@@ -435,7 +435,7 @@ CREATE INDEX items_gen_file ON items (gen, file_id);
 ```
 
 A file needs work for generation G when it has no `file_index` row for G, or the row's size or mtime
-differs from `files`.
+differs from `files`. Every `INTEGER` time column holds Unix nanoseconds.
 
 ### Search query (Q18)
 
@@ -444,12 +444,15 @@ SELECT i.id, i.file_id, f.path, f.kind, i.unit, i.snippet, i.modality,
        vector_distance_cos(i.embedding, vector32(?1)) AS d
 FROM items i JOIN files f ON f.id = i.file_id
 WHERE i.gen = ?2            -- the active generation
-ORDER BY d LIMIT 300;
+ORDER BY d;                 -- read rows in order; keep each file's first row, stop at 300 files
 ```
 
-In Go: group by file and keep each file's best item. Score = `1 − d` + filename boost (0.04 for each
-query word of 3 or more letters found in the file name or the last two path segments, at most 0.12).
-Return the top 60. A type filter adds `AND f.kind IN (...)`.
+Group by file in the store: the first row of each file is its best item, so the store reads rows in distance
+order and stops after 300 distinct files. (A plain `LIMIT 300` on items can return fewer files, because one
+file can fill many of the 300 rows.) Score = `1 − d` + filename boost (0.04 for each distinct
+query word of 3 or more letters found in the file name or the last two path segments, at most 0.12). The
+search applies the boost to those 300 files, sorts them, and returns the top 60. A type filter adds
+`AND f.kind IN (...)`.
 
 **Find similar (Q6)** uses the stored vector, so no embedding is needed. The seed must be an item of the
 requested generation, because a vector from another generation is in another vector space. Otherwise
@@ -471,7 +474,8 @@ Turso adds a vector index.
   handover, the rebuild queues every file that is not yet complete in the building generation.
 - Handover: in one transaction, `ActivateGeneration` checks completeness and refuses an incomplete
   generation (`ErrIncomplete`). When it succeeds, it marks the new one `active` and the old one `retired`
-  (at most one generation is active at a time). Then the old one's items are deleted.
+  (at most one generation is active at a time). The retired generation's items stay until the indexer calls `DeleteItems`, which refuses the active
+generation.
 - Switching only the backend keeps the generation.
 
 ## 11. Indexing pipeline

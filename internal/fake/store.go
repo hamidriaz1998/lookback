@@ -153,6 +153,14 @@ func (s *Store) SaveFile(ctx context.Context, f *contract.FileRec) error {
 		return err
 	}
 	defer s.mu.Unlock()
+	if f.ID != 0 {
+		if _, ok := s.files[f.ID]; !ok {
+			return contract.ErrUnknownFile
+		}
+	}
+	if _, ok := s.folders[f.FolderID]; !ok {
+		return contract.ErrUnknownFolder
+	}
 	if f.ID == 0 {
 		for _, old := range s.files {
 			if old.Path == f.Path {
