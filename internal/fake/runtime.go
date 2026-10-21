@@ -16,20 +16,25 @@ type Runtime struct {
 
 	mu      sync.Mutex
 	status  contract.RuntimeStatus
-	changes chan contract.RuntimeStatus
+	streams *stream[contract.RuntimeStatus]
 }
 
 // NewRuntime returns a Runtime that is ready on the reference laptop's Vulkan combination.
 func NewRuntime() *Runtime {
-	return &Runtime{
+	r := &Runtime{
 		Embedder: NewEmbedder(),
 		status: contract.RuntimeStatus{
 			State: contract.RuntimeReady,
 			Combo: vulkanBF16Q8,
 			Since: time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC),
 		},
-		changes: make(chan contract.RuntimeStatus, 64),
+		streams: newStream(
+			func(contract.RuntimeStatus) string { return "" },
+			func(st contract.RuntimeStatus) bool { return st.State == contract.RuntimeStopped || st.State == contract.RuntimeFailed },
+		),
 	}
+	r.streams.publish(r.status)
+	return r
 }
 
 // vulkanBF16Q8 is the recommended combination on the reference laptop.
@@ -49,18 +54,17 @@ func (r *Runtime) Status() contract.RuntimeStatus {
 	return r.status
 }
 
-// Changes returns the stream of status changes. The fake drops a change when 64 are unread.
-func (r *Runtime) Changes() <-chan contract.RuntimeStatus { return r.changes }
+// Subscribe returns a stream of status changes.
+func (r *Runtime) Subscribe(ctx context.Context) <-chan contract.RuntimeStatus {
+	return r.streams.subscribe(ctx)
+}
 
-// set stores st and publishes it.
+// set stores st and publishes it, in the order the changes happen.
 func (r *Runtime) set(st contract.RuntimeStatus) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.status = st
-	r.mu.Unlock()
-	select {
-	case r.changes <- st:
-	default:
-	}
+	r.streams.publish(st)
 }
 
 // Use stops the sidecar and starts combination c. It returns ready after 200 ms.

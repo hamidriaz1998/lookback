@@ -39,11 +39,21 @@ func fp(v float64) *float64 { return &v }
 
 // Lab is a contract.Lab that replays the fixture results. A run emits one step every 200 ms.
 type Lab struct {
-	ch chan contract.LabStep
+	streams *stream[contract.LabStep]
 }
 
-// NewLab returns a Lab with the fixture results.
-func NewLab() *Lab { return &Lab{ch: make(chan contract.LabStep, 64)} }
+// NewLab returns a Lab with the fixture results. Its streams close when ctx ends.
+func NewLab(ctx context.Context) *Lab {
+	l := &Lab{streams: newStream(
+		func(s contract.LabStep) string { return s.Combo.ID() },
+		func(s contract.LabStep) bool { return s.State == contract.LabDone || s.State == contract.LabFailed },
+	)}
+	go func() {
+		<-ctx.Done()
+		l.streams.close()
+	}()
+	return l
+}
 
 // Run tests combination c. It fails at once for a combination without a fixture result, and for
 // more than 10 extra files. The extra files add steps but do not change the sample's numbers.
@@ -90,16 +100,17 @@ func (l *Lab) Run(ctx context.Context, c contract.Combo, extra []string) error {
 
 // send publishes a step and reports false when ctx ends first.
 func (l *Lab) send(ctx context.Context, s contract.LabStep) bool {
-	select {
-	case l.ch <- s:
-		return true
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		return false
 	}
+	l.streams.publish(s)
+	return true
 }
 
-// Progress returns the stream of steps.
-func (l *Lab) Progress() <-chan contract.LabStep { return l.ch }
+// Subscribe returns a stream of the steps of all runs.
+func (l *Lab) Subscribe(ctx context.Context) <-chan contract.LabStep {
+	return l.streams.subscribe(ctx)
+}
 
 // Recommend returns the fastest result whose quality is at least 0.99. Results with n/a quality do not qualify.
 func (l *Lab) Recommend(results []contract.LabResult) (contract.Combo, bool) {

@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -32,7 +33,8 @@ type Indexer struct {
 	mu       sync.Mutex
 	store    *Store
 	interval time.Duration
-	ch, rch  chan contract.Progress
+	streams  *stream[contract.Progress] // the active job
+	rstreams *stream[contract.Progress] // the rebuild
 	started  bool
 	reasons  map[contract.PauseReason]bool
 	active   *job
@@ -51,8 +53,14 @@ func newIndexer(store *Store, interval time.Duration) *Indexer {
 	return &Indexer{
 		store:    store,
 		interval: interval,
-		ch:       make(chan contract.Progress, 1),
-		rch:      make(chan contract.Progress, 1),
+		streams: newStream(
+			func(p contract.Progress) string { return fmt.Sprint(p.Gen) },
+			func(contract.Progress) bool { return false },
+		),
+		rstreams: newStream(
+			func(p contract.Progress) string { return fmt.Sprint(p.Gen) },
+			func(p contract.Progress) bool { return p.FilesDone == p.FilesTotal },
+		),
 		reasons:  map[contract.PauseReason]bool{},
 	}
 }
@@ -73,15 +81,15 @@ func (x *Indexer) Start(ctx context.Context) error {
 
 // run publishes one snapshot per stream per tick until ctx ends.
 func (x *Indexer) run(ctx context.Context) {
-	defer close(x.ch)
-	defer close(x.rch)
+	defer x.streams.close()
+	defer x.rstreams.close()
 	ticker := time.NewTicker(x.interval)
 	defer ticker.Stop()
 	for {
 		p, rp := x.step()
-		publish(x.ch, p)
+		x.streams.publish(p)
 		if rp != nil {
-			publish(x.rch, *rp)
+			x.rstreams.publish(*rp)
 		}
 		select {
 		case <-ctx.Done():
@@ -89,15 +97,6 @@ func (x *Indexer) run(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
-}
-
-// publish sends p, replacing an unread snapshot so the reader gets the newest one.
-func publish(ch chan contract.Progress, p contract.Progress) {
-	select {
-	case <-ch:
-	default:
-	}
-	ch <- p
 }
 
 // step advances the simulated job by one tick and returns the active snapshot and, during a rebuild,
@@ -316,8 +315,10 @@ func (x *Indexer) Resume(reason contract.PauseReason) {
 	delete(x.reasons, reason)
 }
 
-// Progress returns the snapshots of the active generation.
-func (x *Indexer) Progress() <-chan contract.Progress { return x.ch }
+// Subscribe streams the snapshots of the active generation's job.
+func (x *Indexer) Subscribe(ctx context.Context) <-chan contract.Progress { return x.streams.subscribe(ctx) }
 
-// RebuildProgress returns the snapshots of the building generation. It is quiet when no rebuild runs.
-func (x *Indexer) RebuildProgress() <-chan contract.Progress { return x.rch }
+// SubscribeRebuild streams the snapshots of the building generation. It is quiet when no rebuild runs.
+func (x *Indexer) SubscribeRebuild(ctx context.Context) <-chan contract.Progress {
+	return x.rstreams.subscribe(ctx)
+}

@@ -327,6 +327,12 @@ type Extractor interface {
 	Extract(ctx context.Context, f FileRec, emit func(Unit) error) error
 }
 
+// Streams. Every Subscribe method returns its own channel. The channel starts with the current snapshot
+// and then carries each later update, in the order the state changed. A reader that falls behind gets the
+// newest value per key: an update it has not read is replaced by a newer one with the same key. A terminal
+// value is never replaced or dropped; each stream names its terminal values. The channel closes when the
+// subscriber's ctx ends or the service stops. Each service's own type documents its keys and terminal values.
+//
 // Indexer runs the indexing job: queue, pipeline, pauses, progress, and the user commands from
 // Activity and Folders. Commands return ErrNotStarted before Start, and the context's error when ctx
 // is already done. They queue work and return; the job does the work in the background.
@@ -349,11 +355,12 @@ type Indexer interface {
 	// finishes, and then the rebuild activates the new generation (SPEC section 10). It returns the new
 	// generation's ID. ErrRebuildBusy while another rebuild runs.
 	Rebuild(ctx context.Context, text, enc Quant) (gen int64, err error)
-	// Progress returns snapshots of the active generation's job. The channel closes when the indexer stops.
-	Progress() <-chan Progress
-	// RebuildProgress returns snapshots of the building generation during a rebuild. It is quiet when no
-	// rebuild runs. The last snapshot of a rebuild has FilesDone equal to FilesTotal.
-	RebuildProgress() <-chan Progress
+	// Subscribe streams snapshots of the active generation's job, keyed by Gen. No value is terminal.
+	Subscribe(ctx context.Context) <-chan Progress
+	// SubscribeRebuild streams snapshots of the building generation during a rebuild, keyed by Gen. It is
+	// quiet when no rebuild runs. The last snapshot of a rebuild, with FilesDone equal to FilesTotal, is
+	// terminal.
+	SubscribeRebuild(ctx context.Context) <-chan Progress
 }
 
 // ThemeSource provides a theme. Built-in themes and the Omarchy source implement it.
@@ -460,8 +467,8 @@ type Downloader interface {
 	ResumeAll()
 	// Retry queues a failed file again, from zero.
 	Retry(ctx context.Context, key string) error
-	// Progress returns the stream of updates for all files.
-	Progress() <-chan DownloadProgress
+	// Subscribe streams updates for all files, keyed by Key. Done and failed are terminal.
+	Subscribe(ctx context.Context) <-chan DownloadProgress
 }
 
 // GPU is a graphics adapter found by the OS.
@@ -534,8 +541,8 @@ type Lab interface {
 	// Run tests combination c. extra holds up to 10 user-picked files to embed as well. It returns once the
 	// run has started; progress arrives on Progress.
 	Run(ctx context.Context, c Combo, extra []string) error
-	// Progress returns the stream of steps for all runs.
-	Progress() <-chan LabStep
+	// Subscribe streams the steps of all runs. Done, failed and canceled are terminal.
+	Subscribe(ctx context.Context) <-chan LabStep
 	// Recommend returns the fastest result whose quality is at least 0.99. Results with n/a quality do not qualify.
 	Recommend(results []LabResult) (Combo, bool)
 }
@@ -568,8 +575,9 @@ type Runtime interface {
 	Active() Combo
 	// Status returns the current status.
 	Status() RuntimeStatus
-	// Changes returns the stream of status changes.
-	Changes() <-chan RuntimeStatus
+	// Subscribe streams status changes, keyed by nothing: one stream for the sidecar. Stopped and failed
+	// are terminal.
+	Subscribe(ctx context.Context) <-chan RuntimeStatus
 	// Use stops the sidecar and starts combination c ("Make active").
 	Use(ctx context.Context, c Combo) error
 	// RetryGPU tries the GPU backend again after a CPU fallback ("Try GPU again").

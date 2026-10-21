@@ -35,11 +35,11 @@ type download struct {
 // the user paused stays paused after the network comes back. While offline the display shows offline,
 // and a paused file shows paused again once it is back online.
 type Downloader struct {
-	mu     sync.Mutex
-	files  map[string]*download
-	order  []string
-	ch     chan contract.DownloadProgress
-	paused bool // PauseAll is in effect: files ensured or retried now start paused
+	mu      sync.Mutex
+	files   map[string]*download
+	order   []string
+	streams *stream[contract.DownloadProgress]
+	paused  bool // PauseAll is in effect: files ensured or retried now start paused
 	off    bool // the connection is down
 }
 
@@ -52,7 +52,10 @@ func NewDownloader(ctx context.Context) *Downloader {
 
 // newDownloader returns the fixture downloader without its timer, so tests can call tick themselves.
 func newDownloader() *Downloader {
-	d := &Downloader{files: map[string]*download{}, ch: make(chan contract.DownloadProgress, 256)}
+	d := &Downloader{files: map[string]*download{}, streams: newStream(
+		func(p contract.DownloadProgress) string { return p.Key },
+		func(p contract.DownloadProgress) bool { return p.State == contract.FileDone || p.State == contract.FileFailed },
+	)}
 	now := time.Now()
 	for _, a := range mustAssets(contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}) {
 		df := &download{asset: a, phase: contract.FileDone, done: a.Bytes}
@@ -63,6 +66,7 @@ func newDownloader() *Downloader {
 			df.resumedAt = now
 		}
 		d.add(df)
+		d.publishLocked(df)
 	}
 	return d
 }
@@ -107,6 +111,7 @@ func (d *Downloader) runnable(df *download) bool {
 
 // run advances every downloading file once per tick and publishes the changes.
 func (d *Downloader) run(ctx context.Context) {
+	defer d.streams.close()
 	ticker := time.NewTicker(downloadTick)
 	defer ticker.Stop()
 	for {
@@ -119,13 +124,14 @@ func (d *Downloader) run(ctx context.Context) {
 	}
 }
 
-// tick moves the files on by one tick and publishes each file.
+// tick moves the files on by one tick and publishes each file that changed.
 func (d *Downloader) tick() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	step := int64(fakeBytesPerSec * downloadTick.Seconds())
 	for _, name := range d.order {
 		df := d.files[name]
+		before := *df
 		if d.runnable(df) {
 			switch df.phase {
 			case contract.FileQueued:
@@ -143,24 +149,23 @@ func (d *Downloader) tick() {
 		if !df.resumedAt.IsZero() && time.Since(df.resumedAt) > resumeBannerFor {
 			df.resumedFrom, df.resumedAt = 0, time.Time{}
 		}
-		d.publishLocked(df)
+		if *df != before {
+			d.publishLocked(df)
+		}
 	}
 }
 
-// publishLocked sends an update for df. It drops the update when 256 are unread. The caller holds d.mu.
+// publishLocked sends an update for df. The caller holds d.mu, so updates go out in the order of changes.
 func (d *Downloader) publishLocked(df *download) {
 	st := d.state(df)
 	speed := 0.0
 	if st == contract.FileDownloading {
 		speed = fakeBytesPerSec
 	}
-	select {
-	case d.ch <- contract.DownloadProgress{
+	d.streams.publish(contract.DownloadProgress{
 		Key: df.asset.Key(), Name: df.asset.Name, State: st, Done: df.done, Total: df.asset.Bytes,
 		BytesPerSec: speed, ResumedFrom: df.resumedFrom, Err: df.err,
-	}:
-	default:
-	}
+	})
 }
 
 // Ensure queues the assets that are not verified on disk. It checks every asset before it queues any, so a
@@ -281,5 +286,7 @@ func (d *Downloader) SetOffline(off bool) {
 	}
 }
 
-// Progress returns the stream of updates.
-func (d *Downloader) Progress() <-chan contract.DownloadProgress { return d.ch }
+// Subscribe returns a stream of the updates of every file.
+func (d *Downloader) Subscribe(ctx context.Context) <-chan contract.DownloadProgress {
+	return d.streams.subscribe(ctx)
+}
