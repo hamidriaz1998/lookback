@@ -1,0 +1,1 @@
+Meeting summary, project Atlas, Tuesday. The team agreed to freeze the API by the end of the month. Mira will write the migration guide. Omar reported that the load tests pass at two thousand requests per second. The next review is on the third of the month, with the security team.

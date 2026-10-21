@@ -1,0 +1,1 @@
+Study plan for the statistics exam. Week one covers probability distributions and the central limit theorem. Week two is hypothesis testing with t-tests and confidence intervals. Practise on the old exam papers from the library, and write down every formula you have to look up.

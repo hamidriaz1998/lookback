@@ -1,0 +1,1 @@
+Hotspot troubleshooting. If the laptop cannot join the phone hotspot, forget the network and join again with the password from the phone settings. Turn off the power saving mode of the wireless card. Restart both devices, and keep them within three metres of each other.
