@@ -42,6 +42,7 @@ func spaceState(st contract.RuntimeStatus, s contract.VectorSpace) (contract.Run
 
 // A stop after Use leaves the sidecar stopped: the start Use began does not publish Ready (review finding 4).
 func TestUseThenStopStaysStopped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	sess, err := r.Session(ctx, spaceA)
@@ -65,6 +66,7 @@ func TestUseThenStopStaysStopped(t *testing.T) {
 
 // Canceling the ctx of a Use that is waiting abandons its restart: the sidecar is stopped, not ready.
 func TestUseCancelAbandonsRestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	sess, err := r.Session(ctx, spaceA)
@@ -91,6 +93,7 @@ func TestUseCancelAbandonsRestart(t *testing.T) {
 // Competing transitions: a Use that a later Use supersedes returns ErrRestarting, the latest backend wins, and
 // once the backend has switched to the CPU no start of the superseded backend publishes Ready (review finding 4).
 func TestCompetingTransitionsKeepTheLatest(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	if _, err := r.Session(ctx, spaceA); err != nil {
@@ -143,6 +146,7 @@ func TestCompetingTransitionsKeepTheLatest(t *testing.T) {
 // Requests while the sidecar is not ready fail: ErrNotReady when stopped, ErrRestarting while a restart runs,
 // and they work again once Use returns (review finding 4).
 func TestRequestsWhileNotReady(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	sess, err := r.Session(ctx, spaceA)
@@ -189,6 +193,7 @@ func TestRequestsWhileNotReady(t *testing.T) {
 
 // Stop during a Use that waits for open sessions ends the wait with ErrRestarting, not a success.
 func TestStopSupersedesWaitingUse(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	if _, err := r.Session(ctx, spaceA); err != nil {
@@ -208,6 +213,7 @@ func TestStopSupersedesWaitingUse(t *testing.T) {
 // A session embeds in its own space: the same text gives different vectors in two spaces, and the same
 // vector in one space, on any backend (review finding 1).
 func TestSessionsHaveTheirOwnSpace(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	a, err := r.Session(ctx, spaceA)
@@ -230,6 +236,7 @@ func TestSessionsHaveTheirOwnSpace(t *testing.T) {
 
 // At most two spaces are open, and opening an open space shares its sidecar (review finding 1).
 func TestThirdSpaceIsRefused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	a1, _ := r.Session(ctx, spaceA)
@@ -262,6 +269,7 @@ func TestThirdSpaceIsRefused(t *testing.T) {
 // A backend switch restarts the sidecars without changing their space, so the vectors that come back before
 // and after the switch are the same (review finding 1, search side).
 func TestBackendSwitchKeepsSpace(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	s, err := r.Session(ctx, spaceA)
@@ -310,6 +318,7 @@ func TestBackendSwitchKeepsSpace(t *testing.T) {
 // A handover while the old search session is still open: the status lists both spaces with their own states,
 // the old session keeps embedding in its space, and closing it leaves only the building space (review finding 1).
 func TestHandoverWithOldSearchSession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	oldSearch, err := r.Session(ctx, spaceA)
@@ -343,6 +352,7 @@ func TestHandoverWithOldSearchSession(t *testing.T) {
 // Opening the building space while the active space's session is open: Status lists both spaces, each with its
 // own state, while the building space starts (review finding 1).
 func TestOpeningBuildingSpaceKeepsOwnStates(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	active, err := r.Session(ctx, spaceA)
@@ -378,6 +388,7 @@ func TestOpeningBuildingSpaceKeepsOwnStates(t *testing.T) {
 
 // Session returns only when its space is ready: a cold building space embeds at once, with no ErrRestarting.
 func TestColdSpaceSessionIsReady(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	start := time.Now()
@@ -397,6 +408,7 @@ func TestColdSpaceSessionIsReady(t *testing.T) {
 // ctx bounds only the acquisition of each handle. Canceling one acquisition releases its reference, and the
 // other handle, which holds the same cold space, keeps working (review finding 2).
 func TestHandlesWithDifferentAcquisitionContexts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	cancelled, cancel := context.WithCancel(ctx)
@@ -435,6 +447,7 @@ func TestHandlesWithDifferentAcquisitionContexts(t *testing.T) {
 
 // A canceled acquisition that is alone stops the sidecar it started, and it leaves no open space behind.
 func TestCanceledAcquisitionStopsItsSidecar(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	canceled, cancel := context.WithCancel(ctx)
@@ -454,6 +467,7 @@ func TestCanceledAcquisitionStopsItsSidecar(t *testing.T) {
 
 // Ready waits through a backend switch and returns once the sidecar is ready again (review finding 2).
 func TestReadyAfterBackendSwitch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	sess, err := r.Session(ctx, spaceA)
@@ -482,6 +496,7 @@ func TestReadyAfterBackendSwitch(t *testing.T) {
 
 // Ready ends with ErrStopped when the runtime's lifetime ends, and with ctx's error when ctx ends first.
 func TestReadyEndsWithLifetimeOrContext(t *testing.T) {
+	t.Parallel()
 	bg := context.Background()
 	life, endLife := context.WithCancel(bg)
 	r := NewRuntime(life)
@@ -509,6 +524,7 @@ func TestReadyEndsWithLifetimeOrContext(t *testing.T) {
 // The status streams close when the lifetime ends, and Stop does not end the lifetime: a later Session starts
 // the sidecar again (pending decision 2).
 func TestLifetimeClosesStreamsAndStopKeepsIt(t *testing.T) {
+	t.Parallel()
 	bg := context.Background()
 	life, endLife := context.WithCancel(bg)
 	r := NewRuntime(life)
@@ -538,6 +554,7 @@ func TestLifetimeClosesStreamsAndStopKeepsIt(t *testing.T) {
 // The status of two spaces has one worst state: a fallback to the CPU shows on both spaces, and Retry starts them
 // on the GPU again.
 func TestFallbackAndRetryCoverEverySpace(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := NewRuntime(ctx)
 	a, _ := r.Session(ctx, spaceA)

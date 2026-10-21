@@ -34,6 +34,7 @@ func lockedPause(x *Indexer) contract.PauseReason {
 // Two runs of the same combination are serialized, each step carries its run's ID, and the indexer is
 // paused while a run uses the runtime (review finding 7).
 func TestLabRunsAreSerializedByID(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	rt := NewRuntime(context.Background())
 	ix := NewIndexer(NewStore(), rt)
@@ -98,6 +99,7 @@ func TestLabRunsAreSerializedByID(t *testing.T) {
 
 // Canceling a run emits a canceled step with its ID, and a run canceled while it waits never starts.
 func TestLabCancelEmitsTerminalStep(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	rt := NewRuntime(context.Background())
 	ix := NewIndexer(NewStore(), rt)
@@ -165,6 +167,7 @@ func lockedTemp(l *Lab) int {
 // the indexer stays paused until the last run releases the lab (review finding 6, pending decision 1). Each run
 // starts its own temporary sidecar, and none is left after the queue empties.
 func TestLabCanceledQueuedRunKeepsOrder(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	rt := NewRuntime(context.Background())
 	ix := NewIndexer(NewStore(), rt)

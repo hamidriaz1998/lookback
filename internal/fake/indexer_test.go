@@ -19,7 +19,8 @@ func TestBackendSwitchDuringIndexingKeepsSpaces(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
 	rt := NewRuntime(context.Background())
-	x := newIndexer(s, rt, time.Second)
+	// Long ticks finish the rebuild in few steps, which keeps this race regression within the -short budget.
+	x := newIndexer(s, rt, 20*time.Second)
 	life, stop := context.WithCancel(ctx)
 	defer stop()
 	if err := x.Start(life); err != nil {
@@ -209,6 +210,7 @@ func startTestIndexer(t *testing.T) (*Store, *Indexer) {
 
 // A pending file edited before Rescan is indexed with its latest stat (review finding 9).
 func TestRescanIndexesLatestStat(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	s, x := startTestIndexer(t)
 	edit := pendingFiles()[pendingPictures-1] // far down the queue, so it has not started
@@ -232,6 +234,7 @@ func TestRescanIndexesLatestStat(t *testing.T) {
 
 // A file edited while the job is running is committed with its new stat, not the stat it started with.
 func TestEditWhileRunningIsRequeued(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	s, x := startTestIndexer(t)
 	cur := pendingFiles()[0]
@@ -252,6 +255,7 @@ func TestEditWhileRunningIsRequeued(t *testing.T) {
 // RetryAll clears the error row at once and re-indexes the file, which gets an error row again (review
 // finding 9).
 func TestRetryAllReindexesErrorRows(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	s, x := startTestIndexer(t)
 	broken := indexedFiles()[imageCount]
@@ -274,6 +278,7 @@ func TestRetryAllReindexesErrorRows(t *testing.T) {
 
 // Retry clears a done file's row at once and indexes it again with the same stat.
 func TestRetryReindexesFile(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	s, x := startTestIndexer(t)
 	f := indexedFiles()[0]

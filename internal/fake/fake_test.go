@@ -206,6 +206,7 @@ func TestByteFallbackTokenizer(t *testing.T) {
 
 // The indexer's totals match the store, and as files complete, their rows and items appear in the store.
 func TestIndexerCompletesIntoStore(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	s := NewStore()
 	x := newIndexer(s, NewRuntime(context.Background()), time.Second)
@@ -289,6 +290,7 @@ func TestIndexerETACountsDown(t *testing.T) {
 // A rebuild writes a second generation while the active job keeps running. Both streams report
 // their own generation, and the rebuild ends by activating the new generation and deleting the old items.
 func TestRebuildRunsBesideActiveJob(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	s := NewStore()
 	x := newIndexer(s, NewRuntime(context.Background()), 10*time.Second) // a 10 s tick keeps the simulated rebuild short
@@ -364,6 +366,7 @@ func TestRebuildRunsBesideActiveJob(t *testing.T) {
 // Files that finish in the active generation while a rebuild runs are in the new generation at handover,
 // and searchable there (review finding 2).
 func TestRebuildKeepsFilesCompletedDuringRebuild(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	s := NewStore()
 	x := newIndexer(s, NewRuntime(context.Background()), 10*time.Second)
@@ -414,6 +417,7 @@ func TestRebuildKeepsFilesCompletedDuringRebuild(t *testing.T) {
 
 // A file edited after the rebuild indexed it is indexed again before the handover (review finding 2).
 func TestRebuildReconcilesEditedFile(t *testing.T) {
+	heavy(t)
 	ctx := context.Background()
 	s := NewStore()
 	x := newIndexer(s, NewRuntime(context.Background()), 10*time.Second)
@@ -588,5 +592,13 @@ func TestActivateRefusesInvalidStatus(t *testing.T) {
 		if x.ID == 1 && x.State != contract.GenActive {
 			t.Fatal("a refused activation retired the active generation")
 		}
+	}
+}
+
+// heavy skips a long simulation under -short. The full suite, which pre-push runs, still runs it.
+func heavy(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("long simulation: runs without -short")
 	}
 }
