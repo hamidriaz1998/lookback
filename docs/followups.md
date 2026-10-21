@@ -118,3 +118,10 @@ See `.review/wp4-r3.md`.
 | Smoke data dir needed reflinked models | WP9 | The downloader expects `models/<revision>/<file>` and `downloads/<sha>.done`; the verified flat files in `lookback-data/models` are not found. Add an "import existing model files" path that verifies SHA-256 and records them. |
 | Smoke run tracked 17 of 19 files in the folder | WP9 | Find why two screenshots in `lookback-data/smoke-folder` were not tracked (exclusion, duplicate content, or a scan race) and fix or document it. |
 | SPEC §20 items 3, 4, 5 not run; 2, 9, 12 partly | WP9 | See `docs/acceptance.md`: full 277-image reference run, 40-image ETA check, scanned PDF query, live lab table, physical AC unplug. |
+
+## From WP9 review round 1 (final round under the 2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| R1-#4 (medium): first-building search does not refresh as files arrive | WP9 | While the first generation builds, re-run the current query (throttled) when progress reports new files, so results grow without retyping. See `.review/wp9-r1.md`. |
+| R1-#5 (medium): settings changes never reach the app shell | WP9 | Route hotkey and battery-pause setting writes from the UI to `app.ApplySettings`, so the shell re-registers the shortcut and updates pause policy without restart. |
