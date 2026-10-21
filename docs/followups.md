@@ -52,3 +52,29 @@ findings block a merge). Each item names its owner. The full findings are in the
 | R3-#4 (low): the PDF waiter regression depends on a cold-start deadline (raised from 15 s to 2 min on 2026-10-21 because parallel load failed pushes) | WP9 | Replace the wall-clock bound with a readiness signal so parallel load cannot fail it. |
 
 See `.review/wp4-r3.md`.
+
+## From WP2 review round 3 (final round under the 2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| R3-#1 (high, fixed): picked archive could exhaust memory | done | `extractPick` now enforces a 64 MiB extracted-output budget (`TestPickExtractionHasAnOutputBudget`). Still better: embed in bounded batches as units arrive instead of retaining them. |
+| R3-#2 (medium): BF16 quality compares two different versions of a picked file | WP2/WP9 | Copy each pick once per lab run and reuse that copy for every combination, so the BF16 reference and the tested run see the same bytes. See `.review/wp2-r3.md`. |
+| R3-#3 (medium): a crash during a response body still has a raw-error race | WP2 | Map body-read errors after a child crash to the restart/stopped errors under the same lifetime/epoch lock as the request path; add a regression that kills the child mid-body. |
+
+## WP10 deferred (2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| Signed auto-updates | WP10 | Configure `updates` in `mygo.json` (`github` or `url`, keys from `mygo keygen`), publish the signed update archives and manifests, and check that a delta update installs. Needs the signing key in CI secrets. |
+| Release workflow | WP10 | A GitHub Actions job that runs `mygo build -platform linux/amd64,windows/amd64` and publishes the `.deb`, tarball and `install.sh`. Also runs `tools/mkref` and embeds the reference vectors. |
+| Reference vectors embedding (`tools/mkref`) | WP10 | Generate the reference vectors in the release job and embed them in the binary. Not started. |
+| Icon artwork | WP10 | `resources/icon.png` is a 1024 px tile made from the 32 px tray glyph (upscaled). Replace it with designed artwork. |
+| Windows installer | WP10 (Windows phase) | Out of scope on Linux. |
+
+## From WP10 review round 1 (final round under the 2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| R1-#1 (high, fixed): `.deb` lacked the tray library | done | `mygo.json` now declares `libayatana-appindicator3-1`. Still to add: a packaging check that fails if a rebuild drops it, and a prerequisite check/message in `scripts/install.sh` for the tarball/source paths. |
+| R1-#2 (medium): accepted installation paths produce a broken desktop command | WP10 | Quote or reject install prefixes with spaces/special characters in the desktop entry `Exec` line; test with such a prefix. See `.review/wp10-r1.md`. |
+| R1-#3 (medium): source installer registers the launcher outside the configured XDG data dir | WP10 | Honor `XDG_DATA_HOME` for the desktop entry and icon; test with it set. |

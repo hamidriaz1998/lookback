@@ -484,12 +484,20 @@ func extractPick(ctx context.Context, reg *extract.Registry, p string) ([]contra
 		return nil, err
 	}
 	var units []contract.Unit
+	total := 0
 	err = reg.Extract(ctx, contract.FileRec{Path: tmp, Kind: kind, Size: n}, func(u contract.Unit) error {
+		// A compressed document can expand far beyond its file size, so the extracted output has a budget too.
+		if total += len(u.Text) + len(u.Image); total > maxPickExtracted {
+			return fmt.Errorf("%s: extracted content over the %d-byte limit", filepath.Base(p), maxPickExtracted)
+		}
 		units = append(units, u)
 		return nil
 	})
 	return units, err
 }
+
+// maxPickExtracted bounds the text and image bytes one picked file may extract to; a variable for tests.
+var maxPickExtracted = 64 << 20
 
 // copyPick copies the regular file p, at most maxPickBytes, to dst. It opens p without blocking, so a FIFO returns
 // at once and is refused on its type; the copy is bounded even if p grew after checkPick.
