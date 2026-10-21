@@ -356,5 +356,6 @@ A screen is done when all of these hold:
 - [ ] Accessible labels on icon buttons and thumbnails.
 - [ ] A MyGo UI test (see `docs/ui/testing.md`) covers the main path and one error state.
 - [ ] No placeholders: no "TODO", "Lorem", fake numbers or dead buttons.
-- [ ] The pull request includes screenshots of the screen in at least a dark and a light theme,
-      placed as described in the repository's PR rules (images attached to the PR, not committed).
+- [ ] Screenshots of the screen in at least a dark and a light theme are saved to
+      `/home/hamid/Desktop/AI/lookback/.review/screens/<branch>/`, as PLAN.md rule 6 says. They are never
+      committed, and no pull request is opened for them.

@@ -29,8 +29,8 @@
   SHA-256 on every later start. `TURSO_GO_CACHE_DIR` overrides the location.
 - Decision for Lookback: set `TURSO_GO_CACHE_DIR` to `<data root>/lib` before opening the database, so
   all app files stay in one place and uninstall removes them.
-- Open item for WP10: run the Windows build on a real machine, and check that SmartScreen or antivirus
-  doesn't block loading the extracted DLL.
+- Open item for the Windows phase (SPEC.md, not WP10): run the Windows build on a real machine, and check
+  that SmartScreen or antivirus doesn't block loading the extracted DLL.
 
 ## Spike 2: MyGo image grid
 
@@ -102,9 +102,10 @@ Findings and limits:
 - **Windows:** `process_windows.go` only kills the process. It has no job object, so the server can
   outlive a crash of the app. The app needs a job object (SPEC section 8). The spike cross-compiles for
   `windows/amd64` only.
-- **CI:** `.github/workflows/ci.yml` runs `go vet` and `go test` on `ubuntu-latest` and `windows-latest`,
-  the colour check, and the Windows cross-build. It has not run: this session has no GitHub runner. The
-  workflow does not start `llama-server`, so the Windows sidecar path is still unverified.
+- **CI:** `.github/workflows/ci.yml` runs `go vet` and `go test` on `ubuntu-latest` only. The
+  `windows-latest` matrix entry returns in the Windows phase (SPEC.md). The Windows cross-build still runs
+  in CI. The workflow has not run on a GitHub runner from this session, and it does not start
+  `llama-server`, so the Windows sidecar path is still unverified.
 - Failure-path tests (kill twice, CPU fallback) belong to WP2, not this spike.
 
 ### Follow-up checks (run before the contract froze)
