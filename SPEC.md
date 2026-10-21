@@ -243,8 +243,9 @@ any combination with **Use this combination**.
 
 `internal/download` downloads one file per goroutine.
 
-- Write to `downloads/<sha256>.part`, and save `downloads/<sha256>.part.json` with
-  `{url, size, sha256, revision}` before the first byte.
+- Write to `downloads/<sha256>.part`, and save `downloads/<sha256>.part.json` with the asset
+  descriptor (URL, size, SHA-256, and the name, part, backend and archive flag the app needs to resume and
+  unpack it) before the first byte. A verified file's `downloads/<sha256>.done` marker records the install.
 - On start or resume, request `Range: bytes=<partSize>-`. If the server answers `200` instead of
   `206`, truncate and restart that file.
 - Hash the whole file at the end. On a match, rename it atomically into place. On a mismatch, delete it
@@ -435,7 +436,7 @@ CREATE INDEX items_gen_file ON items (gen, file_id);
 ```
 
 A file needs work for generation G when it has no `file_index` row for G, or the row's size or mtime
-differs from `files`.
+differs from `files`. Every `INTEGER` time column holds Unix nanoseconds.
 
 ### Search query (Q18)
 
@@ -444,12 +445,15 @@ SELECT i.id, i.file_id, f.path, f.kind, i.unit, i.snippet, i.modality,
        vector_distance_cos(i.embedding, vector32(?1)) AS d
 FROM items i JOIN files f ON f.id = i.file_id
 WHERE i.gen = ?2            -- the active generation
-ORDER BY d LIMIT 300;
+ORDER BY d;                 -- read rows in order; keep each file's first row, stop at 300 files
 ```
 
-In Go: group by file and keep each file's best item. Score = `1 − d` + filename boost (0.04 for each
-query word of 3 or more letters found in the file name or the last two path segments, at most 0.12).
-Return the top 60. A type filter adds `AND f.kind IN (...)`.
+Group by file in the store: the first row of each file is its best item, so the store reads rows in distance
+order and stops after 300 distinct files. (A plain `LIMIT 300` on items can return fewer files, because one
+file can fill many of the 300 rows.) Score = `1 − d` + filename boost (0.04 for each distinct
+query word of 3 or more letters found in the file name or the last two path segments, at most 0.12). The
+search applies the boost to those 300 files, sorts them, and returns the top 60. A type filter adds
+`AND f.kind IN (...)`.
 
 **Find similar (Q6)** uses the stored vector, so no embedding is needed. The seed must be an item of the
 requested generation, because a vector from another generation is in another vector space. Otherwise
@@ -471,7 +475,8 @@ Turso adds a vector index.
   handover, the rebuild queues every file that is not yet complete in the building generation.
 - Handover: in one transaction, `ActivateGeneration` checks completeness and refuses an incomplete
   generation (`ErrIncomplete`). When it succeeds, it marks the new one `active` and the old one `retired`
-  (at most one generation is active at a time). Then the old one's items are deleted.
+  (at most one generation is active at a time). The retired generation's items stay until the indexer calls `DeleteItems`, which refuses the active
+generation.
 - Switching only the backend keeps the generation.
 
 ## 11. Indexing pipeline
@@ -525,11 +530,12 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 - Watching (Q5): one recursive `mygo.WatchFiles` per folder, with the exclusion rules as its `Ignore`.
   Batches of events are debounced for 1 s.
 - Startup rescan: walk each folder and compare size and mtime with `files`; queue the differences.
-- Global hotkey (Q30): Super+Shift+Space by default, configurable, through MyGo's global shortcuts.
+- Global hotkey (Q30): Super+. by default, configurable, through MyGo's global shortcuts. Under Hyprland the
+  portal path needs an installed desktop entry (WP10); until then registration fails, is logged once, and Settings shows the bind tip.
 - Single instance: `lookback --toggle` shows or hides the running window and exits. Use MyGo's
   single-instance support if it has one; otherwise a Unix socket in the
   data folder. On Hyprland, where global shortcuts may not reach apps, the user binds:
-  `bind = SUPER SHIFT, SPACE, exec, lookback --toggle`.
+  `bind = SUPER, period, exec, lookback --toggle`.
 
 ## 14. Settings
 
@@ -539,7 +545,7 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 | Active combination | From onboarding |
 | Installed combinations | Delete unused ones (frees disk) |
 | Pause indexing on battery | On |
-| Global hotkey | Super+Shift+Space |
+| Global hotkey | Super+. (period) |
 | Max image edge | 1600 px |
 | Folders and ignore lists | From onboarding |
 | Data folder | Platform default (moving it moves the files) |
@@ -572,10 +578,26 @@ mix Surface 8% and 16% toward Text, Border mixes Background 18% toward Text, Acc
 AccentPressed mix the Accent 12% toward white or black, Selection is the Accent at 24% alpha, Focus is
 the Accent at 80% alpha, Scrollbar is the Text at 35% alpha, and Radius is 8.
 
-**Contrast test (required)**: a unit test checks every built-in theme, and the Omarchy mapping on a set
-of fixture files, for Text and TextMuted ≥ 4.5:1 against both Background and Surface, AccentText ≥ 4.5:1
-against Accent, and Focus ≥ 3:1 against Background (WCAG 1.4.11 for the focus ring). Border is
-decorative: it must reach ≥ 1.3:1 against Background so card edges stay visible, and no more is required.
+**Guard for dynamic themes.** System and Omarchy are not fixed, so they run through one shared
+function after they are built and before they are used. The four fixed palettes pass the contrast rules
+as they are and are not guarded. The guard, in order:
+
+1. **TextMuted:** mix toward Text in 5% steps until ≥ 4.5:1 against both Background and Surface.
+2. **AccentText and Accent:** pick whichever of Background, Text, pure white and pure black has the highest
+   contrast with Accent. If that is still < 4.5:1, move the Accent in 5% steps toward black or white,
+   whichever contrasts more with Background, and pick again, until it reaches 4.5:1. AccentHover and
+   AccentPressed are derived from the final Accent. Accent is changed only for this step.
+3. **Focus:** derived after step 2 and separate from Accent. It is the final Accent at 80% alpha, composited
+   over Background, if that is ≥ 3:1 against Background; else the opaque final Accent if that is ≥ 3:1; else
+   the opaque final Accent moved in 5% steps toward the same end until ≥ 3:1. Only Focus moves in this step.
+4. The Focus adjustment can always reach the chosen endpoint, pure black or white, which exceeds 3:1
+   against any Background. Text, Background, Surface and the semantic colors are left unchanged.
+
+**Contrast test (required)**: a unit test checks every fixed palette as it is, System in light and dark
+after the guard, and every Omarchy fixture file after the guard, for Text and TextMuted ≥ 4.5:1 against
+both Background and Surface, AccentText ≥ 4.5:1 against Accent, and Focus ≥ 3:1 against Background
+(WCAG 1.4.11 for the focus ring). Border is decorative: it must reach ≥ 1.3:1 against Background so card
+edges stay visible, and no more is required.
 
 ### Omarchy theme (Linux only, build tag `linux`)
 
@@ -594,14 +616,14 @@ The file is flat TOML: `mode = "dark"` plus `key = "#rrggbb"` pairs. Mapping:
 | SurfacePressed | `lighter_background` mixed 15% toward `foreground` |
 | Border | `background` mixed 18% toward `foreground` |
 | Text | `foreground` |
-| TextMuted | `muted`, mixed toward `foreground` in 5% steps until ≥ 4.5:1 against both Background and Surface |
+| TextMuted | `muted`, then the guard (mixed toward `foreground` in 5% steps until ≥ 4.5:1 against both Background and Surface) |
 | Accent | `accent`; Hover/Pressed mixed 12% toward white/black |
-| AccentText | whichever of `background` and `bright_foreground` contrasts more with `accent` |
+| AccentText | set by the guard (see above): the best of Background, Text, white and black on `accent` |
 | Danger | `red` |
 | Warning | `bright_yellow` if dark, else `yellow` (some themes' `yellow` is green) |
 | Success | `green` |
 | Selection | `selection` |
-| Focus | Accent at 80% alpha |
+| Focus | Accent at 80% alpha, then the guard |
 | Scrollbar | Text at 35% alpha |
 
 A missing key falls back to the System theme's value. Example: the theme on the reference machine has

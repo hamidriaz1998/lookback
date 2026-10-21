@@ -1,0 +1,48 @@
+{
+  "tag": "b11755",
+  "model_revision": "58faf90940886df2d62be555c8765d00dac362c5",
+  "runtimes": {
+    "linux": {
+      "cpu": [
+        {"name": "llama-b11755-bin-ubuntu-x64.tar.gz", "bytes": 22240468, "sha256": "753bfa7327a75b477d4d14cde71e0e46a40acc3a1408c5504530b78c33a6e226"}
+      ],
+      "vulkan": [
+        {"name": "llama-b11755-bin-ubuntu-vulkan-x64.tar.gz", "bytes": 34878251, "sha256": "536b3b470dc01a76ab7024a18f6a994679f81785d7bc1fa8214c54bf8c6774c6"}
+      ],
+      "cuda12": [
+        {"name": "llama-b11755-bin-ubuntu-cuda-12.8-x64.tar.gz", "bytes": 177663633, "sha256": "d3fb206efd991dbc6487917b35684d860456393ef4d04123ca817f6a668367ad"},
+        {"name": "cudart-llama-b11755-bin-ubuntu-cuda-12.8-x64.tar.gz", "bytes": 594379199, "sha256": "50412a76dd565de3f0119c0cd6557d4b6797386ff8f8a75ff28f696f21a0bcec"}
+      ],
+      "cuda13": [
+        {"name": "llama-b11755-bin-ubuntu-cuda-13.4-x64.tar.gz", "bytes": 158485897, "sha256": "31bdbdf01392a6521b478cefa5f2723de1adfe5d8e4f6a1c6e17cb2f99d0137d"},
+        {"name": "cudart-llama-b11755-bin-ubuntu-cuda-13.4-x64.tar.gz", "bytes": 440245157, "sha256": "2409e89e92c1fb39377fde83158f0ac17f82794da64f1e3902f0795988ea445e"}
+      ]
+    },
+    "windows": {
+      "cpu": [
+        {"name": "llama-b11755-bin-win-cpu-x64.zip", "bytes": 23959268, "sha256": "450b11d263c34e521ef0800bce69e3262d6657546fdedbd6f3005769f21a2568"}
+      ],
+      "vulkan": [
+        {"name": "llama-b11755-bin-win-vulkan-x64.zip", "bytes": 36751534, "sha256": "d7f2e1052fa32932f89a04ad507c4c4bedbf02436681871bec3db41e40b14ab8"}
+      ],
+      "cuda12": [
+        {"name": "llama-b11755-bin-win-cuda-12.4-x64.zip", "bytes": 271944966, "sha256": "6d1c62b5ab7d9e87902f3efa5bdefaf9f21e52b52743806b4aa02d62559e8fb2"},
+        {"name": "cudart-llama-bin-win-cuda-12.4-x64.zip", "bytes": 391443627, "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6"}
+      ],
+      "cuda13": [
+        {"name": "llama-b11755-bin-win-cuda-13.4-x64.zip", "bytes": 159578942, "sha256": "8a45a4601f32ae7729a07ac703c6b9d894bc3cb2013109d0c3a8180d3cbc8cc9"},
+        {"name": "cudart-llama-bin-win-cuda-13.4-x64.zip", "bytes": 423535356, "sha256": "738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668"}
+      ]
+    }
+  },
+  "models": {
+    "q8_0": {
+      "text": {"name": "embeddinggemma-2-Q8_0.gguf", "bytes": 309855456, "sha256": "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135"},
+      "enc": {"name": "mmproj-embeddinggemma-2-Q8_0.gguf", "bytes": 554821024, "sha256": "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f"}
+    },
+    "bf16": {
+      "text": {"name": "embeddinggemma-2-BF16.gguf", "bytes": 557950176, "sha256": "68bae29d62fb8c7d23e98d21fd4662753ddd636e6b62b8a70dfe059a9844f216"},
+      "enc": {"name": "mmproj-embeddinggemma-2-BF16.gguf", "bytes": 982074784, "sha256": "d2033b3cd0223cfb2e7a2b50dc80a664c78c816d375f5b017ec3ef80ee0bc766"}
+    }
+  }
+}
