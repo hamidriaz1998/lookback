@@ -360,18 +360,50 @@ func (a *App) grid(c *ui.Context, items []contract.Hit) {
 	}
 }
 
-// thumbnail draws one picture on Surface. It shows the decoded picture when there is one, and the file's icon
-// until then, or when the file is gone.
+// thumbnail draws one result on Surface. A picture shows its decoded picture (a document shows the page it
+// matched). Until the picture is decoded, and for a file with no picture, a document shows its matched text, and
+// the other files show their icon.
 func (a *App) thumbnail(c *ui.Context, h contract.Hit, edge, decodeEdge float32) {
 	t := c.Theme()
 	ui.Box(c).Size(edge, edge).Radius(8).Background(t.Surface).Center().Children(func() {
-		bm, _, ok := a.thumbs.get(thumbKey{path: h.Path, edge: int(decodeEdge)})
-		if ok && bm != nil {
-			ui.Image(c, bm).Fit(ui.Contain).Fill().Radius(8)
+		if page, ok := pictureOf(h); ok {
+			bm, _, got := a.thumbs.get(a.pictureKey(h, page, int(decodeEdge)))
+			if got && bm != nil {
+				ui.Image(c, bm).Fit(ui.Contain).Fill().Radius(8)
+				return
+			}
+		}
+		if h.Kind != contract.KindImage && h.Snippet != "" {
+			ui.Column(c).Fill().Gap(t.Space(1)).Padding(t.Space(2)).Children(func() {
+				ui.Icon(c, fileIcon(h.Kind)).Size(t.Rem(1.2), t.Rem(1.2)).TextColor(t.TextMuted)
+				ui.Text(c, h.Snippet).TextColor(t.TextMuted).FontSize(t.Rem(0.8)).Lines(1, 6)
+			})
 			return
 		}
 		ui.Icon(c, fileIcon(h.Kind)).Size(t.Rem(2), t.Rem(2)).TextColor(t.TextMuted)
 	})
+}
+
+// pictureOf reports the page a result shows as a picture: a picture file shows itself (page 0), and a document
+// shows the page it matched. Other files have no picture.
+func pictureOf(h contract.Hit) (page int, ok bool) {
+	switch h.Kind {
+	case contract.KindImage:
+		return 0, true
+	case contract.KindPDF:
+		return h.Unit, h.Unit > 0
+	}
+	return 0, false
+}
+
+// pictureKey is the cache identity of the picture of h at edge: its file and page, and the file's size and
+// modification time as the store has them now.
+func (a *App) pictureKey(h contract.Hit, page, edge int) thumbKey {
+	k := thumbKey{path: h.Path, page: page, edge: edge}
+	if f, ok := a.data.files[h.FileID]; ok {
+		k.size, k.mtime = f.Size, f.MTime
+	}
+	return k
 }
 
 // tileLabel is the accessible name of a tile: file name, type and page (UI guide section 9).

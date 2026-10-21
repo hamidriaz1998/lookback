@@ -22,9 +22,23 @@ import (
 // Media decodes the pictures the UI shows: thumbnails and the preview of an image. It is the only place the
 // UI reads file content, and it runs on worker goroutines, never on the main thread (UI guide section 10).
 type Media interface {
-	// Image returns the picture at path, downscaled so its longest edge is at most edge pixels. It returns an
-	// error wrapping os.ErrNotExist when the file is gone, and ErrNoPicture for a file that holds no picture.
-	Image(ctx context.Context, path string, edge int) (image.Image, error)
+	// Image returns the picture that req names, downscaled so its longest edge is at most req.Edge pixels. It
+	// returns an error wrapping os.ErrNotExist when the file is gone, and ErrNoPicture for a file that holds no
+	// picture.
+	Image(ctx context.Context, req Request) (image.Image, error)
+}
+
+// Request names one picture: a picture file, or one page of a document.
+type Request struct {
+	Path string
+	Page int // 1-based page of a document; 0 for a picture file
+	Edge int // the longest edge in pixels
+}
+
+// PageRenderer draws one page of a document as a picture, with its longest edge at most edge pixels. WP9 supplies
+// the PDF renderer (SPEC section 12). Without one, document pages have no picture and show their text.
+type PageRenderer interface {
+	RenderPage(ctx context.Context, path string, page, edge int) (image.Image, error)
 }
 
 // ErrNoPicture is returned by Media for a file the UI shows with its icon, such as a text file.
@@ -42,31 +56,47 @@ const maxDecodePixels = 40 << 20
 // previews, which the preview budget holds.
 const tileEdgeMax = 480
 
-// FileMedia decodes picture files from disk. It handles PNG, JPEG and GIF; other kinds need a renderer that the
-// extraction package provides, so they return ErrNoPicture here.
+// FileMedia decodes picture files from disk. It handles PNG, JPEG and GIF. A document page goes to Pages; without
+// one, document pages return ErrNoPicture.
 //
-// CacheDir, when set, keeps the grid tiles as JPEG files named by a hash of the path, size, modification
+// CacheDir, when set, keeps the grid tiles as JPEG files named by a hash of the path, page, size, modification
 // time and edge (UI guide section 10: thumbs/<hash>.jpg). A changed file gets a new name, so the cache never
 // serves a stale tile.
 type FileMedia struct {
 	CacheDir string
+	Pages    PageRenderer
 }
 
 // Image implements Media.
-func (m FileMedia) Image(ctx context.Context, path string, edge int) (image.Image, error) {
+func (m FileMedia) Image(ctx context.Context, req Request) (image.Image, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(path)
+	info, err := os.Stat(req.Path)
 	if err != nil {
 		return nil, err
 	}
-	cache := m.tilePath(path, info, edge)
+	cache := m.tilePath(req, info)
 	if cache != "" {
 		if img, ok := readTile(cache); ok {
 			return img, nil
 		}
 	}
+	if req.Page > 0 {
+		if m.Pages == nil {
+			return nil, fmt.Errorf("%s: %w", req.Path, ErrNoPicture)
+		}
+		img, err := m.Pages.RenderPage(ctx, req.Path, req.Page, req.Edge)
+		if err != nil {
+			return nil, err
+		}
+		out := scaleTo(img, req.Edge)
+		if cache != "" {
+			writeTile(cache, out)
+		}
+		return out, nil
+	}
+	path, edge := req.Path, req.Edge
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -93,12 +123,13 @@ func (m FileMedia) Image(ctx context.Context, path string, edge int) (image.Imag
 	return out, nil
 }
 
-// tilePath returns the cache file of a tile of path at edge, or "" when tiles are not cached.
-func (m FileMedia) tilePath(path string, info os.FileInfo, edge int) string {
+// tilePath returns the cache file of a tile of req at its edge, or "" when tiles are not cached.
+func (m FileMedia) tilePath(req Request, info os.FileInfo) string {
+	edge := req.Edge
 	if m.CacheDir == "" || edge <= 0 || edge > tileEdgeMax {
 		return ""
 	}
-	sum := sha1.Sum([]byte(path + "\x00" + strconv.FormatInt(info.Size(), 10) + "\x00" +
+	sum := sha1.Sum([]byte(req.Path + "\x00" + strconv.Itoa(req.Page) + "\x00" + strconv.FormatInt(info.Size(), 10) + "\x00" +
 		strconv.FormatInt(info.ModTime().UnixNano(), 10) + "\x00" + strconv.Itoa(edge)))
 	return filepath.Join(m.CacheDir, hex.EncodeToString(sum[:])+".jpg")
 }

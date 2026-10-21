@@ -17,7 +17,7 @@ import (
 // solidMedia returns a small picture for every path, so tests need no files on disk.
 type solidMedia struct{}
 
-func (solidMedia) Image(ctx context.Context, path string, edge int) (image.Image, error) {
+func (solidMedia) Image(ctx context.Context, req Request) (image.Image, error) {
 	img := image.NewRGBA(image.Rect(0, 0, 8, 6))
 	for i := range img.Pix {
 		img.Pix[i] = 0x80

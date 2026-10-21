@@ -72,7 +72,8 @@ func fakeDeps(ctx context.Context, firstRun bool, theme string) (lookui.Deps, er
 // moved-or-deleted state is reachable.
 type fakeMedia struct{ pictures []string }
 
-func (m fakeMedia) Image(ctx context.Context, path string, edge int) (image.Image, error) {
+func (m fakeMedia) Image(ctx context.Context, req lookui.Request) (image.Image, error) {
+	path, edge := req.Path, req.Edge
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(path))
 	sum := h.Sum32()
@@ -84,7 +85,7 @@ func (m fakeMedia) Image(ctx context.Context, path string, edge int) (image.Imag
 			return nil, fmt.Errorf("%s: %w", path, os.ErrNotExist)
 		}
 	}
-	return lookui.FileMedia{}.Image(ctx, m.pictures[int(sum)%len(m.pictures)], edge)
+	return lookui.FileMedia{}.Image(ctx, lookui.Request{Path: m.pictures[int(sum)%len(m.pictures)], Edge: edge})
 }
 
 // fakeThemes returns two fixed sources. They stand in for the theme package (WP5) until it merges.

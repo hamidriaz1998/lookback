@@ -193,6 +193,7 @@ func (a *App) reload() {
 			if s.indexSig != a.data.indexSig {
 				a.indexRev++
 			}
+			a.thumbs.forgetErrors()
 			a.data = s
 			a.reloading = false
 			if a.reloadWant {

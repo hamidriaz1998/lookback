@@ -39,7 +39,7 @@ func TestFileMediaRefusesHugeHeader(t *testing.T) {
 	path := hugePNG(t, 10000, 10000)
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	_, err := FileMedia{}.Image(context.Background(), path, 480)
+	_, err := FileMedia{}.Image(context.Background(), Request{Path: path, Edge: 480})
 	runtime.ReadMemStats(&after)
 	if err == nil {
 		t.Fatal("Image returned no error for a 10000x10000 header")
@@ -67,7 +67,7 @@ func TestFileMediaCachesTiles(t *testing.T) {
 	}
 	f.Close()
 	m := FileMedia{CacheDir: dir}
-	first, err := m.Image(context.Background(), src, 480)
+	first, err := m.Image(context.Background(), Request{Path: src, Edge: 480})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestFileMediaCachesTiles(t *testing.T) {
 	if len(entries) != 1 || filepath.Ext(entries[0].Name()) != ".jpg" {
 		t.Fatalf("cache folder holds %v, want one .jpg", entries)
 	}
-	if _, err := m.Image(context.Background(), src, 480); err != nil {
+	if _, err := m.Image(context.Background(), Request{Path: src, Edge: 480}); err != nil {
 		t.Fatalf("second request: %v", err)
 	}
 	if entries2, _ := os.ReadDir(dir); len(entries2) != 1 {

@@ -37,16 +37,18 @@ func (a *App) previewPanel(c *ui.Context, items []contract.Hit) {
 func (a *App) previewBody(c *ui.Context, h contract.Hit) {
 	t := c.Theme()
 	s := &a.search
-	if h.Kind != contract.KindImage && h.Modality != "image" {
-		ui.Column(c).Fill().Radius(8).Background(t.Surface).Padding(t.Space(3)).Gap(t.Space(2)).Children(func() {
-			ui.RichText(c, highlight(h.Snippet, s.query, t)...).Lines(1, 0)
-		})
+	page, isPicture := pictureOf(h)
+	if !isPicture {
+		a.snippetCard(c, h)
 		return
 	}
-	bm, err, ok := a.thumbs.get(thumbKey{path: h.Path, edge: a.data.intSetting("max_image_edge", 1600)})
+	bm, err, ok := a.thumbs.get(a.pictureKey(h, page, a.data.intSetting("max_image_edge", 1600)))
 	switch {
 	case !ok:
 		ui.Column(c).Fill().Center().Children(func() { ui.Spinner(c) })
+	case errors.Is(err, ErrNoPicture):
+		// A document without a renderer, or a page it cannot draw: its matched text shows instead.
+		a.snippetCard(c, h)
 	case errors.Is(err, os.ErrNotExist):
 		ui.Column(c).Fill().Center().Gap(t.Space(2)).Children(func() {
 			ui.Icon(c, icon("triangle-alert")).TextColor(t.TextMuted)
@@ -69,6 +71,14 @@ func (a *App) previewBody(c *ui.Context, h contract.Hit) {
 			ui.Image(c, bm).Fit(ui.Contain).Fill().Radius(8).Label(filepath.Base(h.Path))
 		})
 	}
+}
+
+// snippetCard shows the matched text of a result, with the query's words highlighted.
+func (a *App) snippetCard(c *ui.Context, h contract.Hit) {
+	t := c.Theme()
+	ui.Column(c).Fill().Radius(8).Background(t.Surface).Padding(t.Space(3)).Gap(t.Space(2)).Children(func() {
+		ui.RichText(c, highlight(h.Snippet, a.search.query, t)...).Lines(1, 0)
+	})
 }
 
 // previewMeta shows the name, the folder (a link to the file manager), the size and the modification time.
