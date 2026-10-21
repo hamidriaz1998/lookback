@@ -232,3 +232,32 @@ func TestPPTXSlideManifestWithNumericIDs(t *testing.T) {
 		t.Fatalf("slides: got %+v, want Roadmap then Cover", units)
 	}
 }
+
+// TestRTFBinaryPayloadIsNotParsed covers R2 finding 5: the bytes after \binN are raw data, so braces and
+// backslashes inside them must not change group state, in skipped groups or in text groups.
+func TestRTFBinaryPayloadIsNotParsed(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name, src, want string
+	}{
+		{name: "brace in skipped picture group", src: `{\rtf1 before{\pict\bin2 }X}after}`, want: "beforeafter"},
+		// The 3-byte payload is \, \, {: the \ must not start an escape and the { must not open a group.
+		{name: "backslash in skipped picture group", src: `{\rtf1 a{\pict\bin3 \\{}b}c}`, want: "abc"},
+		// The 3-byte payload is }, {, \: the } must not close the root group.
+		{name: "binary bytes in text group are dropped", src: `{\rtf1 one\bin3 }{\}two}`, want: "onetwo"},
+		{name: "zero-length payload", src: `{\rtf1 a\bin0 b}`, want: "ab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := rtfText(ctx, []byte(tt.src))
+			if err != nil || got != tt.want {
+				t.Fatalf("rtfText(%q) = %q, %v; want %q", tt.src, got, err, tt.want)
+			}
+		})
+	}
+	for _, bad := range []string{`{\rtf1 a\bin5 xy}`, `{\rtf1 a\bin-1 b}`, `{\rtf1 a\bin b}`} {
+		if got, err := rtfText(ctx, []byte(bad)); err == nil {
+			t.Fatalf("rtfText(%q) = %q with no error; want a truncated or invalid \\bin error", bad, got)
+		}
+	}
+}

@@ -142,6 +142,16 @@ func rtfText(ctx context.Context, src []byte) (string, error) {
 						flushHigh()
 						out.WriteByte('\t')
 					}
+				case "bin":
+					// The next N bytes are raw data, not RTF: consume them whole, in any group.
+					n, err := strconv.Atoi(param)
+					if !hasParam || err != nil || n < 0 {
+						return "", fmt.Errorf("invalid RTF binary length %q", param)
+					}
+					if n > len(src)-k {
+						return "", fmt.Errorf("RTF binary data of %d bytes is truncated", n)
+					}
+					i = k + n - 1
 				case "uc":
 					if hasParam {
 						uc, _ = strconv.Atoi(param)
