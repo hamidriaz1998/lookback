@@ -29,7 +29,12 @@ const (
 	thumbEdge  = 320  // longest edge of a decoded thumbnail, in pixels
 	tileWidth  = 180  // minimum tile width in DIPs
 	tileHeight = 150  // tile height in DIPs
-	autoSpeed  = 1200 // LOOKBACK_AUTOSCROLL scroll speed, in DIPs a second
+	winWidth   = 1100 // window width in DIPs, as main opens it
+	pad        = 12   // the view's padding on each side, in DIPs
+	// autoCols is the grid's column count at winWidth: the grid's gap, 8 DIPs, leaves the same
+	// count. The grid does not expose its columns, so autoscroll steps by this count.
+	autoCols = (winWidth - 2*pad) / tileWidth
+	autoRows = (thumbCount + autoCols - 1) / autoCols
 )
 
 // decoded is one thumbnail, ready to become a bitmap on the main thread.
@@ -48,17 +53,16 @@ type app struct {
 	first  time.Duration // time from start to the first bitmap in the grid
 	done   time.Duration // time from start to the last bitmap in the grid
 
-	auto   time.Duration  // LOOKBACK_AUTOSCROLL: how long to scroll the grid, 0 for none
-	scroll ui.ScrollState // the grid's offset, which autoscroll sets
-	dir    float32        // autoscroll direction: 1 down, -1 up
-	last   time.Time      // when autoscroll last stepped
+	auto time.Duration // LOOKBACK_AUTOSCROLL: how long to scroll the grid, 0 for none
+	row  int           // the grid row autoscroll shows first
+	dir  int           // autoscroll direction: 1 down, -1 up
 }
 
 // view builds the window from the state, once per frame.
 func (a *app) view(c *ui.Context) {
 	ui.Column(c).Fill().Padding(12).Gap(8).Children(func() {
 		ui.Text(c, fmt.Sprintf("%d of %d thumbnails decoded", a.loaded, thumbCount)).SingleLine()
-		grid := ui.GridView(c, &a.grid, thumbCount, tileWidth, tileHeight, func(i int) {
+		ui.GridView(c, &a.grid, thumbCount, tileWidth, tileHeight, func(i int) {
 			ui.Column(c).Gap(4).Children(func() {
 				if bm := a.thumbs[i]; bm != nil {
 					ui.Image(c, bm).Fit(ui.Contain).Grow(1).Radius(8)
@@ -68,24 +72,21 @@ func (a *app) view(c *ui.Context) {
 				ui.Text(c, a.names[i]).SingleLine()
 			})
 		}).Grow(1)
-		if a.auto > 0 {
-			grid.TrackScroll(&a.scroll)
-			if a.loaded == thumbCount {
-				a.autoscroll(c)
-			}
+		if a.auto > 0 && a.loaded == thumbCount {
+			a.autoscroll(c)
 		}
 	})
 }
 
-// autoscroll moves the grid's offset by autoSpeed DIPs a second, reversing at either end, and asks
-// for the next frame, so the window redraws at display rate until the timer in load ends the run.
+// autoscroll steps the grid one row a frame, reversing at the first and last row, and asks for the
+// next frame, so the window redraws at display rate until the timer in load ends the run. One row
+// a frame is a harsher case than wheel scrolling.
 func (a *app) autoscroll(c *ui.Context) {
-	now := time.Now()
-	if a.scroll.MaxY > 0 && (a.dir > 0 && a.scroll.Y >= a.scroll.MaxY || a.dir < 0 && a.scroll.Y <= 0) {
+	if next := a.row + a.dir; next < 0 || next >= autoRows {
 		a.dir = -a.dir
 	}
-	a.scroll.Y += a.dir * autoSpeed * float32(now.Sub(a.last).Seconds())
-	a.last = now
+	a.row += a.dir
+	a.grid.ScrollTo(a.row*autoCols, ui.Start)
 	c.AnimationFrame()
 }
 
@@ -199,7 +200,6 @@ func (a *app) load(win *mygo.Window, paths []string) {
 				log.Printf("decoded %d thumbnails with %d workers: first bitmap %s, all %s",
 					thumbCount, runtime.NumCPU(), a.first.Round(time.Millisecond), a.done.Round(time.Millisecond))
 				if a.auto > 0 {
-					a.last = time.Now()
 					time.AfterFunc(a.auto, func() {
 						fmt.Println("autoscroll done")
 						os.Exit(0)
