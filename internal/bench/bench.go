@@ -380,8 +380,8 @@ func (l *Lab) pickQuality(r *run, picks [][]float32) (*float64, string, error) {
 	}
 	ref := picks
 	if !isBF16(r.combo) {
-		bf := contract.Combo{Backend: r.combo.Backend, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}
-		if l.installed == nil || !l.installed(bf) {
+		bf, ok := l.installedBF16(r.combo.Backend)
+		if !ok {
 			return nil, "needs an installed BF16 combination", nil
 		}
 		files, err := l.files(bf)
@@ -403,6 +403,30 @@ func (l *Lab) pickQuality(r *run, picks [][]float32) (*float64, string, error) {
 		return nil, "", err
 	}
 	return &q, "", nil
+}
+
+// backends are the compute backends the lab can test on.
+var backends = []contract.Backend{contract.BackendCPU, contract.BackendVulkan, contract.BackendCUDA12, contract.BackendCUDA13}
+
+// installedBF16 returns an installed BF16 combination: on the run's backend when there is one, else on any other
+// backend (SPEC section 6 needs a BF16 combination, not one on the same backend).
+func (l *Lab) installedBF16(first contract.Backend) (contract.Combo, bool) {
+	if l.installed == nil {
+		return contract.Combo{}, false
+	}
+	order := []contract.Backend{first}
+	for _, b := range backends {
+		if b != first {
+			order = append(order, b)
+		}
+	}
+	for _, b := range order {
+		c := contract.Combo{Backend: b, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}
+		if l.installed(c) {
+			return c, true
+		}
+	}
+	return contract.Combo{}, false
 }
 
 // isBF16 reports whether c runs both parts at BF16.
