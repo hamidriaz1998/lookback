@@ -28,6 +28,9 @@ var ErrPrefixTooLong = errors.New("chunk: prompt prefix leaves no room in the 51
 // ErrCharTooLong is returned when one character, with the prefix, is over the token cap.
 var ErrCharTooLong = errors.New("chunk: one character with the prompt prefix is over the 512-token cap")
 
+// ErrOverlapImpossible is returned when a non-final window cannot advance while retaining the required overlap.
+var ErrOverlapImpossible = errors.New("chunk: prompt budget cannot fit a window with the required overlap")
+
 // Split cuts text into windows for embedding. Each window's prompt is prefix followed by the window's
 // text, and every prompt is at most MaxTokens tokens. Consecutive windows share at least Overlap tokens.
 // Windows start and end on UTF-8 character starts, so each one is valid UTF-8 and the windows cover every
@@ -77,16 +80,18 @@ func Split(ctx context.Context, text, prefix string, tok Tokenizer) ([]Window, e
 		}
 
 		// The next window starts at the character start at or before the token that lies Overlap
-		// tokens before this window's last token. If that would not move forward, step one character.
+		// tokens before this window's end. Shrinking can make that overlap impossible.
 		inWin := i
 		for inWin < len(toks) && toks[inWin].Start < end {
 			inWin++
 		}
-		next := start + charLen(text, start)
-		if k := inWin - Overlap; k >= 0 && k < len(toks) {
-			if s := charStart(text, toks[k].Start); s > start {
-				next = s
-			}
+		k := inWin - Overlap
+		if k < 0 || k >= len(toks) {
+			return nil, ErrOverlapImpossible
+		}
+		next := charStart(text, toks[k].Start)
+		if next <= start {
+			return nil, ErrOverlapImpossible
 		}
 		start = next
 	}

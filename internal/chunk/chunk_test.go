@@ -161,3 +161,29 @@ func TestSplitTerminatesOnOneCharacterTokens(t *testing.T) {
 	}
 	checkWindows(t, text, "", tok, wins)
 }
+
+func TestSplitRejectsImpossibleOverlap(t *testing.T) {
+	tok := fake.NewEmbedder().Tokenize
+	text := strings.Repeat("x ", 600)
+	if wins, err := Split(context.Background(), text, strings.Repeat("p ", 449), tok); err != ErrOverlapImpossible {
+		t.Fatalf("63-token text budget: got %d windows, %v; want ErrOverlapImpossible", len(wins), err)
+	}
+	if wins, err := Split(context.Background(), strings.Repeat("x ", 50), strings.Repeat("p ", 449), tok); err != nil || len(wins) != 1 {
+		t.Fatalf("single final window that fits: got %v, %v", wins, err)
+	}
+}
+
+func TestSplitRejectsOverlapLostToPromptShrink(t *testing.T) {
+	prefix := strings.Repeat("p ", 447) // leaves 65 source tokens before prompt re-tokenization
+	base := fake.NewEmbedder().Tokenize
+	tok := func(ctx context.Context, s string) ([]contract.Token, error) {
+		toks, err := base(ctx, s)
+		if err == nil && strings.HasPrefix(s, prefix) && strings.Contains(s[len(prefix):], "x") {
+			toks = append(toks, contract.Token{Start: len(s), End: len(s)}) // prompt adds one token, forcing a shrink to 64
+		}
+		return toks, err
+	}
+	if wins, err := Split(context.Background(), strings.Repeat("x ", 600), prefix, tok); err != ErrOverlapImpossible {
+		t.Fatalf("prompt-driven shrink: got %d windows, %v; want ErrOverlapImpossible", len(wins), err)
+	}
+}
