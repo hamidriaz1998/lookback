@@ -7,12 +7,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hamidriaz1998/lookback/assets"
@@ -37,6 +39,13 @@ type embedder interface {
 	Tokenize(ctx context.Context, text string) ([]contract.Token, error)
 }
 
+// server is a sidecar that a run starts and stops.
+type server interface {
+	embedder
+	Stop(ctx context.Context)
+	PeakRAM() int64
+}
+
 // Prompt returns the document prompt of a chunk: "title: <file name> | text: <chunk>" (SPEC section 9).
 func Prompt(name, text string) string {
 	return "title: " + name + " | text: " + text
@@ -45,13 +54,15 @@ func Prompt(name, text string) string {
 // Lab is a contract.Lab. Runs form one FIFO queue. Each run starts its own temporary llama-server, separate from
 // the runtime's sidecars, and stops it before the run's terminal step (SPEC section 6, step 1).
 type Lab struct {
-	life    context.Context
-	ix      contract.Indexer
-	det     contract.Detector // for VRAM before and while loaded; nil leaves VRAM at 0
-	files   func(contract.Combo) (runtime.Files, error)
-	logPath string
-	threads int
-	streams *runtime.Stream[contract.LabStep]
+	life      context.Context
+	ix        contract.Indexer
+	det       contract.Detector // for VRAM before and while loaded; nil leaves VRAM at 0
+	files     func(contract.Combo) (runtime.Files, error)
+	installed func(contract.Combo) bool // whether a combination is installed; nil means none is
+	start     func(context.Context, runtime.Options) (server, error)
+	logPath   string
+	threads   int
+	streams   *runtime.Stream[contract.LabStep]
 
 	mu     sync.Mutex
 	nextID contract.RunID
@@ -59,12 +70,6 @@ type Lab struct {
 	active *run   // the run that holds the lab, or nil
 	closed bool   // the lifetime ended, so no run starts
 	runs   sync.WaitGroup
-
-	// picks holds the vectors of the latest BF16 run of picked files, keyed by the files' paths, sizes and times.
-	// A later run of the same files compares against it; with none, its quality is n/a (SPEC section 6).
-	// ponytail: one remembered set; per-set references if the lab must compare several picks at once.
-	picksKey  string
-	picksVecs [][]float32
 }
 
 // run is one queued or running test.
@@ -79,14 +84,18 @@ type run struct {
 }
 
 // New returns a Lab. files resolves the files of a combination, and returns contract.ErrUnknownCombo for one it
-// cannot test. When life ends, no run starts, every run emits its terminal step, and the streams close.
+// cannot test. installed reports whether a combination is installed; picked files need an installed BF16
+// combination for their quality. When life ends, no run starts, every run emits its terminal step, and the streams
+// close.
 func New(life context.Context, ix contract.Indexer, det contract.Detector,
-	files func(contract.Combo) (runtime.Files, error), logPath string, threads int) *Lab {
+	files func(contract.Combo) (runtime.Files, error), installed func(contract.Combo) bool,
+	logPath string, threads int) *Lab {
 	if threads == 0 {
 		threads = 4
 	}
 	l := &Lab{
-		life: life, ix: ix, det: det, files: files, logPath: logPath, threads: threads,
+		life: life, ix: ix, det: det, files: files, installed: installed, start: startRuntime,
+		logPath: logPath, threads: threads,
 		streams: runtime.NewStream(
 			func(s contract.LabStep) string { return fmt.Sprint(s.RunID) },
 			func(s contract.LabStep) bool {
@@ -101,7 +110,17 @@ func New(life context.Context, ix contract.Indexer, det contract.Detector,
 	return l
 }
 
-// Run queues a test of combination c with up to 10 user-picked files. It returns the run's ID at once.
+// startRuntime starts a llama-server with runtime.Start.
+func startRuntime(ctx context.Context, o runtime.Options) (server, error) {
+	s, err := runtime.Start(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// Run queues a test of combination c with up to 10 user-picked files. It returns the run's ID at once. A picked file
+// must be a regular file of at most 50 MB that the index reads.
 func (l *Lab) Run(ctx context.Context, c contract.Combo, extra []string) (contract.RunID, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -214,54 +233,66 @@ func (l *Lab) execute(r *run) contract.LabStep {
 	}
 	gpu := r.combo.Backend != contract.BackendCPU
 	vramBefore := l.vramFree(r.ctx, r.combo.Backend)
-	srv, err := runtime.Start(r.ctx, runtime.Options{Files: files, GPU: gpu, Threads: l.threads, LogPath: l.logPath})
+	srv, err := l.start(r.ctx, runtime.Options{Files: files, GPU: gpu, Threads: l.threads, LogPath: l.logPath})
 	if err != nil {
 		return fail(err)
 	}
-	defer srv.Stop(context.Background())
 	vramLoaded := l.vramFree(r.ctx, r.combo.Backend)
 	vram := int64(0)
 	if gpu && vramBefore > 0 && vramLoaded > 0 {
 		vram = vramBefore - vramLoaded
 	}
 
-	res, err := l.measure(r, srv)
+	res, picks, err := l.measure(r, srv)
+	res.PeakRAM = srv.PeakRAM()
+	res.VRAM = vram
+	srv.Stop(context.Background())
 	if err != nil {
 		return fail(err)
 	}
-	res.PeakRAM = srv.PeakRAM()
-	res.VRAM = vram
+	if len(r.extra) > 0 {
+		res.Quality, res.QualityReason, err = l.pickQuality(r, picks)
+		if err != nil {
+			return fail(err)
+		}
+	}
 	result := contract.LabResult{RunID: r.id, Combo: r.combo, Bench: res}
 	return contract.LabStep{State: contract.LabDone, Step: "Done", Result: &result}
 }
 
-// measure embeds the sample and the user's files, and returns the numbers of the test table. The picked files go
-// through the same extraction and chunking as the index (SPEC section 9), and their vectors and timings join the
-// sample's.
-func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, error) {
+// timings adds up the requests of one run.
+type timings struct {
+	msPerImage []float64
+	tokens     int
+	wall       time.Duration // wall time of the text requests
+}
+
+// measure embeds the bundled sample and the user's files, and returns the numbers of the test table. With no picked
+// files, Quality is the sample's. The picked files' vectors are returned for pickQuality.
+func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, [][]float32, error) {
 	var res contract.BenchResult
 	images, err := assets.Images()
 	if err != nil {
-		return res, err
+		return res, nil, err
 	}
 	chunks, err := assets.Chunks()
 	if err != nil {
-		return res, err
+		return res, nil, err
 	}
 	ref, err := assets.LoadReference()
 	if err != nil {
-		return res, err
+		return res, nil, err
 	}
+	var tm timings
 	var vecs [][]float32
-	var msPerImage []float64
 	for i, img := range images {
 		l.emit(r, contract.LabStep{State: contract.LabEmbedding, Step: fmt.Sprintf("Embedding image %d of %d", i+1, len(images))})
 		t0 := time.Now()
 		v, _, err := srv.EmbedImage(r.ctx, img.Data, img.MIME)
 		if err != nil {
-			return res, fmt.Errorf("image %s: %w", img.Name, err)
+			return res, nil, fmt.Errorf("image %s: %w", img.Name, err)
 		}
-		msPerImage = append(msPerImage, float64(time.Since(t0))/float64(time.Millisecond))
+		tm.msPerImage = append(tm.msPerImage, float64(time.Since(t0))/float64(time.Millisecond))
 		vecs = append(vecs, v)
 	}
 	l.emit(r, contract.LabStep{State: contract.LabEmbedding, Step: fmt.Sprintf("Embedding %d text chunks", len(chunks))})
@@ -269,47 +300,61 @@ func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, error) {
 	for _, c := range chunks {
 		prompts = append(prompts, Prompt(c.Name, c.Text))
 	}
-	out, tokens, textWall, err := embedTexts(r.ctx, srv, prompts)
+	out, n, wall, err := embedTexts(r.ctx, srv, prompts)
 	if err != nil {
-		return res, fmt.Errorf("text chunks: %w", err)
+		return res, nil, fmt.Errorf("text chunks: %w", err)
 	}
 	vecs = append(vecs, out...)
+	tm.tokens += n
+	tm.wall += wall
 
-	var userVecs [][]float32
-	var key strings.Builder
+	picks, err := l.embedPicks(r, srv, &tm)
+	if err != nil {
+		return res, nil, err
+	}
+
+	res.ImageMS = median(tm.msPerImage)
+	if tm.wall > 0 {
+		res.TextTokensPerSec = float64(tm.tokens) / tm.wall.Seconds()
+	}
+	if len(r.extra) == 0 {
+		q, err := quality(vecs, ref)
+		if err != nil {
+			return res, nil, err
+		}
+		res.Quality = &q
+	}
+	return res, picks, nil
+}
+
+// embedPicks extracts, chunks and embeds the picked files, in the order given, through the index's own extractors.
+// Its requests add to tm.
+func (l *Lab) embedPicks(r *run, srv embedder, tm *timings) ([][]float32, error) {
 	reg := extract.NewRegistry()
 	defer reg.Close()
+	var vecs [][]float32
 	for i, p := range r.extra {
 		l.emit(r, contract.LabStep{State: contract.LabEmbedding, Step: fmt.Sprintf("Embedding your file %d of %d", i+1, len(r.extra))})
 		name := filepath.Base(p)
-		fi, err := checkPick(p)
+		units, err := extractPick(r.ctx, reg, p)
 		if err != nil {
-			return res, err
-		}
-		fmt.Fprintf(&key, "%s|%d|%d\n", p, fi.Size(), fi.ModTime().UnixNano())
-		units, err := extractPick(r.ctx, reg, p, fi)
-		if err != nil {
-			return res, fmt.Errorf("%s: %w", name, err)
+			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		var texts []string
 		for _, u := range units {
 			if u.Image != nil {
-				mime := "image/jpeg"
-				if bytes.HasPrefix(u.Image, []byte("\x89PNG\r\n\x1a\n")) {
-					mime = "image/png"
-				}
 				t0 := time.Now()
-				v, _, err := srv.EmbedImage(r.ctx, u.Image, mime)
+				v, _, err := srv.EmbedImage(r.ctx, u.Image, imageMIME(u.Image))
 				if err != nil {
-					return res, fmt.Errorf("%s: %w", name, err)
+					return nil, fmt.Errorf("%s: %w", name, err)
 				}
-				msPerImage = append(msPerImage, float64(time.Since(t0))/float64(time.Millisecond))
-				userVecs = append(userVecs, v)
+				tm.msPerImage = append(tm.msPerImage, float64(time.Since(t0))/float64(time.Millisecond))
+				vecs = append(vecs, v)
 				continue
 			}
 			wins, err := chunk.Split(r.ctx, u.Text, Prompt(name, ""), srv.Tokenize)
 			if err != nil {
-				return res, fmt.Errorf("%s: %w", name, err)
+				return nil, fmt.Errorf("%s: %w", name, err)
 			}
 			for _, w := range wins {
 				texts = append(texts, Prompt(name, u.Text[w.Start:w.End]))
@@ -317,60 +362,148 @@ func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, error) {
 		}
 		out, n, wall, err := embedTexts(r.ctx, srv, texts)
 		if err != nil {
-			return res, fmt.Errorf("%s: %w", name, err)
+			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		userVecs = append(userVecs, out...)
-		tokens += n
-		textWall += wall
+		vecs = append(vecs, out...)
+		tm.tokens += n
+		tm.wall += wall
 	}
-
-	res.ImageMS = median(msPerImage)
-	if textWall > 0 {
-		res.TextTokensPerSec = float64(tokens) / textWall.Seconds()
-	}
-	if len(r.extra) == 0 {
-		q, err := quality(vecs, ref)
-		if err != nil {
-			return res, err
-		}
-		res.Quality = &q
-		return res, nil
-	}
-	// With picked files, quality is their own: the vectors against a BF16 run of the same files.
-	if r.combo.TextQuant == contract.QuantBF16 && r.combo.EncQuant == contract.QuantBF16 {
-		l.keepPicks(key.String(), userVecs)
-	}
-	base, ok := l.picksReference(key.String())
-	switch {
-	case !ok:
-		res.QualityReason = "needs a BF16 run of these files first"
-	case len(userVecs) == 0:
-		res.QualityReason = "the picked files have no text or images to compare"
-	default:
-		q, err := quality(userVecs, assets.Reference{Vectors: base})
-		if err != nil {
-			return res, err
-		}
-		res.Quality = &q
-	}
-	return res, nil
+	return vecs, nil
 }
 
-// keepPicks remembers the vectors of a BF16 run of the picked files.
-func (l *Lab) keepPicks(key string, vecs [][]float32) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.picksKey, l.picksVecs = key, vecs
+// pickQuality returns the quality of the picked files: their mean cosine against a BF16 run of the same files
+// (SPEC section 6). A BF16 run is its own reference. Any other run needs an installed BF16 combination on its
+// backend; the lab embeds the files with it after the run's own server has stopped, so one server runs at a time.
+func (l *Lab) pickQuality(r *run, picks [][]float32) (*float64, string, error) {
+	if len(picks) == 0 {
+		return nil, "the picked files have no text or images to compare", nil
+	}
+	ref := picks
+	if !isBF16(r.combo) {
+		bf := contract.Combo{Backend: r.combo.Backend, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}
+		if l.installed == nil || !l.installed(bf) {
+			return nil, "needs an installed BF16 combination", nil
+		}
+		files, err := l.files(bf)
+		if err != nil {
+			return nil, "", err
+		}
+		srv, err := l.start(r.ctx, runtime.Options{Files: files, GPU: bf.Backend != contract.BackendCPU, Threads: l.threads, LogPath: l.logPath})
+		if err != nil {
+			return nil, "", err
+		}
+		ref, err = l.embedPicks(r, srv, &timings{})
+		srv.Stop(context.Background())
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	q, err := quality(picks, assets.Reference{Vectors: ref})
+	if err != nil {
+		return nil, "", err
+	}
+	return &q, "", nil
 }
 
-// picksReference returns the remembered BF16 vectors when they belong to the same picked files.
-func (l *Lab) picksReference(key string) ([][]float32, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.picksVecs == nil || l.picksKey != key {
-		return nil, false
+// isBF16 reports whether c runs both parts at BF16.
+func isBF16(c contract.Combo) bool {
+	return c.TextQuant == contract.QuantBF16 && c.EncQuant == contract.QuantBF16
+}
+
+// imageMIME returns the MIME type of an image that extract emitted: PNG or JPEG (SPEC section 9).
+func imageMIME(b []byte) string {
+	if bytes.HasPrefix(b, []byte("\x89PNG\r\n\x1a\n")) {
+		return "image/png"
 	}
-	return l.picksVecs, true
+	return "image/jpeg"
+}
+
+// checkPick returns the info of a user-picked file. It must be a regular file of at most maxPickBytes. Stat does
+// not open the file, so a FIFO, a device or a socket is refused without blocking.
+func checkPick(p string) (os.FileInfo, error) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", filepath.Base(p))
+	}
+	if fi.Size() > maxPickBytes {
+		return nil, fmt.Errorf("%s: %d bytes, over the %d-byte limit", filepath.Base(p), fi.Size(), int64(maxPickBytes))
+	}
+	return fi, nil
+}
+
+// extractPick extracts a picked file through the registry, with the extractors the index uses. The path is never
+// opened for extraction directly: copyPick opens it without blocking and copies a bounded regular file into a
+// temporary directory, which the extractor reads. A FIFO or a device is refused at once, even when it replaced the
+// file after the run was queued.
+func extractPick(ctx context.Context, reg *extract.Registry, p string) ([]contract.Unit, error) {
+	kind, ok := extract.KindOf(p)
+	if !ok {
+		return nil, extract.ErrUnsupported
+	}
+	dir, err := os.MkdirTemp("", "lookback-pick-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	tmp := filepath.Join(dir, "pick"+strings.ToLower(filepath.Ext(p)))
+	n, err := copyPick(ctx, p, tmp)
+	if err != nil {
+		return nil, err
+	}
+	var units []contract.Unit
+	err = reg.Extract(ctx, contract.FileRec{Path: tmp, Kind: kind, Size: n}, func(u contract.Unit) error {
+		units = append(units, u)
+		return nil
+	})
+	return units, err
+}
+
+// copyPick copies the regular file p, at most maxPickBytes, to dst. It opens p without blocking, so a FIFO returns
+// at once and is refused on its type; the copy is bounded even if p grew after checkPick.
+func copyPick(ctx context.Context, p, dst string) (int64, error) {
+	src, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer src.Close()
+	fi, err := src.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !fi.Mode().IsRegular() {
+		return 0, fmt.Errorf("%s: not a regular file", filepath.Base(p))
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(out, io.LimitReader(ctxReader{ctx: ctx, r: src}, maxPickBytes+1))
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return 0, err
+	}
+	if n > maxPickBytes {
+		return 0, fmt.Errorf("%s: over the %d-byte limit", filepath.Base(p), int64(maxPickBytes))
+	}
+	return n, nil
+}
+
+// ctxReader stops reading once ctx ends, so copying a picked file honors cancellation.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // embedTexts sends prompts in batches of textBatch (SPEC section 9). It returns their vectors, the prompt tokens
@@ -391,38 +524,6 @@ func embedTexts(ctx context.Context, srv embedder, prompts []string) ([][]float3
 		vecs = append(vecs, out...)
 	}
 	return vecs, tokens, wall, nil
-}
-
-// extractPick returns the units of a picked file through the registry, the same extractors the index uses. fi is
-// the file's checked info.
-func extractPick(ctx context.Context, reg *extract.Registry, p string, fi os.FileInfo) ([]contract.Unit, error) {
-	kind, ok := extract.KindOf(p)
-	if !ok {
-		return nil, extract.ErrUnsupported
-	}
-	f := contract.FileRec{Path: p, Kind: kind, Size: fi.Size(), MTime: fi.ModTime().UnixNano()}
-	var units []contract.Unit
-	err := reg.Extract(ctx, f, func(u contract.Unit) error {
-		units = append(units, u)
-		return nil
-	})
-	return units, err
-}
-
-// checkPick returns the info of a user-picked file. It must be a regular file of at most maxPickBytes. Stat does
-// not open the file, so a FIFO, a device or a socket is refused without blocking.
-func checkPick(p string) (os.FileInfo, error) {
-	fi, err := os.Stat(p)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: not a regular file", filepath.Base(p))
-	}
-	if fi.Size() > maxPickBytes {
-		return nil, fmt.Errorf("%s: %d bytes, over the %d-byte limit", filepath.Base(p), fi.Size(), int64(maxPickBytes))
-	}
-	return fi, nil
 }
 
 // vramFree returns the free VRAM of the first device of backend b, or 0 when it is unknown.

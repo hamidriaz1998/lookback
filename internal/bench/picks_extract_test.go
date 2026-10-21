@@ -20,7 +20,7 @@ func TestPickedTextIsChunkedAndEveryPromptFitsTheCap(t *testing.T) {
 	l := newTestLab(t)
 	path := writePick(t, "notes.txt", strings.Repeat("lorem ipsum dolor ", 100))
 	srv := &fakeServer{}
-	if _, err := l.measure(newRun([]string{path}, combo(contract.QuantQ8_0)), srv); err != nil {
+	if _, _, err := l.measure(newRun([]string{path}, combo(contract.QuantQ8_0)), srv); err != nil {
 		t.Fatal(err)
 	}
 	got := srv.userPrompts("notes.txt")
@@ -39,7 +39,7 @@ func TestPickedDocumentIsExtractedBeforeEmbedding(t *testing.T) {
 	l := newTestLab(t)
 	path := writePick(t, "report.rtf", `{\rtf1\ansi{\fonttbl{\f0 Arial;}}Quarterly results were strong.\par}`)
 	srv := &fakeServer{}
-	if _, err := l.measure(newRun([]string{path}, combo(contract.QuantQ8_0)), srv); err != nil {
+	if _, _, err := l.measure(newRun([]string{path}, combo(contract.QuantQ8_0)), srv); err != nil {
 		t.Fatal(err)
 	}
 	got := srv.userPrompts("report.rtf")
@@ -54,39 +54,59 @@ func TestPickedDocumentIsExtractedBeforeEmbedding(t *testing.T) {
 	}
 }
 
-// TestPickedFileQualityNeedsAMatchingBF16Run: a picked file has quality only against a BF16 run of the same files.
-// Without one the result shows n/a with a reason, and the bundled sample alone does not count.
-func TestPickedFileQualityNeedsAMatchingBF16Run(t *testing.T) {
-	l := newTestLab(t)
+// TestPickedFileQualityNeedsAnInstalledBF16Combination: without an installed BF16 combination a picked-file run is n/a
+// with a reason, and no BF16 server starts.
+func TestPickedFileQualityNeedsAnInstalledBF16Combination(t *testing.T) {
+	starts := &fakeStarts{}
+	l := newFakeLab(t, false, starts)
 	picked := writePick(t, "a.txt", "alpha beta gamma")
-	other := writePick(t, "b.txt", "delta epsilon")
-	q8 := combo(contract.QuantQ8_0)
+	step := l.execute(newRun([]string{picked}, combo(contract.QuantQ8_0)))
+	if step.State != contract.LabDone {
+		t.Fatalf("run ended %v: %s", step.State, step.Err)
+	}
+	if res := step.Result.Bench; res.Quality != nil || res.QualityReason != "needs an installed BF16 combination" {
+		t.Fatalf("quality %v, reason %q; want n/a with the installed-BF16 reason", res.Quality, res.QualityReason)
+	}
+	if got := starts.models; len(got) != 1 {
+		t.Fatalf("servers started %v, want only the run's own", got)
+	}
+}
 
-	res, err := l.measure(newRun([]string{picked}, q8), &fakeServer{})
-	if err != nil {
-		t.Fatal(err)
+// TestPickedFileQualityComparesWithInstalledBF16: with BF16 installed, a run's picked files are embedded again by a
+// BF16 server on the run's backend, and the quality is their cosine against that reference. The fake's BF16 vectors
+// point along another dimension, so the quality is 0, not 1.
+func TestPickedFileQualityComparesWithInstalledBF16(t *testing.T) {
+	starts := &fakeStarts{}
+	l := newFakeLab(t, true, starts)
+	picked := writePick(t, "a.txt", "alpha beta gamma")
+	step := l.execute(newRun([]string{picked}, combo(contract.QuantQ8_0)))
+	if step.State != contract.LabDone {
+		t.Fatalf("run ended %v: %s", step.State, step.Err)
 	}
-	if res.Quality != nil || res.QualityReason == "" {
-		t.Fatalf("no BF16 run yet: quality %v, reason %q; want n/a with a reason", res.Quality, res.QualityReason)
+	res := step.Result.Bench
+	if res.Quality == nil || *res.Quality > 1e-9 {
+		t.Fatalf("quality %v, want 0 against the BF16 reference", res.Quality)
 	}
+	if got := starts.models; len(got) != 2 || got[0] != "q8_0" || got[1] != "bf16" {
+		t.Fatalf("servers started %v, want the run then a BF16 reference", got)
+	}
+}
 
-	if _, err := l.measure(newRun([]string{picked}, combo(contract.QuantBF16)), &fakeServer{}); err != nil {
-		t.Fatal(err)
+// TestBF16RunIsItsOwnPickReference: a BF16 run of picked files is their reference, so its quality is 1 and it starts
+// no second server.
+func TestBF16RunIsItsOwnPickReference(t *testing.T) {
+	starts := &fakeStarts{}
+	l := newFakeLab(t, true, starts)
+	picked := writePick(t, "a.txt", "alpha beta gamma")
+	step := l.execute(newRun([]string{picked}, combo(contract.QuantBF16)))
+	if step.State != contract.LabDone {
+		t.Fatalf("run ended %v: %s", step.State, step.Err)
 	}
-	res, err = l.measure(newRun([]string{picked}, q8), &fakeServer{})
-	if err != nil {
-		t.Fatal(err)
+	if q := step.Result.Bench.Quality; q == nil || *q < 0.999999 {
+		t.Fatalf("quality %v, want 1", q)
 	}
-	if res.Quality == nil || *res.Quality < 0.999 {
-		t.Fatalf("matching BF16 run: quality %v, want about 1", res.Quality)
-	}
-
-	res, err = l.measure(newRun([]string{other}, q8), &fakeServer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Quality != nil || res.QualityReason == "" {
-		t.Fatalf("different files: quality %v, want n/a with a reason", res.Quality)
+	if got := starts.models; len(got) != 1 {
+		t.Fatalf("servers started %v, want the run only", got)
 	}
 }
 
@@ -104,7 +124,7 @@ func TestPickedImageIsEmbeddedWithTheSample(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &fakeServer{}
-	if _, err := l.measure(newRun([]string{path}, combo(contract.QuantQ8_0)), srv); err != nil {
+	if _, _, err := l.measure(newRun([]string{path}, combo(contract.QuantQ8_0)), srv); err != nil {
 		t.Fatal(err)
 	}
 	imgs, err := assets.Images()

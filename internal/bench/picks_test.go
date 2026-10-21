@@ -10,19 +10,21 @@ import (
 	"time"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
+	"github.com/hamidriaz1998/lookback/internal/runtime"
 )
 
 // fakeServer stands in for the sidecar. It records the text prompts it embeds and tokenizes one token per byte,
-// so a prompt's token count equals its byte length.
+// so a prompt's token count equals its byte length. Its vectors point along dimension dim.
 type fakeServer struct {
 	mu      sync.Mutex
 	prompts []string
 	images  int
+	dim     int
 }
 
-func unitVector() []float32 {
+func (f *fakeServer) unit() []float32 {
 	v := make([]float32, 768)
-	v[0] = 1
+	v[f.dim] = 1
 	return v
 }
 
@@ -35,7 +37,7 @@ func (f *fakeServer) EmbedTexts(ctx context.Context, prompts []string) ([][]floa
 	f.prompts = append(f.prompts, prompts...)
 	out := make([][]float32, len(prompts))
 	for i := range out {
-		out[i] = unitVector()
+		out[i] = f.unit()
 	}
 	return out, len(prompts), nil
 }
@@ -44,7 +46,7 @@ func (f *fakeServer) EmbedImage(ctx context.Context, img []byte, mime string) ([
 	f.mu.Lock()
 	f.images++
 	f.mu.Unlock()
-	return unitVector(), 1, ctx.Err()
+	return f.unit(), 1, ctx.Err()
 }
 
 func (f *fakeServer) Tokenize(ctx context.Context, text string) ([]contract.Token, error) {
@@ -54,6 +56,9 @@ func (f *fakeServer) Tokenize(ctx context.Context, text string) ([]contract.Toke
 	}
 	return toks, nil
 }
+
+func (f *fakeServer) Stop(context.Context) {}
+func (f *fakeServer) PeakRAM() int64       { return 0 }
 
 // userPrompts returns the prompts that embed the picked file name.
 func (f *fakeServer) userPrompts(name string) []string {
@@ -68,11 +73,40 @@ func (f *fakeServer) userPrompts(name string) []string {
 	return out
 }
 
-func newTestLab(t *testing.T) *Lab {
+// fakeStarts records the model of each server a run starts.
+type fakeStarts struct {
+	mu     sync.Mutex
+	models []string
+}
+
+// newFakeLab returns a lab whose servers are fakes. The files name the model, and a BF16 server embeds along another
+// dimension than the others, so a picked-file quality from a BF16 reference is not 1. bf16 says whether BF16 is
+// installed.
+func newFakeLab(t *testing.T, bf16 bool, starts *fakeStarts) *Lab {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	return New(ctx, &recordingIndexer{}, nil, failingFiles, "", 1)
+	files := func(c contract.Combo) (runtime.Files, error) {
+		return runtime.Files{Model: string(c.TextQuant)}, nil
+	}
+	installed := func(c contract.Combo) bool { return bf16 && isBF16(c) }
+	l := New(ctx, &recordingIndexer{}, nil, files, installed, "", 1)
+	l.start = func(_ context.Context, o runtime.Options) (server, error) {
+		starts.mu.Lock()
+		starts.models = append(starts.models, o.Files.Model)
+		starts.mu.Unlock()
+		srv := &fakeServer{}
+		if o.Files.Model == string(contract.QuantBF16) {
+			srv.dim = 1
+		}
+		return srv, nil
+	}
+	return l
+}
+
+func newTestLab(t *testing.T) *Lab {
+	t.Helper()
+	return newFakeLab(t, false, &fakeStarts{})
 }
 
 func newRun(extra []string, c contract.Combo) *run {
@@ -117,7 +151,7 @@ func TestMeasureDoesNotBlockOnASpecialFile(t *testing.T) {
 	fifo := mkfifo(t, t.TempDir())
 	done := make(chan error, 1)
 	go func() {
-		_, err := l.measure(newRun([]string{fifo}, combo(contract.QuantQ8_0)), &fakeServer{})
+		_, _, err := l.measure(newRun([]string{fifo}, combo(contract.QuantQ8_0)), &fakeServer{})
 		done <- err
 	}()
 	select {

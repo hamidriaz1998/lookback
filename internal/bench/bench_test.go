@@ -91,7 +91,7 @@ func TestRunsFormOneFIFOQueueAndHoldThePause(t *testing.T) {
 	ix := &recordingIndexer{}
 	life, end := context.WithCancel(context.Background())
 	defer end()
-	l := New(life, ix, nil, failingFiles, t.TempDir()+"/log", 1)
+	l := New(life, ix, nil, failingFiles, nil, t.TempDir()+"/log", 1)
 	ch := l.Subscribe(context.Background())
 	var ids []contract.RunID
 	for _, q := range []contract.Quant{contract.QuantBF16, contract.QuantQ8_0, contract.QuantBF16} {
@@ -151,7 +151,7 @@ func TestCanceledQueuedRunNeverStartsAndLaterRunsWait(t *testing.T) {
 	defer end()
 	gateCombo := combo(contract.QuantBF16)
 	g := &gatedFiles{gateCombo: gateCombo, resolves: make(map[string]int), entered: make(chan struct{}), gate: make(chan struct{})}
-	l := New(life, ix, nil, g.resolve, t.TempDir()+"/log", 1)
+	l := New(life, ix, nil, g.resolve, nil, t.TempDir()+"/log", 1)
 	ch := l.Subscribe(context.Background())
 
 	a, err := l.Run(context.Background(), combo(contract.QuantBF16), nil)
@@ -204,7 +204,7 @@ func TestLifetimeEndStopsActiveAndQueuedRuns(t *testing.T) {
 	ix := &recordingIndexer{}
 	life, end := context.WithCancel(context.Background())
 	g := &gatedFiles{gateCombo: combo(contract.QuantBF16), resolves: make(map[string]int), entered: make(chan struct{}), gate: make(chan struct{})}
-	l := New(life, ix, nil, g.resolve, t.TempDir()+"/log", 1)
+	l := New(life, ix, nil, g.resolve, nil, t.TempDir()+"/log", 1)
 	ch := l.Subscribe(context.Background())
 	if _, err := l.Run(context.Background(), combo(contract.QuantBF16), nil); err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestLifetimeEndStopsActiveAndQueuedRuns(t *testing.T) {
 
 func TestLifetimeEndClosesUnreadSubscription(t *testing.T) {
 	life, end := context.WithCancel(context.Background())
-	l := New(life, &recordingIndexer{}, nil, failingFiles, t.TempDir()+"/log", 1)
+	l := New(life, &recordingIndexer{}, nil, failingFiles, nil, t.TempDir()+"/log", 1)
 	ch := l.Subscribe(context.Background())
 	end()
 	select {
@@ -249,7 +249,7 @@ func TestUnknownComboIsRefused(t *testing.T) {
 	defer end()
 	l := New(life, &recordingIndexer{}, nil, func(contract.Combo) (runtime.Files, error) {
 		return runtime.Files{}, contract.ErrUnknownCombo
-	}, t.TempDir()+"/log", 1)
+	}, nil, t.TempDir()+"/log", 1)
 	if _, err := l.Run(context.Background(), combo(contract.QuantBF16), nil); !errors.Is(err, contract.ErrUnknownCombo) {
 		t.Fatalf("got %v, want ErrUnknownCombo", err)
 	}
