@@ -18,11 +18,12 @@ type instantDownloader struct {
 	mu   sync.Mutex
 	hold bool
 	held []contract.Asset
+	done map[string]bool // the keys verified so far
 	out  chan contract.DownloadProgress
 }
 
 func newInstantDownloader(d contract.Downloader) *instantDownloader {
-	return &instantDownloader{Downloader: d, out: make(chan contract.DownloadProgress, 1024)}
+	return &instantDownloader{Downloader: d, done: map[string]bool{}, out: make(chan contract.DownloadProgress, 1024)}
 }
 
 // Ensure verifies the assets now, or, while held, when release is called. built runs first, as a real
@@ -59,9 +60,30 @@ func (d *instantDownloader) release() {
 }
 
 func (d *instantDownloader) verify(assets []contract.Asset) {
+	d.mu.Lock()
+	for _, a := range assets {
+		d.done[a.Key()] = true
+	}
+	d.mu.Unlock()
 	for _, a := range assets {
 		d.out <- contract.DownloadProgress{Key: a.Key(), Name: a.Name, State: contract.FileDone, Done: a.Bytes, Total: a.Bytes}
 	}
+}
+
+// verifiedCombo reports whether every file of c has been verified, as the lab needs them on disk.
+func (d *instantDownloader) verifiedCombo(cat contract.Catalog, os contract.OS, c contract.Combo) bool {
+	assets, err := cat.Assets(os, c)
+	if err != nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, a := range assets {
+		if !d.done[a.Key()] {
+			return false
+		}
+	}
+	return true
 }
 
 // Subscribe streams the verifications. The App subscribes once.
@@ -105,18 +127,33 @@ func (d *gatedDetector) Probe(ctx context.Context, b contract.Backend) (contract
 	return d.Detector.Probe(ctx, b)
 }
 
-// countingLab counts the runs it is asked to start, and keeps their contexts.
+// countingLab counts the runs it is asked to start, and keeps their contexts. With ready set, it rejects a
+// combination that ready does not accept, as the real lab does when a model file is missing.
 type countingLab struct {
 	contract.Lab
-	mu   sync.Mutex
-	runs []context.Context
+	ready    func(contract.Combo) bool
+	mu       sync.Mutex
+	runs     []context.Context
+	rejected int
 }
 
 func (l *countingLab) Run(ctx context.Context, c contract.Combo, extra []string) (contract.RunID, error) {
 	l.mu.Lock()
 	l.runs = append(l.runs, ctx)
 	l.mu.Unlock()
+	if l.ready != nil && !l.ready(c) {
+		l.mu.Lock()
+		l.rejected++
+		l.mu.Unlock()
+		return 0, fmt.Errorf("lab: files of %s are missing", c.ID())
+	}
 	return l.Lab.Run(ctx, c, extra)
+}
+
+func (l *countingLab) rejections() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rejected
 }
 
 func (l *countingLab) count() int {

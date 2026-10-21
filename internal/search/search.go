@@ -129,18 +129,42 @@ func (s *Searcher) Similar(ctx context.Context, itemID int64, kinds []contract.K
 	return out, nil
 }
 
-// active returns the active generation, or ErrNoActive.
+// active returns the generation searches use: see Current.
 func (s *Searcher) active(ctx context.Context) (contract.Generation, error) {
-	gens, err := s.store.ListGenerations(ctx)
+	return Current(ctx, s.store)
+}
+
+// Current returns the generation searches use: the active one. Before the first generation is ever activated (the first index is
+// still building), it returns that newest building generation instead, so search serves the files indexed so
+// far (SPEC sections 6 and 12). It returns ErrNoActive when there is no generation at all.
+func Current(ctx context.Context, st contract.Store) (contract.Generation, error) {
+	gens, err := st.ListGenerations(ctx)
 	if err != nil {
 		return contract.Generation{}, err
 	}
-	for _, g := range gens {
-		if g.State == contract.GenActive {
+	var building *contract.Generation
+	for i, g := range gens {
+		switch g.State {
+		case contract.GenActive:
 			return g, nil
+		case contract.GenBuilding:
+			building = &gens[i]
 		}
 	}
+	if building != nil && !anyRetired(gens) {
+		return *building, nil
+	}
 	return contract.Generation{}, ErrNoActive
+}
+
+// anyRetired reports whether a generation was ever active and then replaced.
+func anyRetired(gens []contract.Generation) bool {
+	for _, g := range gens {
+		if g.State != contract.GenActive && g.State != contract.GenBuilding {
+			return true
+		}
+	}
+	return false
 }
 
 // embedQuery embeds one prompt. When the sidecar is restarting it waits for the session to be ready and

@@ -79,12 +79,57 @@ func tooBigOrTiny(kind contract.Kind, path string, info os.FileInfo) bool {
 	return err == nil && (cfg.Width < minImageEdge || cfg.Height < minImageEdge)
 }
 
+// eligible applies the SPEC section 11 exclusion check to the file at p, under fo: the folder and file exclusions,
+// a symlink that leaves the folder, a file that is not regular, and the size and image rules. It returns the
+// file's stat when the file may be indexed.
+func eligible(fo contract.Folder, kind contract.Kind, p string) (os.FileInfo, bool) {
+	if excludedPath(fo, p, false) {
+		return nil, false
+	}
+	li, err := os.Lstat(p)
+	if err != nil {
+		return nil, false
+	}
+	if li.Mode()&fs.ModeSymlink != 0 && !insideRoot(fo.Path, p) {
+		return nil, false
+	}
+	info, err := os.Stat(p)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, false
+	}
+	if tooBigOrTiny(kind, p, info) {
+		return nil, false
+	}
+	return info, true
+}
+
+// forget deletes the file id from the store and from the queues and rows of both jobs, as a scan does for a
+// file that disappeared or became excluded.
+func (x *Indexer) forget(ctx context.Context, id int64) error {
+	if err := x.store.DeleteFile(ctx, id); err != nil {
+		return err
+	}
+	x.mu.Lock()
+	delete(x.files, id)
+	if x.active != nil {
+		delete(x.active.rows, id)
+	}
+	if x.rebuild != nil {
+		delete(x.rebuild.rows, id)
+	}
+	x.mu.Unlock()
+	return nil
+}
+
 // scanFolder walks fo and makes the store match the disk: new and changed files are saved and queued where they
 // need work, and files that vanished or became excluded are deleted. A walk error that is not on the root leaves
 // the files of that directory alone.
 func (x *Indexer) scanFolder(ctx context.Context, fo contract.Folder) error {
 	x.scanMu.Lock()
 	defer x.scanMu.Unlock()
+	if err := x.live(); err != nil { // the lifetime may have ended while this scan waited for the lock
+		return err
+	}
 
 	x.mu.Lock()
 	known := map[string]contract.FileRec{}
@@ -124,11 +169,8 @@ func (x *Indexer) scanFolder(ctx context.Context, fo contract.Folder) error {
 		if !ok {
 			return nil
 		}
-		if d.Type()&fs.ModeSymlink != 0 && !insideRoot(fo.Path, p) {
-			return nil
-		}
-		info, err := os.Stat(p)
-		if err != nil || !info.Mode().IsRegular() {
+		info, ok := eligible(fo, kind, p)
+		if !ok {
 			return nil
 		}
 		prev, had := known[p]
@@ -137,9 +179,6 @@ func (x *Indexer) scanFolder(ctx context.Context, fo contract.Folder) error {
 			x.mu.Lock()
 			x.enqueueLocked(prev.ID)
 			x.mu.Unlock()
-			return nil
-		}
-		if tooBigOrTiny(kind, p, info) {
 			return nil
 		}
 		rec := contract.FileRec{FolderID: fo.ID, Path: p, Kind: kind, Size: info.Size(), MTime: info.ModTime().UnixNano()}
@@ -166,18 +205,9 @@ func (x *Indexer) scanFolder(ctx context.Context, fo contract.Folder) error {
 		if seen[p] {
 			continue
 		}
-		if err := x.store.DeleteFile(ctx, prev.ID); err != nil {
+		if err := x.forget(ctx, prev.ID); err != nil {
 			return err
 		}
-		x.mu.Lock()
-		delete(x.files, prev.ID)
-		if x.active != nil {
-			delete(x.active.rows, prev.ID)
-		}
-		if x.rebuild != nil {
-			delete(x.rebuild.rows, prev.ID)
-		}
-		x.mu.Unlock()
 	}
 	return nil
 }

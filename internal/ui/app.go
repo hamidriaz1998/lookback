@@ -7,7 +7,6 @@ package ui
 
 import (
 	"context"
-	"log"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -30,6 +29,9 @@ type Deps struct {
 	Catalog    contract.Catalog
 	Themes     []contract.ThemeSource
 	Media      Media
+	// PickFolder shows the native directory dialog and returns the folder the user picked, or "" when they cancel.
+	// A nil PickFolder uses the desktop's dialog (picker.go).
+	PickFolder func(ctx context.Context) (string, error)
 	OS         contract.OS
 	DataDir    string
 	Hide       func()
@@ -78,10 +80,23 @@ type App struct {
 	labSteps    map[contract.RunID]contract.LabStep
 	labOrder    []contract.RunID
 
-	// From the data snapshot, reloaded in the background.
+	// From the data snapshot, reloaded in the background. Progress updates only mark a reload due; View runs it
+	// once reloadInterval has passed since the last one. indexRev counts the changes of the index state, so a
+	// query knows its results may be stale.
 	data       snapshot
 	reloading  bool
 	reloadWant bool
+	reloadDue  bool
+	lastLoad   time.Time
+	nowT       time.Time // the clock of the current frame
+	indexRev   uint64
+
+	errList ui.ListState // the Activity page's error rows
+	errSel  int          // the selected error row, -1 for none
+
+	usage     []diskPart // what the data folder holds, read when Settings shows it
+	usageBusy bool
+	usageAt   time.Time
 
 	search   searchState
 	folders  foldersState
@@ -90,12 +105,23 @@ type App struct {
 	onb      *onboarding
 	picked   *contract.Combo // the combination the user chose, waiting for its files (onboarding.go)
 	theme    themeState
-	notice   string // the last failed command, shown on the page it came from
+	notice   *notice // the last failed command or save, shown on the page it came from
+	loadErr  error   // the last failed data load; the snapshot in data is the last good one
+}
+
+// notice is a failed command or save: its message, and the retry that runs it again.
+type notice struct {
+	page  page
+	msg   string
+	retry func()
 }
 
 // New returns the App for d. Call Start once the window exists, then use View as the window's content.
 func New(d Deps) *App {
 	// Grid tiles are cached under the data folder (UI guide section 10), unless the caller chose a folder.
+	if d.PickFolder == nil {
+		d.PickFolder = pickFolder
+	}
 	if fm, ok := d.Media.(FileMedia); ok && fm.CacheDir == "" && d.DataDir != "" {
 		d.Media = FileMedia{CacheDir: filepath.Join(d.DataDir, "thumbs")}
 	}
@@ -110,6 +136,7 @@ func New(d Deps) *App {
 		labSteps:    map[contract.RunID]contract.LabStep{},
 		search:      newSearchState(),
 		models:      modelsState{selected: -1},
+		errSel:      -1,
 	}
 }
 
@@ -125,8 +152,16 @@ func (a *App) Start(ctx context.Context, dispatch func(func())) {
 	a.theme.start(ctx, dispatch, a.d.Themes)
 
 	pump(ctx, dispatch, a.d.Indexer.Subscribe(ctx), func(p contract.Progress) {
+		gen := int64(0)
+		if a.data.active != nil {
+			gen = a.data.active.ID
+		}
 		a.progress, a.hasProgress = p, true
-		a.reload()
+		if p.Gen != gen {
+			a.reload()
+			return
+		}
+		a.reloadDue = true
 	})
 	pump(ctx, dispatch, a.d.Indexer.SubscribeRebuild(ctx), func(p contract.Progress) {
 		if p.FilesDone == p.FilesTotal && p.FilesTotal > 0 {
@@ -140,6 +175,7 @@ func (a *App) Start(ctx context.Context, dispatch func(func())) {
 	pump(ctx, dispatch, a.d.Downloader.Subscribe(ctx), func(p contract.DownloadProgress) {
 		a.downloads[p.Key] = p
 		a.probeWhenReady()
+		a.startReadyTests()
 	})
 	pump(ctx, dispatch, a.d.Lab.Subscribe(ctx), func(s contract.LabStep) {
 		if _, seen := a.labSteps[s.RunID]; !seen {
@@ -168,10 +204,21 @@ func (a *App) reload() {
 	}
 	a.reloading = true
 	ctx := a.ctx
+	a.lastLoad = a.nowT
 	go func() {
 		s := buildSnapshot(ctx, a.d)
 		a.dispatch(func() {
-			a.data = s
+			if s.err != nil {
+				// Keep the last good snapshot, and show the failure with Retry.
+				a.loadErr = s.err
+			} else {
+				a.loadErr = nil
+				if s.indexSig != a.data.indexSig {
+					a.indexRev++
+				}
+				a.thumbs.forgetErrors()
+				a.data = s
+			}
 			a.reloading = false
 			if a.reloadWant {
 				a.reloadWant = false
@@ -181,28 +228,126 @@ func (a *App) reload() {
 	}()
 }
 
-// setting saves a setting in the background and reloads the snapshot when the write ends.
+// dueReload runs the reload that progress updates asked for, once reloadInterval has passed since the last one.
+// Until then it asks the frame for a wake-up, so the reload still happens without more updates.
+func (a *App) dueReload(c *ui.Context) {
+	if !a.reloadDue || a.reloading {
+		return
+	}
+	if wait := reloadInterval - a.nowT.Sub(a.lastLoad); wait > 0 {
+		c.After(wait)
+		return
+	}
+	a.reloadDue = false
+	a.reload()
+}
+
+// refreshUsage reads the size of each part of the data folder, off the main thread, when the Settings page shows
+// it. It runs again when the last reading is older than usageInterval.
+func (a *App) refreshUsage() {
+	if a.usageBusy || (!a.usageAt.IsZero() && a.nowT.Sub(a.usageAt) < usageInterval) {
+		return
+	}
+	a.usageBusy, a.usageAt = true, a.nowT
+	ctx, dir := a.ctx, a.d.DataDir
+	go func() {
+		parts := diskUsage(ctx, dir)
+		a.dispatch(func() {
+			a.usage, a.usageBusy = parts, false
+		})
+	}()
+}
+
+// setting saves a setting in the background and reloads the snapshot when the write ends. A failed write is shown
+// on the page that changed the setting, with Retry.
 func (a *App) setting(key, value string) {
 	a.data.settings[key] = value
+	var save func()
+	save = func() {
+		a.bg(a.page, func(ctx context.Context) error { return a.d.Store.SetSetting(ctx, key, value) }, save)
+	}
+	save()
+}
+
+// bg runs cmd in the background, then reloads the snapshot. A failure is shown on page, with retry to run cmd
+// again. A success clears the notice of that page.
+func (a *App) bg(page page, cmd func(ctx context.Context) error, retry func()) {
 	ctx := a.ctx
 	go func() {
-		if err := a.d.Store.SetSetting(ctx, key, value); err != nil {
-			log.Printf("save setting %s: %v", key, err)
-		}
+		err := cmd(ctx)
+		a.dispatch(func() {
+			switch {
+			case err != nil:
+				a.notice = &notice{page: page, msg: err.Error(), retry: retry}
+			case a.notice != nil && a.notice.page == page:
+				a.notice = nil
+			}
+			a.reload()
+		})
 	}()
+}
+
+// noticeView shows the failure of the current page's last command, with Retry when it can run again, and the
+// failure of the last data load while the page shows the data before it.
+func (a *App) noticeView(c *ui.Context) {
+	t := c.Theme()
+	if a.loadErr != nil && a.data.ready {
+		ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Padding(t.Space(2)).Radius(8).Background(t.Surface).Children(func() {
+			ui.Icon(c, icon("triangle-alert")).TextColor(t.Warning)
+			ui.Text(c, "Lookback could not refresh its data. Showing the last data it read: "+a.loadErr.Error()).
+				TextColor(t.Warning).Grow(1).Lines(1, 2)
+			if ui.Button(c, "Retry").Clicked() {
+				a.reload()
+			}
+		})
+	}
+	n := a.notice
+	if n == nil || n.page != a.page {
+		return
+	}
+	ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Padding(t.Space(2)).Radius(8).Background(t.Surface).Children(func() {
+		ui.Icon(c, icon("triangle-alert")).TextColor(t.Danger)
+		ui.Text(c, "Could not finish: "+n.msg).TextColor(t.Danger).Grow(1).Lines(1, 2)
+		if n.retry != nil && ui.Button(c, "Retry").Clicked() {
+			a.notice = nil
+			n.retry()
+		}
+		if ui.Button(c, "Dismiss").Clicked() {
+			a.notice = nil
+		}
+	})
+}
+
+// loadFailed is the first frame when the data cannot be read: the error, and Retry.
+func (a *App) loadFailed(c *ui.Context) {
+	t := c.Theme()
+	ui.Column(c).Fill().Center().Gap(t.Space(2)).Children(func() {
+		ui.Text(c, "Lookback could not read its data.").Bold()
+		ui.Text(c, a.loadErr.Error()).TextColor(t.Danger).MaxWidth(640).Lines(1, 4)
+		if ui.PrimaryButton(c, "Retry").Clicked() {
+			a.reload()
+		}
+	})
 }
 
 // View builds the window from the state, once per frame.
 func (a *App) View(c *ui.Context) {
+	a.nowT = c.Now()
+	a.dueReload(c)
 	a.theme.apply(c, a.data.setting("theme", ""))
 	a.shortcuts(c)
 	if !a.data.ready {
-		a.loading(c)
+		if a.loadErr != nil {
+			a.loadFailed(c)
+		} else {
+			a.loading(c)
+		}
 		return
 	}
 	a.applyPick()
 	if a.onb == nil && !a.data.onboarded() && a.page != pageSettings {
 		a.startOnboarding()
+		a.restoreOnboarding()
 	}
 	if a.onb != nil {
 		a.onboardingView(c)
@@ -213,6 +358,7 @@ func (a *App) View(c *ui.Context) {
 			a.sidebar(c)
 		}
 		ui.Column(c).Grow(1).Fill().Children(func() {
+			a.noticeView(c)
 			switch a.page {
 			case pageSearch:
 				a.searchPage(c)
@@ -356,4 +502,19 @@ func pageFromID(id string) page {
 // activityNeedsDot reports whether the Activity page has something to show: indexing or errors.
 func (a *App) activityNeedsDot() bool {
 	return a.indexStatus().busy || len(a.data.errors) > 0
+}
+
+// reloadInterval is the least time between two data snapshots while indexing runs (UI guide section 10): progress
+// updates arrive several times a second, and each reload reads the store.
+const reloadInterval = 2 * time.Second
+
+// usageInterval is how old the storage sizes may be when the Settings page shows them.
+const usageInterval = 10 * time.Second
+
+// activeID returns the ID of the active generation in the snapshot, or 0 when there is none.
+func (a *App) activeID() int64 {
+	if a.data.active == nil {
+		return 0
+	}
+	return a.data.active.ID
 }

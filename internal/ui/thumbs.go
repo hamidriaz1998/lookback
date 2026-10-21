@@ -43,10 +43,14 @@ func budgetOf(c cacheClass) int64 {
 	return previewBudget
 }
 
-// thumbKey identifies one decoded picture: a file at one size.
+// thumbKey identifies one decoded picture: a file (or one page of it) at one size. The file's size and
+// modification time are part of it, so a changed file decodes again, and a file that is gone is a new key
+// (UI guide section 10).
 type thumbKey struct {
-	path string
-	edge int
+	path        string
+	page        int // 1-based page of a document; 0 for a picture file
+	edge        int
+	size, mtime int64
 }
 
 // thumbEntry is a decoded picture, ready to draw. A file the media cannot decode keeps err, so the view
@@ -136,11 +140,22 @@ func (t *thumbs) worker(ctx context.Context) {
 		t.queue = t.queue[:len(t.queue)-1]
 		t.mu.Unlock()
 
-		img, err := t.media.Image(ctx, key.path, key.edge)
+		img, err := t.media.Image(ctx, Request{Path: key.path, Page: key.page, Edge: key.edge})
 		if ctx.Err() != nil {
 			return
 		}
 		t.dispatch(func() { t.finish(key, img, err) })
+	}
+}
+
+// forgetErrors drops the failed decodes, so the next request decodes again: a file that was missing may be back,
+// and a rescan may have changed what a file holds. Main thread only.
+func (t *thumbs) forgetErrors() {
+	for k, e := range t.cache {
+		if e.err != nil {
+			t.bytes[e.class] -= e.bytes
+			delete(t.cache, k)
+		}
 	}
 }
 

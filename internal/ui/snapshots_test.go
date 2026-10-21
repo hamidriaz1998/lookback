@@ -150,7 +150,7 @@ func snapshotCases() []snapshotCase {
 			h.wait("detection", func() bool { return h.app.onb != nil && !h.app.onb.detecting })
 			h.app.onb.step = 3
 		}, ready: func(h *harness) bool { return h.app.onb != nil && h.app.onb.step == 3 && len(h.app.data.folders) == 0 }},
-		{name: "settings", page: pageSettings, ready: func(h *harness) bool { return h.app.data.ready }},
+		{name: "settings", page: pageSettings, ready: func(h *harness) bool { return h.app.data.ready && !h.app.usageBusy && !h.app.usageAt.IsZero() }},
 	}
 }
 

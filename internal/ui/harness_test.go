@@ -17,7 +17,7 @@ import (
 // solidMedia returns a small picture for every path, so tests need no files on disk.
 type solidMedia struct{}
 
-func (solidMedia) Image(ctx context.Context, path string, edge int) (image.Image, error) {
+func (solidMedia) Image(ctx context.Context, req Request) (image.Image, error) {
 	img := image.NewRGBA(image.Rect(0, 0, 8, 6))
 	for i := range img.Pix {
 		img.Pix[i] = 0x80
@@ -33,6 +33,7 @@ type harness struct {
 	tt    *ui.Tester
 	queue chan func()
 	store contract.Store
+	stop  context.CancelFunc // ends the app's lifetime, as quitting the app does
 }
 
 // newHarness builds the App over the fixture store, starts it, and returns its tester. setup, when set,
@@ -80,7 +81,7 @@ func newHarnessTweak(t *testing.T, setup func(*fake.Store) contract.Store, theme
 	if err := ix.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, queue: make(chan func(), 256), store: store}
+	h := &harness{t: t, queue: make(chan func(), 256), store: store, stop: cancel}
 	deps := Deps{
 		Store:      store,
 		Indexer:    ix,
@@ -91,6 +92,7 @@ func newHarnessTweak(t *testing.T, setup func(*fake.Store) contract.Store, theme
 		Catalog:    fake.NewCatalog(),
 		Themes:     themes(ctx),
 		Media:      solidMedia{},
+		PickFolder: func(context.Context) (string, error) { return "", nil },
 		DataDir:    t.TempDir(),
 		OS:         "linux",
 	}
@@ -137,7 +139,8 @@ func (h *harness) quiet() bool {
 // wait pumps until cond holds or the test fails.
 func (h *harness) wait(what string, cond func() bool) {
 	h.t.Helper()
-	for i := 0; i < 2000; i++ {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		h.pump(0)
 		if cond() {
 			return

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -25,13 +24,25 @@ var errAbort = errors.New("index: session ended")
 func (x *Indexer) process(ctx context.Context, j *job, id int64) {
 	x.mu.Lock()
 	f, ok := x.files[id]
+	var fo contract.Folder
+	if ok {
+		if fs, has := x.folders[f.FolderID]; has {
+			fo = fs.f
+		} else {
+			ok = false
+		}
+	}
 	x.mu.Unlock()
 	if !ok {
 		return
 	}
-	info, err := os.Stat(f.Path)
-	if err != nil {
-		return // gone; the next scan of its folder removes its rows
+	// The file may have changed or become excluded since it was queued, so the exclusions apply again here.
+	info, ok := eligible(fo, f.Kind, f.Path)
+	if !ok {
+		if ctx.Err() == nil {
+			_ = x.forget(ctx, id)
+		}
+		return
 	}
 	size, mtime := info.Size(), info.ModTime().UnixNano()
 	if size != f.Size || mtime != f.MTime {
@@ -52,13 +63,19 @@ func (x *Indexer) process(ctx context.Context, j *job, id int64) {
 		return
 	}
 
-	if info2, err := os.Stat(f.Path); err != nil || info2.Size() != size || info2.ModTime().UnixNano() != mtime {
-		if err == nil { // changed while it ran: store the new stat and queue it again
-			x.updateFile(ctx, f, info2.Size(), info2.ModTime().UnixNano())
-			x.mu.Lock()
-			x.enqueueLocked(id)
-			x.mu.Unlock()
+	info2, ok := eligible(fo, f.Kind, f.Path)
+	if !ok {
+		if ctx.Err() == nil {
+			_ = x.forget(ctx, id)
 		}
+		return
+	}
+	if info2.Size() != size || info2.ModTime().UnixNano() != mtime {
+		// changed while it ran: store the new stat and queue it again
+		x.updateFile(ctx, f, info2.Size(), info2.ModTime().UnixNano())
+		x.mu.Lock()
+		x.enqueueLocked(id)
+		x.mu.Unlock()
 		return
 	}
 

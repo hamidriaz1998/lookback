@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -36,6 +37,36 @@ type onboarding struct {
 	extra         []string
 	skipShow      bool
 	offline       bool
+}
+
+// setStep moves the first run to step n and saves the step, so a restart returns to it (SPEC section 6). A run from
+// Models is not saved: it is not the first run.
+func (a *App) setStep(n int) {
+	a.onb.step = n
+	if !a.onb.fromModels {
+		a.setting("onboard_step", strconv.Itoa(n))
+	}
+}
+
+// restoreOnboarding returns the first run to the step and the chosen combination it was on when the app stopped.
+// It runs when the first run starts, not for the test lab from Models.
+func (a *App) restoreOnboarding() {
+	if n, err := strconv.Atoi(a.data.setting("onboard_step", "")); err == nil && n >= 1 && n <= 3 {
+		a.onb.step = n
+	}
+	if cb, ok := parseCombo(a.data.setting("onboard_combo", "")); ok {
+		a.picked = &cb
+		a.ensureFiles(cb)
+	}
+}
+
+// parseCombo reads a combination ID, such as "vulkan/bf16/q8_0", as Combo.ID writes it.
+func parseCombo(id string) (contract.Combo, bool) {
+	parts := strings.Split(id, "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return contract.Combo{}, false
+	}
+	return contract.Combo{Backend: contract.Backend(parts[0]), TextQuant: contract.Quant(parts[1]), EncQuant: contract.Quant(parts[2])}, true
 }
 
 // startOnboarding creates the flow and detects the hardware in the background.
@@ -182,6 +213,7 @@ func (a *App) onboardingView(c *ui.Context) {
 	t := c.Theme()
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Fill().Padding(t.Space(6)).Gap(t.Space(4)).Children(func() {
+			a.noticeView(c)
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Lookback").Bold().Grow(1)
 				ui.Text(c, fmt.Sprintf("Step %d of 3", o.step)).TextColor(t.TextMuted).FontFeatures("tnum")
@@ -256,12 +288,12 @@ func (a *App) stepHardware(c *ui.Context) {
 	}
 	ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Children(func() {
 		if ui.Button(c, "Compare combinations").Clicked() {
-			o.step = 2
+			a.setStep(2)
 		}
 		if ui.PrimaryButton(c, "Continue with recommended").Disabled(o.detecting).Clicked() {
 			if rec, ok := a.recommendedCombo(); ok {
 				a.pickCombo(rec)
-				o.step = 3
+				a.setStep(3)
 			}
 		}
 	})
@@ -427,7 +459,7 @@ func (a *App) stepLab(c *ui.Context) {
 				a.onb = nil
 				return
 			}
-			o.step = 1
+			a.setStep(1)
 		}
 		chosen := a.chosenCombo()
 		label := "Use the chosen combination"
@@ -481,7 +513,12 @@ func (a *App) labTable(c *ui.Context, combos []contract.Combo) {
 					ui.Text(c, step.Step).SingleLine()
 				})
 			case has && step.State == contract.LabFailed:
-				ui.Badge(c, "Failed").Tooltip(step.Err)
+				ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Justify(ui.End).Children(func() {
+					ui.Badge(c, "Failed").Tooltip(step.Err)
+					if ui.Button(c, "Retry").Clicked() {
+						a.retryTest(cb)
+					}
+				})
 			case has && step.State == contract.LabDone && step.Result != nil:
 				ui.Text(c, count(int(step.Result.Bench.ImageMS+0.5))).FontFeatures("tnum")
 			default:
@@ -677,9 +714,9 @@ func pathLines(text string, n int) []string {
 	return out
 }
 
-// setTest checks or unchecks cb for testing. Checking queues its test run, and downloads its files. Unchecking
-// cancels the run when it has not finished. A canceled run leaves the lab's queue, so the indexer resumes once
-// the queue is empty (SPEC section 8). Opening the lab queues nothing.
+// setTest checks or unchecks cb for testing. Checking queues the files of cb. Its test run starts once they are
+// verified (startReadyTests). Unchecking cancels the run when it has not finished. A canceled run leaves the lab's
+// queue, so the indexer resumes once the queue is empty (SPEC section 8). Opening the lab queues nothing.
 func (a *App) setTest(cb contract.Combo, on bool) {
 	o := a.onb
 	id := cb.ID()
@@ -691,6 +728,36 @@ func (a *App) setTest(cb contract.Combo, on bool) {
 		}
 		return
 	}
+	a.ensureFiles(cb)
+	if a.comboReady(cb) {
+		a.startTest(cb)
+	}
+}
+
+// startReadyTests starts the test of each checked combination whose files are verified and whose test has not
+// started or ended. It runs on every download update, so a checked combination starts exactly once. A failed test
+// waits for its Retry button rather than starting again on its own.
+func (a *App) startReadyTests() {
+	o := a.onb
+	if o == nil {
+		return
+	}
+	for _, cb := range o.combos {
+		if !o.chosen[cb.ID()] || !a.comboReady(cb) {
+			continue
+		}
+		if step, ok := a.labRow(cb); ok && step.State == contract.LabFailed {
+			continue
+		}
+		a.startTest(cb)
+	}
+}
+
+// startTest starts the lab run of cb, unless one is open or cb has a finished test. The run is cancelable, and a
+// run that the lab refuses leaves the open runs, so the next download update may start it again.
+func (a *App) startTest(cb contract.Combo) {
+	o := a.onb
+	id := cb.ID()
 	if _, running := o.tests[id]; running {
 		return
 	}
@@ -699,18 +766,31 @@ func (a *App) setTest(cb contract.Combo, on bool) {
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	o.tests[id] = cancel
-	a.ensureFiles(cb)
 	extra := o.extra
 	lab := a.d.Lab
 	go func() {
 		if _, err := lab.Run(ctx, cb, extra); err != nil {
 			a.dispatch(func() {
-				if a.onb == o {
-					o.labErr = err.Error()
+				if a.onb != o {
+					return
+				}
+				o.labErr = err.Error()
+				// A run canceled by the user is no longer in the map, and its error is expected. Any other run that
+				// the lab refused is removed, so it can start again.
+				if ctx.Err() == nil {
+					cancel()
+					delete(o.tests, id)
 				}
 			})
 		}
 	}()
+}
+
+// retryTest starts the test of cb again after it failed. It is unchecked, then checked, so the run uses the files
+// on disk now.
+func (a *App) retryTest(cb contract.Combo) {
+	a.setTest(cb, false)
+	a.setTest(cb, true)
 }
 
 // restartTests cancels the open runs and queues the unfinished tests of the checked combinations again, so they
@@ -728,8 +808,9 @@ func (a *App) restartTests() {
 	}
 }
 
-// leaveLab cancels the test runs that are still open, and unchecks the combinations whose tests did not finish.
-// Opening the lab never reaches this, so a lab that is only looked at queues nothing.
+// leaveLab cancels the test runs that are still open, and unchecks the combinations whose tests did not finish,
+// including those still waiting for their files. Opening the lab never reaches this, so a lab that is only looked
+// at queues nothing.
 func (a *App) leaveLab() {
 	o := a.onb
 	if o == nil {
@@ -737,12 +818,10 @@ func (a *App) leaveLab() {
 	}
 	for _, cb := range o.combos {
 		id := cb.ID()
-		cancel, ok := o.tests[id]
-		if !ok {
-			continue
+		if cancel, ok := o.tests[id]; ok {
+			cancel()
+			delete(o.tests, id)
 		}
-		cancel()
-		delete(o.tests, id)
 		if step, ok := a.labRow(cb); !ok || step.State != contract.LabDone {
 			o.chosen[id] = false
 		}
@@ -757,7 +836,7 @@ func (a *App) useLab(cb contract.Combo) {
 	if a.onb.fromModels {
 		a.onb = nil
 	} else {
-		a.onb.step = 3
+		a.setStep(3)
 	}
 }
 
@@ -776,7 +855,7 @@ func (a *App) pickCombo(cb contract.Combo) {
 func (a *App) ensureFiles(cb contract.Combo) {
 	assets, err := a.d.Catalog.Assets(a.d.OS, cb)
 	if err != nil {
-		a.notice = err.Error()
+		a.notice = &notice{page: a.page, msg: err.Error()}
 		return
 	}
 	a.run(func(ctx context.Context) error { return a.d.Downloader.Ensure(ctx, assets) })
@@ -808,7 +887,6 @@ func (a *App) pickReady() bool {
 func (a *App) stepFolders(c *ui.Context) {
 	t := c.Theme()
 	f := &a.folders
-	o := a.onb
 	ui.Text(c, "What should Lookback index?").FontSize(t.Rem(1.6)).Bold()
 	if len(a.data.folders) == 0 {
 		ui.Column(c).Gap(t.Space(3)).Padding(t.Space(6)).Radius(8).Background(t.Surface).Center().Children(func() {
@@ -817,7 +895,7 @@ func (a *App) stepFolders(c *ui.Context) {
 				ui.Icon(c, icon("folder-plus"))
 				ui.Text(c, "Add folder")
 			}).Clicked() {
-				f.addOpen, f.addPath = true, ""
+				a.addFolder(false)
 			}
 		})
 	} else {
@@ -838,6 +916,9 @@ func (a *App) stepFolders(c *ui.Context) {
 							ui.Text(c, "Inside "+parent+". Its files are merged with that folder.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
 						}
 					})
+					if ui.Button(c, "Edit rules").Clicked() {
+						f.editOpen, f.editID, f.editText = true, fv.folder.ID, fv.folder.Ignore
+					}
 					if ui.Button(c, "").Label("Remove " + fv.folder.Path).Children(func() { ui.Icon(c, icon("x")) }).Clicked() {
 						id := fv.folder.ID
 						a.run(func(ctx context.Context) error { return a.d.Store.DeleteFolder(ctx, id) })
@@ -846,13 +927,13 @@ func (a *App) stepFolders(c *ui.Context) {
 			}
 		})
 		if ui.Button(c, "+ Add folder").Clicked() {
-			f.addOpen, f.addPath = true, ""
+			a.addFolder(false)
 		}
 		a.skippedLine(c)
 	}
 	ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Children(func() {
 		if ui.Button(c, "Back").Clicked() {
-			o.step = 2
+			a.setStep(2)
 		}
 		if a.picked != nil && !a.pickReady() {
 			ui.Text(c, "Waiting for the files of "+comboLabel(*a.picked)+" to download.").TextColor(t.TextMuted).SingleLine()
@@ -861,7 +942,7 @@ func (a *App) stepFolders(c *ui.Context) {
 			a.finishOnboarding()
 		}
 	})
-	a.addFolderDialog(c)
+	a.rulesDialog(c)
 }
 
 // skippedLine counts the files the folders' rules skip, with a list when Show is on.
