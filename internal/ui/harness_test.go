@@ -92,6 +92,7 @@ func newHarnessTweak(t *testing.T, setup func(*fake.Store) contract.Store, theme
 		Catalog:    fake.NewCatalog(),
 		Themes:     themes(ctx),
 		Media:      solidMedia{},
+		PickFolder: func(context.Context) (string, error) { return "", nil },
 		DataDir:    t.TempDir(),
 		OS:         "linux",
 	}

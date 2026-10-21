@@ -29,6 +29,9 @@ type Deps struct {
 	Catalog    contract.Catalog
 	Themes     []contract.ThemeSource
 	Media      Media
+	// PickFolder shows the native directory dialog and returns the folder the user picked, or "" when they cancel.
+	// A nil PickFolder uses the desktop's dialog (picker.go).
+	PickFolder func(ctx context.Context) (string, error)
 	OS         contract.OS
 	DataDir    string
 	Hide       func()
@@ -113,6 +116,9 @@ type notice struct {
 // New returns the App for d. Call Start once the window exists, then use View as the window's content.
 func New(d Deps) *App {
 	// Grid tiles are cached under the data folder (UI guide section 10), unless the caller chose a folder.
+	if d.PickFolder == nil {
+		d.PickFolder = pickFolder
+	}
 	if fm, ok := d.Media.(FileMedia); ok && fm.CacheDir == "" && d.DataDir != "" {
 		d.Media = FileMedia{CacheDir: filepath.Join(d.DataDir, "thumbs")}
 	}

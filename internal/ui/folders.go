@@ -14,8 +14,6 @@ import (
 
 // foldersState is the Folders page's dialogs and their inputs.
 type foldersState struct {
-	addOpen  bool
-	addPath  string
 	editOpen bool
 	editID   int64
 	editText string
@@ -28,7 +26,6 @@ type foldersState struct {
 // and the Add folder button.
 func (a *App) foldersPage(c *ui.Context) {
 	t := c.Theme()
-	f := &a.folders
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Fill().Padding(t.Space(6)).Gap(t.Space(3)).Children(func() {
 			ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
@@ -37,7 +34,7 @@ func (a *App) foldersPage(c *ui.Context) {
 					ui.Icon(c, icon("folder-plus"))
 					ui.Text(c, "Add folder")
 				}).Clicked() {
-					f.addOpen, f.addPath = true, ""
+					a.addFolder(true)
 				}
 			})
 			if !a.data.ready {
@@ -52,7 +49,6 @@ func (a *App) foldersPage(c *ui.Context) {
 			}
 		})
 	})
-	a.addFolderDialog(c)
 	a.rulesDialog(c)
 	a.removeDialog(c)
 }
@@ -66,7 +62,7 @@ func (a *App) folderEmpty(c *ui.Context) {
 			ui.Icon(c, icon("folder-plus"))
 			ui.Text(c, "Add folder")
 		}).Clicked() {
-			a.folders.addOpen, a.folders.addPath = true, ""
+			a.addFolder(true)
 		}
 	})
 }
@@ -175,36 +171,35 @@ func nestedIn(p string, folders []folderView) string {
 	return ""
 }
 
-// addFolderDialog asks for a folder path, then saves the folder and scans it.
-func (a *App) addFolderDialog(c *ui.Context) {
-	t := c.Theme()
-	f := &a.folders
-	ui.Modal(c, &f.addOpen, func() {
-		ui.Column(c).Width(480).Gap(t.Space(3)).Children(func() {
-			ui.Text(c, "Add folder").Bold().FontSize(t.Rem(1.15))
-			ui.TextInput(c, &f.addPath).Placeholder("/home/you/Pictures").Label("Folder path").AutoFocus()
-			ui.Text(c, "Lookback indexes the images and documents in this folder and its subfolders.").TextColor(t.TextMuted)
-			ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Children(func() {
-				if ui.Button(c, "Cancel").Clicked() {
-					f.addOpen = false
-				}
-				if ui.PrimaryButton(c, "Add folder").Disabled(f.addPath == "").Clicked() {
-					p := f.addPath
-					f.addOpen = false
-					a.run(func(ctx context.Context) error {
-						fo := contract.Folder{Path: p, AddedAt: time.Now()}
-						if err := a.d.Store.SaveFolder(ctx, &fo); err != nil {
-							return err
-						}
-						return a.d.Indexer.Rescan(ctx, fo.ID)
-					})
-				}
-			})
+// addFolder asks for a folder with the native directory dialog, then saves it. With rescan, the folder is scanned at
+// once; onboarding saves only, and Start indexing scans the folders. The dialog blocks, so it runs off the main
+// thread. A failure is shown on the page, and a canceled dialog changes nothing.
+func (a *App) addFolder(rescan bool) {
+	ctx, pick := a.ctx, a.d.PickFolder
+	go func() {
+		dir, err := pick(ctx)
+		a.dispatch(func() {
+			switch {
+			case err != nil:
+				a.notice = &notice{page: a.page, msg: err.Error()}
+			case dir != "":
+				a.run(func(ctx context.Context) error {
+					fo := contract.Folder{Path: dir, AddedAt: time.Now()}
+					if err := a.d.Store.SaveFolder(ctx, &fo); err != nil {
+						return err
+					}
+					if !rescan {
+						return nil
+					}
+					return a.d.Indexer.Rescan(ctx, fo.ID)
+				})
+			}
 		})
-	})
+	}()
 }
 
-// rulesDialog edits the ignore list of a folder, one pattern per line, with a live count of the files it skips.
+// rulesDialog edits the ignore list of a folder, one pattern per line, with a live count of the files it skips. In
+// onboarding the rules are saved only; Start indexing scans the folders.
 func (a *App) rulesDialog(c *ui.Context) {
 	t := c.Theme()
 	f := &a.folders
@@ -225,13 +220,16 @@ func (a *App) rulesDialog(c *ui.Context) {
 					f.editOpen = false
 				}
 				if ui.PrimaryButton(c, "Save rules").Clicked() {
-					id, text := fv.folder.ID, f.editText
+					id, text, rescan := fv.folder.ID, f.editText, a.onb == nil
 					f.editOpen = false
 					a.run(func(ctx context.Context) error {
 						fo := fv.folder
 						fo.Ignore = text
 						if err := a.d.Store.SaveFolder(ctx, &fo); err != nil {
 							return err
+						}
+						if !rescan {
+							return nil
 						}
 						return a.d.Indexer.Rescan(ctx, id)
 					})

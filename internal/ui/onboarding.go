@@ -848,7 +848,7 @@ func (a *App) stepFolders(c *ui.Context) {
 				ui.Icon(c, icon("folder-plus"))
 				ui.Text(c, "Add folder")
 			}).Clicked() {
-				f.addOpen, f.addPath = true, ""
+				a.addFolder(false)
 			}
 		})
 	} else {
@@ -869,6 +869,9 @@ func (a *App) stepFolders(c *ui.Context) {
 							ui.Text(c, "Inside "+parent+". Its files are merged with that folder.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
 						}
 					})
+					if ui.Button(c, "Edit rules").Clicked() {
+						f.editOpen, f.editID, f.editText = true, fv.folder.ID, fv.folder.Ignore
+					}
 					if ui.Button(c, "").Label("Remove " + fv.folder.Path).Children(func() { ui.Icon(c, icon("x")) }).Clicked() {
 						id := fv.folder.ID
 						a.run(func(ctx context.Context) error { return a.d.Store.DeleteFolder(ctx, id) })
@@ -877,7 +880,7 @@ func (a *App) stepFolders(c *ui.Context) {
 			}
 		})
 		if ui.Button(c, "+ Add folder").Clicked() {
-			f.addOpen, f.addPath = true, ""
+			a.addFolder(false)
 		}
 		a.skippedLine(c)
 	}
@@ -892,7 +895,7 @@ func (a *App) stepFolders(c *ui.Context) {
 			a.finishOnboarding()
 		}
 	})
-	a.addFolderDialog(c)
+	a.rulesDialog(c)
 }
 
 // skippedLine counts the files the folders' rules skip, with a list when Show is on.
