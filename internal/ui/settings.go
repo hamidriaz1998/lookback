@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -12,15 +13,14 @@ import (
 // llamaTag is the pinned llama.cpp release (SPEC section 4), shown in About.
 const llamaTag = "b11755"
 
-// hotkeys are the global shortcuts the Settings page offers, as Hyprland names them.
-var hotkeys = []string{"Super+Shift+Space", "Super+Space", "Ctrl+Alt+L"}
-
 // edgeChoices are the largest picture edges the indexer keeps, in pixels.
 var edgeChoices = []int{1024, 1600, 2400}
 
 // settingsState is the Settings page's state.
 type settingsState struct {
-	copied bool
+	copied      bool
+	recording   bool
+	recordError string
 }
 
 // settingsPage builds the Settings page (UI guide section 3.9): one scrolling page with headings.
@@ -123,14 +123,46 @@ func (a *App) indexingSection(c *ui.Context) {
 func (a *App) shortcutsSection(c *ui.Context) {
 	t := c.Theme()
 	section(c, "Shortcuts", func() {
-		hk := a.data.setting("hotkey", hotkeys[0])
 		ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "Show or hide Lookback").Grow(1)
-			if ui.Select(c, &hk, hotkeys).Changed() {
-				a.setting("hotkey", hk)
+			label := a.data.setting("hotkey", "Super+Shift+Space")
+			if a.settings.recording {
+				label = "Press a shortcut…"
+			}
+			record := ui.Button(c, label).Label("Record global hotkey").Tooltip("Record global hotkey. Press Escape to cancel.")
+			if a.settings.recording {
+				record.AutoFocus().HandleInput(func(ev ui.InputEvent) bool {
+					if ev.Kind != ui.InputKeyDown || ev.Repeat {
+						return ev.Kind == ui.InputKeyUp
+					}
+					if ev.Key == ui.KeyEscape && ev.Mods == 0 {
+						a.settings.recording, a.settings.recordError = false, ""
+						return true
+					}
+					chord, ok := hotkeyFromEvent(ev.Mods, ev.Key)
+					if !ok {
+						a.settings.recordError = "Use a modifier with a supported key."
+						return true
+					}
+					a.setting("hotkey", chord)
+					a.settings.recording, a.settings.recordError = false, ""
+					return true
+				})
+			}
+			if record.Clicked() {
+				a.settings.recording, a.settings.recordError = true, ""
+			}
+			if a.settings.recording && ui.Button(c, "Cancel recording").Clicked() {
+				a.settings.recording = false
 			}
 		})
-		bind := "bind = SUPER SHIFT, space, exec, lookback --toggle"
+		if a.settings.recording {
+			ui.Text(c, "Press a key combination. Escape cancels.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
+		}
+		if a.settings.recordError != "" {
+			ui.Text(c, a.settings.recordError).TextColor(t.Warning).FontSize(t.Rem(0.85))
+		}
+		bind := hyprlandBind(a.data.setting("hotkey", "Super+Shift+Space"))
 		ui.Column(c).Gap(t.Space(2)).Padding(t.Space(3)).Radius(8).Background(t.Surface).Children(func() {
 			ui.Text(c, "Your desktop can bind the same key to Lookback. Add this line to your Hyprland config:").TextColor(t.TextMuted)
 			ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
@@ -147,6 +179,91 @@ func (a *App) shortcutsSection(c *ui.Context) {
 			}
 		})
 	})
+}
+
+// hotkeyFromEvent formats one recorded chord in the stable setting syntax.
+func hotkeyFromEvent(mods ui.Modifiers, key ui.Key) (string, bool) {
+	if mods&(ui.Super|ui.Ctrl|ui.Alt) == 0 {
+		return "", false
+	}
+	name := keyName(key)
+	if name == "" {
+		return "", false
+	}
+	var parts []string
+	for _, mod := range []struct {
+		flag ui.Modifiers
+		name string
+	}{{ui.Super, "Super"}, {ui.Ctrl, "Ctrl"}, {ui.Alt, "Alt"}, {ui.Shift, "Shift"}} {
+		if mods&mod.flag != 0 {
+			parts = append(parts, mod.name)
+		}
+	}
+	return strings.Join(append(parts, name), "+"), true
+}
+
+// keyName returns the MyGo key's label in the stored shortcut syntax.
+func keyName(key ui.Key) string {
+	switch {
+	case key >= ui.KeyA && key <= ui.KeyZ:
+		return string(rune('A' + key - ui.KeyA))
+	case key >= ui.Key0 && key <= ui.Key9:
+		return string(rune('0' + key - ui.Key0))
+	case key >= ui.KeyF1 && key <= ui.KeyF12:
+		return "F" + strconv.Itoa(int(key-ui.KeyF1)+1)
+	}
+	switch key {
+	case ui.KeySpace:
+		return "Space"
+	case ui.KeyEnter:
+		return "Enter"
+	case ui.KeyTab:
+		return "Tab"
+	case ui.KeyMinus:
+		return "Minus"
+	case ui.KeyEqual:
+		return "Equal"
+	case ui.KeyComma:
+		return "Comma"
+	case ui.KeyPeriod:
+		return "Period"
+	case ui.KeySlash:
+		return "Slash"
+	case ui.KeySemicolon:
+		return "Semicolon"
+	case ui.KeyQuote:
+		return "Quote"
+	case ui.KeyBracketLeft:
+		return "BracketLeft"
+	case ui.KeyBracketRight:
+		return "BracketRight"
+	case ui.KeyBackslash:
+		return "Backslash"
+	case ui.KeyBackquote:
+		return "Backquote"
+	}
+	return ""
+}
+
+// hyprlandBind converts the persisted shortcut into the matching Hyprland bind line.
+func hyprlandBind(hotkey string) string {
+	parts := strings.Split(hotkey, "+")
+	mods := make([]string, 0, len(parts)-1)
+	for _, p := range parts[:max(0, len(parts)-1)] {
+		mods = append(mods, strings.ToUpper(p))
+	}
+	key := strings.ToLower(parts[len(parts)-1])
+	switch parts[len(parts)-1] {
+	case "Enter":
+		key = "Return"
+	case "Quote":
+		key = "apostrophe"
+	case "Backquote":
+		key = "grave"
+	case "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12":
+		key = parts[len(parts)-1]
+	}
+	return "bind = " + strings.Join(mods, " ") + ", " + key + ", exec, lookback --toggle"
 }
 
 // storageSection shows the data folder, what each part of it takes, and the logs.

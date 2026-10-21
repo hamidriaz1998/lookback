@@ -1,6 +1,11 @@
 package ui
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/egoist/mygo/ui"
+)
 
 // TestSettingsThemeChoiceApplies checks that choosing a theme tile stores it, so the window takes it at once.
 func TestSettingsThemeChoiceApplies(t *testing.T) {
@@ -26,4 +31,40 @@ func TestSettingsShowsAboutAndStorage(t *testing.T) {
 	h.wantText("Open logs")
 	h.wantText("llama.cpp b11755")
 	h.wantText("Copy bind line")
+}
+
+// TestSettingsHotkeyRecorderCapturesAndPersists checks an actual MyGo key event reaches the settings store.
+func TestSettingsHotkeyRecorderCapturesAndPersists(t *testing.T) {
+	h := newHarness(t, nil)
+	h.app.page = pageSettings
+	h.wait("settings", func() bool { return h.app.data.ready })
+	if err := h.tt.Click("Record global hotkey"); err != nil {
+		t.Fatal(err)
+	}
+	h.pump(0)
+	if !h.app.settings.recording {
+		t.Fatal("hotkey recording did not start")
+	}
+	h.tt.Key(ui.Ctrl|ui.Alt, ui.KeyL)
+	h.pump(0)
+	if got := h.app.data.settings["hotkey"]; got != "Ctrl+Alt+L" {
+		t.Fatalf("hotkey setting = %q, want Ctrl+Alt+L", got)
+	}
+	h.wait("hotkey persistence", func() bool {
+		got, ok, err := h.store.GetSetting(context.Background(), "hotkey")
+		return err == nil && ok && got == "Ctrl+Alt+L"
+	})
+	h.wantText("bind = CTRL ALT, l, exec, lookback --toggle")
+}
+
+func TestHotkeyFromEventRequiresModifierAndFormatsKey(t *testing.T) {
+	if _, ok := hotkeyFromEvent(0, ui.KeyA); ok {
+		t.Fatal("unmodified key was accepted")
+	}
+	if got, ok := hotkeyFromEvent(ui.Super|ui.Shift, ui.KeySpace); !ok || got != "Super+Shift+Space" {
+		t.Fatalf("recorded chord = %q, %v; want Super+Shift+Space", got, ok)
+	}
+	if got := hyprlandBind("Super+Shift+Space"); got != "bind = SUPER SHIFT, space, exec, lookback --toggle" {
+		t.Fatalf("Hyprland binding = %q", got)
+	}
 }

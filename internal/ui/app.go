@@ -229,6 +229,9 @@ func (s snapshot) onboarded() bool { return s.settings["onboarded"] == "1" }
 
 // shortcuts handles the keys of UI guide section 6 that do not depend on a control.
 func (a *App) shortcuts(c *ui.Context) {
+	if a.page == pageSettings && a.settings.recording {
+		return
+	}
 	if c.Shortcut(ui.Ctrl, ui.KeyB) {
 		a.sidebarOpen = !a.sidebarOpen
 	}
