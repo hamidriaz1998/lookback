@@ -11,7 +11,6 @@ import (
 	"path"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/hamidriaz1998/lookback/internal/bench"
@@ -36,11 +35,24 @@ type Services struct {
 	Indexer contract.Indexer
 	Config  Config // the settings the app starts with (SPEC section 14)
 	life    context.Context
+	cancel  context.CancelFunc // ends life; Close calls it first
+	waits   []func()           // join the service workers, after cancel and before the closers
 	closers []func()
+	// startIndexer starts the indexer once the first run's choice is saved and installed. It is idempotent.
+	startIndexer func()
 }
 
-// Close releases the store and the extractors. Call it after the app has quit.
+// newRuntime builds the sidecar runtime. Tests replace it with a fake.
+var newRuntime = func(cfg lrt.Config) contract.Runtime { return lrt.New(cfg) }
+
+// Close cancels the services' lifetime, waits for the indexer and the startup to end (which stops the sidecars
+// and interrupts any extraction or embedding), then releases the extractors and the store. Call it after the
+// app has quit.
 func (s *Services) Close() {
+	s.cancel()
+	for _, w := range s.waits {
+		w()
+	}
 	for i := len(s.closers) - 1; i >= 0; i-- {
 		s.closers[i]()
 	}
@@ -63,9 +75,12 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 	if err := os.MkdirAll(filepath.Join(dataDir, "logs"), 0o755); err != nil {
 		return nil, err
 	}
-	s := &Services{life: life}
+	parent := life
+	life, cancel := context.WithCancel(parent)
+	s := &Services{life: life, cancel: cancel}
 	st, err := store.Open(dataDir)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	s.closers = append(s.closers, func() { st.Close() })
@@ -105,17 +120,11 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 		return serverBinary(dataDir, runtimeAssets(cat, b), b)
 	})
 
-	backend := contract.BackendCPU
-	initial := defaultSpace(cat)
-	if c, ok := onboardCombo(life, st); ok {
-		backend = c.Backend
-		if sp, err := spaceOf(cat, c); err == nil {
-			initial = sp
-		}
-	}
-	rt := lrt.New(lrt.Config{
+	// The runtime and the first generation take their backend and space from the first run's choice, so the
+	// indexer starts only once that choice is saved and installed (startIndexer).
+	rt := newRuntime(lrt.Config{
 		Life:    life,
-		Backend: backend,
+		Backend: contract.BackendCPU,
 		Files: func(b contract.Backend, sp contract.VectorSpace) (lrt.Files, error) {
 			return files(contract.Combo{Backend: b, TextQuant: sp.TextQuant, EncQuant: sp.EncQuant})
 		},
@@ -124,25 +133,9 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 	ext := extract.NewRegistry()
 	s.closers = append(s.closers, func() { ext.Close() })
 
-	ix := index.New(st, ext, rt, initial)
+	ix := index.New(st, ext, rt, contract.VectorSpace{})
 	s.Indexer = ix
-	// Indexer.Start opens the runtime for the active space, which needs a downloaded llama-server. So it starts
-	// at once when a combination is installed, and otherwise after the first install (recordInstalls).
-	fl := &folderStore{Store: st, ix: ix}
-	var startOnce sync.Once
-	startIndexer := func() {
-		startOnce.Do(func() {
-			if err := ix.Start(life); err != nil {
-				log.Printf("indexer: %v", err)
-				return
-			}
-			fl.started.Store(true)
-		})
-	}
-	if cs, err := st.ListCombos(life); err == nil && len(cs) > 0 {
-		go startIndexer()
-	}
-
+	s.waits = append(s.waits, ix.Wait)
 	installed := func(c contract.Combo) bool {
 		cs, err := st.ListCombos(life)
 		if err != nil {
@@ -155,6 +148,38 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 		}
 		return false
 	}
+	fl := &folderStore{Store: st, ix: ix}
+	// startIndexer runs when the choice is saved (folderStore.SetSetting) or a combination is installed
+	// (recordInstalls). It does nothing until the choice is installed, and a failed start is retried on the next
+	// event. Holding fl.mu across Start makes a folder edit either listed by Start or sent to AddFolder.
+	fl.startFn = func() {
+		fl.mu.Lock()
+		defer fl.mu.Unlock()
+		if fl.started {
+			return
+		}
+		c, ok := onboardCombo(life, st)
+		if !ok || !installed(c) {
+			return
+		}
+		sp, err := spaceOf(cat, c)
+		if err != nil {
+			log.Printf("indexer: %v", err)
+			return
+		}
+		if err := rt.Use(life, c.Backend); err != nil {
+			log.Printf("indexer: %v", err)
+			return
+		}
+		ix.SetInitial(sp)
+		if err := ix.Start(life); err != nil {
+			log.Printf("indexer: %v", err)
+			return
+		}
+		fl.started = true
+	}
+	s.startIndexer = fl.startFn
+	go s.startIndexer()
 	lab := bench.New(life, ix, det, files, installed, filepath.Join(dataDir, "logs", "lab.log"), 0)
 
 	themes := theme.Builtins()
@@ -162,7 +187,7 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 		themes = append([]contract.ThemeSource{om}, themes...)
 	}
 
-	go recordInstalls(life, st, cat, dl, func() { go startIndexer() })
+	go recordInstalls(life, st, cat, dl, func() { go s.startIndexer() })
 
 	s.Config = readConfig(life, st)
 	s.Deps = lookui.Deps{
@@ -187,21 +212,38 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 type folderStore struct {
 	contract.Store
 	ix      *index.Indexer
-	started atomic.Bool
+	mu      sync.Mutex // held across the indexer's start; guards started
+	started bool
+	startFn func() // starts the indexer when the first run's choice is saved
 }
 
 func (s *folderStore) SaveFolder(ctx context.Context, f *contract.Folder) error {
-	if f.ID == 0 && s.started.Load() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if f.ID == 0 && s.started {
 		return s.ix.AddFolder(ctx, f)
 	}
 	return s.Store.SaveFolder(ctx, f)
 }
 
 func (s *folderStore) DeleteFolder(ctx context.Context, id int64) error {
-	if s.started.Load() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
 		return s.ix.RemoveFolder(ctx, id)
 	}
 	return s.Store.DeleteFolder(ctx, id)
+}
+
+// SetSetting saves the setting and, for the first run's choice, starts the indexer if its files are installed.
+func (s *folderStore) SetSetting(ctx context.Context, key, value string) error {
+	if err := s.Store.SetSetting(ctx, key, value); err != nil {
+		return err
+	}
+	if key == "onboard_combo" {
+		go s.startFn()
+	}
+	return nil
 }
 
 // readConfig reads the settings table into Config (SPEC section 14). A missing key keeps its default.
@@ -247,15 +289,6 @@ func spaceOf(cat contract.Catalog, c contract.Combo) (contract.VectorSpace, erro
 		}
 	}
 	return contract.VectorSpace{}, errors.New("combination has no text model")
-}
-
-// defaultSpace is the space of the first generation when no combination was chosen yet.
-func defaultSpace(cat contract.Catalog) contract.VectorSpace {
-	sp, err := spaceOf(cat, contract.Combo{Backend: contract.BackendCPU, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16})
-	if err != nil {
-		return contract.VectorSpace{TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}
-	}
-	return sp
 }
 
 // runtimeAssets returns the runtime archives of backend b.
