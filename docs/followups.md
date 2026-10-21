@@ -52,3 +52,11 @@ findings block a merge). Each item names its owner. The full findings are in the
 | R3-#4 (low): the PDF waiter regression depends on a cold-start deadline (raised from 15 s to 2 min on 2026-10-21 because parallel load failed pushes) | WP9 | Replace the wall-clock bound with a readiness signal so parallel load cannot fail it. |
 
 See `.review/wp4-r3.md`.
+
+## From WP2 review round 3 (final round under the 2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| R3-#1 (high, fixed): picked archive could exhaust memory | done | `extractPick` now enforces a 64 MiB extracted-output budget (`TestPickExtractionHasAnOutputBudget`). Still better: embed in bounded batches as units arrive instead of retaining them. |
+| R3-#2 (medium): BF16 quality compares two different versions of a picked file | WP2/WP9 | Copy each pick once per lab run and reuse that copy for every combination, so the BF16 reference and the tested run see the same bytes. See `.review/wp2-r3.md`. |
+| R3-#3 (medium): a crash during a response body still has a raw-error race | WP2 | Map body-read errors after a child crash to the restart/stopped errors under the same lifetime/epoch lock as the request path; add a regression that kills the child mid-body. |

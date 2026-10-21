@@ -246,6 +246,12 @@ them start after M0 merges.
   `cmd/spike-sidecar` does not yet do this).
 - **Also:** the Q8_0 sidecar run that spike 3 leaves open. The Windows job object belongs to the
   Windows phase.
+- **WP2 status (2026-10-21):** acceptance passed on the reference host. Vulkan listed the AMD Radeon RENOIR;
+  the Q8_0 lab measured 5306.2 ms/image on CPU and 1718.4 ms/image on Vulkan (quality 0.999710 and 0.999823),
+  recommending Vulkan. Two real Vulkan server kills restarted Vulkan once, then fell back to CPU, where a
+  768-dimensional embedding succeeded. Parser, precision, runtime startup/fallback and lab FIFO/cancel/shutdown
+  tests pass. The Q8_0 sidecar smoke run is recorded in `docs/spikes.md`. Windows job-object behavior remains in
+  the Windows phase.
 
 ### WP3: store
 
