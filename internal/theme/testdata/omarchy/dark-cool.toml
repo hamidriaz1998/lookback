@@ -1,0 +1,17 @@
+# Hand-made fixture: a dark, cool palette with a dim muted color.
+mode = "dark"
+
+accent = "#7aa2f7"
+selection = "#283457"
+muted = "#565f89"
+
+background = "#1a1b26"
+lighter_background = "#24283b"
+
+foreground = "#c0caf5"
+bright_foreground = "#ffffff"
+
+red = "#f7768e"
+yellow = "#e0af68"
+green = "#9ece6a"
+bright_yellow = "#e0af68"

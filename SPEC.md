@@ -572,10 +572,26 @@ mix Surface 8% and 16% toward Text, Border mixes Background 18% toward Text, Acc
 AccentPressed mix the Accent 12% toward white or black, Selection is the Accent at 24% alpha, Focus is
 the Accent at 80% alpha, Scrollbar is the Text at 35% alpha, and Radius is 8.
 
-**Contrast test (required)**: a unit test checks every built-in theme, and the Omarchy mapping on a set
-of fixture files, for Text and TextMuted ≥ 4.5:1 against both Background and Surface, AccentText ≥ 4.5:1
-against Accent, and Focus ≥ 3:1 against Background (WCAG 1.4.11 for the focus ring). Border is
-decorative: it must reach ≥ 1.3:1 against Background so card edges stay visible, and no more is required.
+**Guard for dynamic themes.** System and Omarchy are not fixed, so they run through one shared
+function after they are built and before they are used. The four fixed palettes pass the contrast rules
+as they are and are not guarded. The guard, in order:
+
+1. **TextMuted:** mix toward Text in 5% steps until ≥ 4.5:1 against both Background and Surface.
+2. **AccentText and Accent:** pick whichever of Background, Text, pure white and pure black has the highest
+   contrast with Accent. If that is still < 4.5:1, move the Accent in 5% steps toward black or white,
+   whichever contrasts more with Background, and pick again, until it reaches 4.5:1. AccentHover and
+   AccentPressed are derived from the final Accent. Accent is changed only for this step.
+3. **Focus:** derived after step 2 and separate from Accent. It is the final Accent at 80% alpha, composited
+   over Background, if that is ≥ 3:1 against Background; else the opaque final Accent if that is ≥ 3:1; else
+   the opaque final Accent moved in 5% steps toward the same end until ≥ 3:1. Only Focus moves in this step.
+4. The Focus adjustment can always reach the chosen endpoint, pure black or white, which exceeds 3:1
+   against any Background. Text, Background, Surface and the semantic colors are left unchanged.
+
+**Contrast test (required)**: a unit test checks every fixed palette as it is, System in light and dark
+after the guard, and every Omarchy fixture file after the guard, for Text and TextMuted ≥ 4.5:1 against
+both Background and Surface, AccentText ≥ 4.5:1 against Accent, and Focus ≥ 3:1 against Background
+(WCAG 1.4.11 for the focus ring). Border is decorative: it must reach ≥ 1.3:1 against Background so card
+edges stay visible, and no more is required.
 
 ### Omarchy theme (Linux only, build tag `linux`)
 
@@ -594,14 +610,14 @@ The file is flat TOML: `mode = "dark"` plus `key = "#rrggbb"` pairs. Mapping:
 | SurfacePressed | `lighter_background` mixed 15% toward `foreground` |
 | Border | `background` mixed 18% toward `foreground` |
 | Text | `foreground` |
-| TextMuted | `muted`, mixed toward `foreground` in 5% steps until ≥ 4.5:1 against both Background and Surface |
+| TextMuted | `muted`, then the guard (mixed toward `foreground` in 5% steps until ≥ 4.5:1 against both Background and Surface) |
 | Accent | `accent`; Hover/Pressed mixed 12% toward white/black |
-| AccentText | whichever of `background` and `bright_foreground` contrasts more with `accent` |
+| AccentText | set by the guard (see above): the best of Background, Text, white and black on `accent` |
 | Danger | `red` |
 | Warning | `bright_yellow` if dark, else `yellow` (some themes' `yellow` is green) |
 | Success | `green` |
 | Selection | `selection` |
-| Focus | Accent at 80% alpha |
+| Focus | Accent at 80% alpha, then the guard |
 | Scrollbar | Text at 35% alpha |
 
 A missing key falls back to the System theme's value. Example: the theme on the reference machine has
