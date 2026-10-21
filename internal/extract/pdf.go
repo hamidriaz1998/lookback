@@ -38,8 +38,19 @@ const (
 type PDF struct {
 	gateMu sync.Mutex
 	gate   chan struct{}
-	pool   pdfium.Pool
-	inst   pdfium.Pdfium
+	pool   pdfium.Pool   // guarded by the gate
+	inst   pdfium.Pdfium // guarded by the gate
+	// starting carries the result of a runtime startup that no extraction has adopted yet. The startup runs in its
+	// own goroutine, so a cancelled extraction can return while it runs. Guarded by the gate.
+	starting chan startResult
+	// startHook, when set, runs at the start of each runtime startup. Tests use it to hold a startup.
+	startHook func()
+}
+
+type startResult struct {
+	pool pdfium.Pool
+	inst pdfium.Pdfium
+	err  error
 }
 
 // NewPDF returns a PDF extractor. It does not start the runtime until the first Extract.
@@ -69,31 +80,59 @@ func (p *PDF) acquire(ctx context.Context) error {
 
 func (p *PDF) release() { <-p.gate }
 
-// instance starts the runtime on first use. The caller holds the extraction gate.
+// startRuntime creates the WebAssembly runtime when pool is nil, then borrows an instance from it. go-pdfium's
+// startup calls (module compilation, pool preparation, worker creation) cannot be interrupted, so this runs without
+// the gate and without a context. The caller stops waiting instead, and the result is adopted later.
+func startRuntime(pool pdfium.Pool, hook func()) startResult {
+	if hook != nil {
+		hook()
+	}
+	if pool == nil {
+		runtimeConfig := wazero.NewRuntimeConfig().WithCoreFeatures(
+			api.CoreFeaturesV2 | experimental.CoreFeaturesExceptionHandling).WithCloseOnContextDone(true)
+		created, err := webassembly.Init(webassembly.Config{
+			MinIdle: 1, MaxIdle: 1, MaxTotal: 1, RuntimeConfig: runtimeConfig,
+		})
+		if err != nil {
+			return startResult{err: fmt.Errorf("pdfium: %w", err)}
+		}
+		pool = created
+	}
+	inst, err := pool.GetInstanceWithContext(context.Background())
+	if err != nil {
+		return startResult{pool: pool, err: fmt.Errorf("pdfium: %w", err)}
+	}
+	return startResult{pool: pool, inst: inst}
+}
+
+// instance returns the runtime instance, starting the runtime on first use or after an interruption. The caller
+// holds the extraction gate. If ctx ends first, it returns ctx.Err() and the startup stays pending: the next call
+// adopts it, so an abandoned startup never leaves the extractor unusable.
 func (p *PDF) instance(ctx context.Context) (pdfium.Pdfium, error) {
 	if p.inst != nil {
 		return p.inst, nil
 	}
-	if p.pool == nil {
-		runtimeConfig := wazero.NewRuntimeConfig().WithCoreFeatures(
-			api.CoreFeaturesV2 | experimental.CoreFeaturesExceptionHandling).WithCloseOnContextDone(true)
-		pool, err := webassembly.Init(webassembly.Config{
-			MinIdle: 1, MaxIdle: 1, MaxTotal: 1, RuntimeConfig: runtimeConfig,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("pdfium: %w", err)
+	if p.starting == nil {
+		ch := make(chan startResult, 1)
+		p.starting = ch
+		go func(pool pdfium.Pool, hook func()) { ch <- startRuntime(pool, hook) }(p.pool, p.startHook)
+	}
+	select {
+	case r := <-p.starting:
+		p.starting = nil
+		p.pool = r.pool
+		if r.err != nil {
+			return nil, r.err
 		}
-		p.pool = pool
+		p.inst = r.inst
+		return r.inst, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	inst, err := p.pool.GetInstanceWithContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("pdfium: %w", err)
-	}
-	p.inst = inst
-	return inst, nil
 }
 
-// Close releases the runtime. The extractor starts it again on the next Extract.
+// Close releases the runtime. The extractor starts it again on the next Extract. A startup still running is
+// detached: Close does not wait for it, and its result is closed when it finishes.
 func (p *PDF) Close() error {
 	if err := p.acquire(context.Background()); err != nil {
 		return err
@@ -103,13 +142,32 @@ func (p *PDF) Close() error {
 	if p.inst != nil {
 		err = p.inst.Close()
 	}
-	if p.pool != nil {
-		if perr := p.pool.Close(); err == nil {
-			err = perr
-		}
+	if p.starting != nil {
+		go discardStartup(p.starting)
+		p.starting = nil
+	} else if p.pool != nil {
+		err = firstErr(err, p.pool.Close())
 	}
 	p.inst, p.pool = nil, nil
 	return err
+}
+
+// discardStartup closes what a detached startup produces.
+func discardStartup(ch chan startResult) {
+	r := <-ch
+	if r.inst != nil {
+		_ = r.inst.Close()
+	}
+	if r.pool != nil {
+		_ = r.pool.Close()
+	}
+}
+
+func firstErr(a, b error) error {
+	if a != nil {
+		return a
+	}
+	return b
 }
 
 // Extract emits the units of the PDF f, one per page, in page order.

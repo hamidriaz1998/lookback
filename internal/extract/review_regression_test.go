@@ -3,12 +3,15 @@ package extract
 import (
 	"archive/zip"
 	"bytes"
+	"compress/zlib"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -294,5 +297,182 @@ func TestRegistryImageEdgeSetting(t *testing.T) {
 	}
 	if w, h := longEdge(); w != 800 || h != 400 {
 		t.Fatalf("rejected edge changed the setting: got %dx%d", w, h)
+	}
+}
+
+// buildContentPDF writes a PDF with one page per content stream. Every page can use font F1 (Helvetica). Each
+// stream is Flate-compressed, so a long repetitive stream costs little file size.
+func buildContentPDF(contents ...string) []byte {
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"", // Pages, filled in below once the kids are known
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+	}
+	kids := make([]string, len(contents))
+	for i, c := range contents {
+		pageObj, contentObj := 4+2*i, 5+2*i
+		kids[i] = fmt.Sprintf("%d 0 R", pageObj)
+		var z bytes.Buffer
+		zw := zlib.NewWriter(&z)
+		zw.Write([]byte(c))
+		zw.Close()
+		objs = append(objs,
+			fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << /Font << /F1 3 0 R >> >> >>", contentObj),
+			fmt.Sprintf("<< /Length %d /Filter /FlateDecode >>\nstream\n%s\nendstream", z.Len(), z.String()))
+	}
+	objs[1] = fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(contents))
+
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.4\n")
+	offsets := make([]int, len(objs))
+	for i, body := range objs {
+		offsets[i] = out.Len()
+		fmt.Fprintf(&out, "%d 0 obj\n%s\nendobj\n", i+1, body)
+	}
+	xref := out.Len()
+	fmt.Fprintf(&out, "xref\n0 %d\n0000000000 65535 f \n", len(objs)+1)
+	for _, off := range offsets {
+		fmt.Fprintf(&out, "%010d 00000 n \n", off)
+	}
+	fmt.Fprintf(&out, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objs)+1, xref)
+	return out.Bytes()
+}
+
+// TestPDFCancelledStartupReturnsPromptly covers R2 finding 3: a cancelled extraction must not stay blocked
+// while the PDFium runtime starts, and a later extraction must still work.
+func TestPDFCancelledStartupReturnsPromptly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("PDF runtime start is heavy; skipped under -short")
+	}
+	p := NewPDF()
+	defer p.Close()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once, releaseOnce sync.Once
+	releaseStartup := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseStartup()
+	p.startHook = func() { once.Do(func() { close(entered); <-release }) }
+
+	f := contract.FileRec{ID: 1, Path: filepath.Join("testdata", "text-and-image.pdf"), Kind: contract.KindPDF}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { first <- p.Extract(ctx, f, func(contract.Unit) error { return nil }) }()
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("runtime startup did not begin")
+	}
+	cancel()
+	select {
+	case err := <-first:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled extraction returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled extraction waited for runtime startup")
+	}
+
+	// The startup finishes in the background; the next extraction uses it.
+	releaseStartup()
+	units := 0
+	if err := p.Extract(context.Background(), f, func(contract.Unit) error { units++; return nil }); err != nil {
+		t.Fatalf("extraction after a cancelled startup: %v", err)
+	}
+	if units != 3 {
+		t.Fatalf("extraction after a cancelled startup: %d units, want 3", units)
+	}
+}
+
+// TestPDFCloseDoesNotWaitForStartup covers R2 finding 3 from the shutdown side: Close must return while a
+// cancelled startup is still running.
+func TestPDFCloseDoesNotWaitForStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("PDF runtime start is heavy; skipped under -short")
+	}
+	p := NewPDF()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once, releaseOnce sync.Once
+	releaseStartup := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseStartup()
+	p.startHook = func() { once.Do(func() { close(entered); <-release }) }
+
+	f := contract.FileRec{ID: 1, Path: filepath.Join("testdata", "text-and-image.pdf"), Kind: contract.KindPDF}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { first <- p.Extract(ctx, f, func(contract.Unit) error { return nil }) }()
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("runtime startup did not begin")
+	}
+	cancel()
+	select {
+	case <-first:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled extraction waited for runtime startup")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- p.Close() }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close waited for a cancelled runtime startup")
+	}
+}
+
+// TestPDFInFlightPDFiumCallIsInterrupted covers R2 finding 4 on the real PDFium runtime. Cancelling while page 2
+// is inside one long PDFium render call must end that call promptly with the context error, and the extractor must
+// still extract another PDF afterwards. Rendering is pure computation inside WebAssembly: without the runtime's
+// close-on-context-done option the call runs to completion (about 3 s for this page), so the 1 s bound catches it.
+func TestPDFInFlightPDFiumCallIsInterrupted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("PDF runtime start and a multi-second PDFium call are heavy; skipped under -short")
+	}
+	dir := t.TempDir()
+	// Few characters, so page 2 is rendered: 1000 four-segment paths make one PDFium render call of several seconds.
+	heavy := "BT /F1 11 Tf 40 740 Td (Vector page.) Tj ET 0.1 w " + strings.Repeat("10 10 m 600 780 l 20 700 l 500 20 l 300 600 l S ", 1000)
+	path := filepath.Join(dir, "heavy.pdf")
+	if err := os.WriteFile(path, buildContentPDF("BT /F1 11 Tf 40 740 Td (First page.) Tj ET", heavy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := NewPDF()
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	firstPage := make(chan struct{})
+	var once sync.Once
+	done := make(chan error, 1)
+	go func() {
+		done <- p.Extract(ctx, contract.FileRec{ID: 1, Path: path, Kind: contract.KindPDF}, func(contract.Unit) error {
+			once.Do(func() { close(firstPage) })
+			return nil
+		})
+	}()
+	select {
+	case <-firstPage:
+	case <-time.After(60 * time.Second):
+		t.Fatal("first page did not extract")
+	}
+	// Page 1 is done, so page 2's heavy render call is running. Cancel while it is in flight.
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("interrupted extraction returned %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("in-flight PDFium call was not interrupted within 1 s")
+	}
+
+	units := 0
+	if err := p.Extract(context.Background(), contract.FileRec{ID: 2, Path: filepath.Join("testdata", "text-and-image.pdf"), Kind: contract.KindPDF}, func(contract.Unit) error { units++; return nil }); err != nil {
+		t.Fatalf("extraction after interruption: %v", err)
+	}
+	if units != 3 {
+		t.Fatalf("extraction after interruption: %d units, want 3", units)
 	}
 }
