@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/hamidriaz1998/lookback/internal/contract"
@@ -114,20 +115,21 @@ func (a *App) previewActions(c *ui.Context, h contract.Hit) {
 	})
 }
 
-// highlight splits text into spans, with each occurrence of a query word on the Selection color.
+// highlight splits text into spans, with each occurrence of a query word on the Selection color. Words match
+// by case folding, rune by rune, on the original text, so every span boundary is a boundary of text. Lowering
+// the text first would shift byte offsets for characters whose lowercase form has another length.
 func highlight(text, query string, t *ui.Theme) []ui.Span {
-	words := strings.Fields(strings.ToLower(query))
+	words := strings.Fields(query)
 	if len(words) == 0 {
 		return []ui.Span{{Text: text, Color: t.Text}}
 	}
-	lower := strings.ToLower(text)
 	var spans []ui.Span
 	pos := 0
 	for pos < len(text) {
 		next, end := -1, -1
 		for _, w := range words {
-			if i := strings.Index(lower[pos:], w); i >= 0 && (next < 0 || pos+i < next) {
-				next, end = pos+i, pos+i+len(w)
+			if i, j, ok := indexFold(text[pos:], w); ok && (next < 0 || pos+i < next) {
+				next, end = pos+i, pos+j
 			}
 		}
 		if next < 0 {
@@ -141,6 +143,27 @@ func highlight(text, query string, t *ui.Theme) []ui.Span {
 		pos = end
 	}
 	return spans
+}
+
+// indexFold finds the first run of runes in s that equals word under case folding. It returns the byte range
+// of that run in s. Simple case folding keeps the rune count, so a run has as many runes as word.
+func indexFold(s, word string) (start, end int, ok bool) {
+	n := utf8.RuneCountInString(word)
+	if n == 0 {
+		return 0, 0, false
+	}
+	for i := range s {
+		j, count := i, 0
+		for j < len(s) && count < n {
+			_, size := utf8.DecodeRuneInString(s[j:])
+			j += size
+			count++
+		}
+		if count == n && strings.EqualFold(s[i:j], word) {
+			return i, j, true
+		}
+	}
+	return 0, 0, false
 }
 
 // removeFromIndex deletes a file's rows from the index, for a file that is gone (UI guide section 3.5).
