@@ -33,9 +33,10 @@ FROM items i JOIN files f ON f.id = i.file_id
 WHERE i.gen = ?2
 ORDER BY d LIMIT 300`
 
+// similarSQL is SPEC section 10's find-similar query. The seed must be in the same generation (?2).
 const similarSQL = `
-SELECT i.id, vector_distance_cos(i.embedding, (SELECT embedding FROM items WHERE id = ?1)) AS d
-FROM items i WHERE i.gen = ?2 AND i.file_id != (SELECT file_id FROM items WHERE id = ?1)
+SELECT i.id, vector_distance_cos(i.embedding, (SELECT embedding FROM items WHERE id = ?1 AND gen = ?2)) AS d
+FROM items i WHERE i.gen = ?2 AND i.file_id != (SELECT file_id FROM items WHERE id = ?1 AND gen = ?2)
 ORDER BY d LIMIT 10`
 
 func randUnit(r *rand.Rand) []float32 {
@@ -174,6 +175,12 @@ func TestSearchMatchesBruteForce(t *testing.T) {
 		}
 		sim = append(sim, id)
 	}
+	if err := srows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(sim) != 10 {
+		t.Fatalf("find similar returned %d rows, want exactly 10", len(sim))
+	}
 	var wantSim []pair
 	for id, v := range vecs {
 		if (id-1)/4 != (seed-1)/4 {
@@ -198,7 +205,9 @@ func TestSearchMatchesBruteForce(t *testing.T) {
 	}
 }
 
-// Timing at the SPEC budget size.
+// The search at the SPEC budget size. The row count and the iterator error are asserted. The
+// timing is only logged: wall time depends on the machine, so the budget (< 1 s, SPEC section 18)
+// is checked by hand on the reference laptop, and the numbers go to docs/spikes.md.
 func TestSearch100k(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -218,6 +227,12 @@ func TestSearch100k(t *testing.T) {
 		n := 0
 		for rows.Next() {
 			n++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if n != 300 {
+			t.Fatalf("search returned %d rows, want 300", n)
 		}
 		t.Logf("search run %d: %d rows in %s", run+1, n, time.Since(start).Round(time.Millisecond))
 	}
