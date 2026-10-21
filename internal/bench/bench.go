@@ -251,9 +251,17 @@ func (l *Lab) execute(r *run) contract.LabStep {
 		return fail(err)
 	}
 	if len(r.extra) > 0 {
-		res.Quality, res.QualityReason, err = l.pickQuality(r, picks)
+		// The run's quality is the lower of the sample's and the picked files' (a broken backend cannot score 1
+		// through its own picks). Without a BF16 reference for the picks, the quality is n/a (SPEC section 6).
+		pq, reason, err := l.pickQuality(r, picks)
 		if err != nil {
 			return fail(err)
+		}
+		switch {
+		case pq == nil:
+			res.Quality, res.QualityReason = nil, reason
+		case res.Quality == nil || *pq < *res.Quality:
+			res.Quality = pq
 		}
 	}
 	result := contract.LabResult{RunID: r.id, Combo: r.combo, Bench: res}
@@ -267,8 +275,8 @@ type timings struct {
 	wall       time.Duration // wall time of the text requests
 }
 
-// measure embeds the bundled sample and the user's files, and returns the numbers of the test table. With no picked
-// files, Quality is the sample's. The picked files' vectors are returned for pickQuality.
+// measure embeds the bundled sample and the user's files, and returns the numbers of the test table. Quality is the
+// sample's; the picked files' vectors are returned for pickQuality.
 func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, [][]float32, error) {
 	var res contract.BenchResult
 	images, err := assets.Images()
@@ -317,13 +325,11 @@ func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, [][]float32, 
 	if tm.wall > 0 {
 		res.TextTokensPerSec = float64(tm.tokens) / tm.wall.Seconds()
 	}
-	if len(r.extra) == 0 {
-		q, err := quality(vecs, ref)
-		if err != nil {
-			return res, nil, err
-		}
-		res.Quality = &q
+	q, err := quality(vecs, ref)
+	if err != nil {
+		return res, nil, err
 	}
+	res.Quality = &q
 	return res, picks, nil
 }
 

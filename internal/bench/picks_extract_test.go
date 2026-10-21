@@ -117,9 +117,10 @@ func TestPickedFileQualityFallsBackToBF16OnAnotherBackend(t *testing.T) {
 	}
 }
 
-// TestBF16RunIsItsOwnPickReference: a BF16 run of picked files is their reference, so its quality is 1 and it starts
-// no second server.
-func TestBF16RunIsItsOwnPickReference(t *testing.T) {
+// TestBF16RunIsCheckedAgainstTheEmbeddedReference: a BF16 run with picked files is its own reference for them, but
+// its sample vectors are still checked against the embedded reference, and the quality is the lower of the two. The
+// fake's BF16 vectors do not match the reference, so the quality must be below the bar; the picks alone would say 1.
+func TestBF16RunIsCheckedAgainstTheEmbeddedReference(t *testing.T) {
 	starts := &fakeStarts{}
 	l := newFakeLab(t, anyBF16, starts)
 	picked := writePick(t, "a.txt", "alpha beta gamma")
@@ -127,8 +128,8 @@ func TestBF16RunIsItsOwnPickReference(t *testing.T) {
 	if step.State != contract.LabDone {
 		t.Fatalf("run ended %v: %s", step.State, step.Err)
 	}
-	if q := step.Result.Bench.Quality; q == nil || *q < 0.999999 {
-		t.Fatalf("quality %v, want 1", q)
+	if q := step.Result.Bench.Quality; q == nil || *q >= qualityBar {
+		t.Fatalf("quality %v, want below %v: the sample does not match the reference", q, qualityBar)
 	}
 	if got := starts.opts; len(got) != 1 {
 		t.Fatalf("servers started %d, want the run only", len(got))
