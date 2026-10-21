@@ -13,10 +13,10 @@ import (
 
 // TestRealCPURuntimeResume downloads the pinned llama.cpp CPU archive from GitHub, interrupts it after
 // 4 MB, resumes it in a new downloader, and checks that the verified archive was unpacked. It uses a
-// temporary folder only. Skipped under -short.
+// temporary folder only. It runs only with LOOKBACK_REAL_NET=1, so a slow link does not fail the gates.
 func TestRealCPURuntimeResume(t *testing.T) {
-	if testing.Short() {
-		t.Skip("downloads 22 MB from GitHub")
+	if testing.Short() || os.Getenv("LOOKBACK_REAL_NET") != "1" {
+		t.Skip("downloads 22 MB from GitHub; set LOOKBACK_REAL_NET=1 to run it")
 	}
 	cat, err := catalog.New()
 	if err != nil {

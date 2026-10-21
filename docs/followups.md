@@ -40,7 +40,6 @@ findings block a merge). Each item names its owner. The full findings are in the
 
 | Item | Owner | What to do |
 |---|---|---|
-| `TestRealCPURuntimeResume` times out on a slow network | WP9 | It failed once (57 s, "timed out waiting for" the runtime archive) and passed on two reruns (27 s, 33 s). Give the resume wait a deadline that scales with the archive size, or skip the real download under `-short`, so a slow link does not fail the gate. |
 
 ## From WP4 review round 3
 
@@ -113,7 +112,7 @@ See `.review/wp4-r3.md`.
 
 | Item | Owner | What to do |
 |---|---|---|
-| Pre-push hook takes 3–8 min per push | WP10/maintenance | The hook exports each pushed commit to a fresh temp dir, so the Go test cache never hits, and it runs the real 22 MB runtime download test on a slow link. Skip `real_test.go` downloads unless `LOOKBACK_REAL_NET=1`, and export to a stable path per branch so the test cache works. |
+| Pre-push hook takes 3–8 min per push | WP10/maintenance | The hook exports each pushed commit to a fresh temp dir, so the Go test cache never hits. Export to a stable path per branch so the test cache works. (The real download test now runs only with `LOOKBACK_REAL_NET=1`.) |
 | Silent GUI driving does not work | WP9 | Hyprland `send_shortcut` to the window on a hidden workspace does not reach MyGo's keyboard handling, so onboarding cannot be driven without showing the window. Add a MyGo-Tester-based end-to-end test over the real `OpenServices` instead (models from a reflinked data dir). |
 | Smoke data dir needed reflinked models | WP9 | The downloader expects `models/<revision>/<file>` and `downloads/<sha>.done`; the verified flat files in `lookback-data/models` are not found. Add an "import existing model files" path that verifies SHA-256 and records them. |
 | Smoke run tracked 17 of 19 files in the folder | WP9 | Find why two screenshots in `lookback-data/smoke-folder` were not tracked (exclusion, duplicate content, or a scan race) and fix or document it. |
