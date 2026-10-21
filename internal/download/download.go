@@ -567,8 +567,13 @@ func (d *Downloader) install(a contract.Asset, part string) error {
 		if err := unpack(part, a.Name, filepath.Join(d.cfg.Dir, "runtimes", runtimeFolder(a))); err != nil {
 			return err
 		}
-	} else if err := os.Rename(part, d.modelPath(a)); err != nil {
-		return err
+	} else {
+		if err := os.MkdirAll(filepath.Dir(d.modelPath(a)), 0o755); err != nil {
+			return err
+		}
+		if err := os.Rename(part, d.modelPath(a)); err != nil {
+			return err
+		}
 	}
 	if err := writeJSON(d.donePath(a), a); err != nil {
 		return err
@@ -582,7 +587,11 @@ func (d *Downloader) installed(a contract.Asset) bool {
 	if _, err := os.Stat(d.donePath(a)); err != nil {
 		return false
 	}
-	return a.Archive || fileSize(d.modelPath(a)) >= 0
+	if a.Archive {
+		st, err := os.Stat(filepath.Join(d.cfg.Dir, "runtimes", runtimeFolder(a)))
+		return err == nil && st.IsDir()
+	}
+	return fileSize(d.modelPath(a)) >= 0
 }
 
 func (d *Downloader) partPath(a contract.Asset) string {
@@ -594,7 +603,12 @@ func (d *Downloader) donePath(a contract.Asset) string {
 }
 
 func (d *Downloader) modelPath(a contract.Asset) string {
-	return filepath.Join(d.cfg.Dir, "models", a.Name)
+	u, err := url.Parse(a.URL)
+	revision := "unknown"
+	if err == nil {
+		revision = path.Base(path.Dir(u.Path))
+	}
+	return filepath.Join(d.cfg.Dir, "models", revision, a.Name)
 }
 
 // runtimeFolder names the folder of a runtime archive: its release tag and backend, such as b11755-vulkan.

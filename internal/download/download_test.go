@@ -397,6 +397,51 @@ func TestEnsureConflictsAndIdempotence(t *testing.T) {
 	}
 }
 
+func TestModelRevisionsKeepSameNamedPins(t *testing.T) {
+	old, current := []byte("old revision"), []byte("current revision")
+	oldServer, currentServer := newTestServer(t, old), newTestServer(t, current)
+	a := modelAsset(oldServer.URL+"/resolve/rev-a/shared.gguf", old)
+	b := modelAsset(currentServer.URL+"/resolve/rev-b/shared.gguf", current)
+	a.Name, b.Name = "shared.gguf", "shared.gguf"
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d, err := New(ctx, Config{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, a.Key(), isState(contract.FileDone))
+	waitFor(t, d, b.Key(), isState(contract.FileDone))
+	for _, tc := range []struct {
+		a    contract.Asset
+		want []byte
+	}{{a, old}, {b, current}} {
+		got, err := os.ReadFile(d.modelPath(tc.a))
+		if err != nil || !bytes.Equal(got, tc.want) {
+			t.Fatalf("model %s = %q, %v", tc.a.URL, got, err)
+		}
+	}
+	stop(t, cancel, d)
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	d, err = New(ctx, Config{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	if p := waitFor(t, d, a.Key(), isState(contract.FileDone)); p.Done != a.Bytes {
+		t.Fatalf("restored revision progress = %d", p.Done)
+	}
+	if got, err := os.ReadFile(d.modelPath(a)); err != nil || !bytes.Equal(got, old) {
+		t.Fatalf("old revision after restart = %q, %v", got, err)
+	}
+}
+
 type fakeNet struct {
 	mu     sync.Mutex
 	online bool
