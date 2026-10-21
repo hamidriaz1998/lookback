@@ -18,7 +18,7 @@ import (
 func TestBackendSwitchDuringIndexingKeepsSpaces(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	rt := NewRuntime()
+	rt := NewRuntime(context.Background())
 	x := newIndexer(s, rt, time.Second)
 	life, stop := context.WithCancel(ctx)
 	defer stop()
@@ -112,7 +112,7 @@ func embedKey(t *testing.T, sess contract.Session, key, modality string) []float
 
 // Start rejects a context that is already done, and changes nothing (review finding 8).
 func TestStartRejectsCanceledContext(t *testing.T) {
-	x := newIndexer(NewStore(), NewRuntime(), time.Second)
+	x := newIndexer(NewStore(), NewRuntime(context.Background()), time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := x.Start(ctx); !errors.Is(err, context.Canceled) {
@@ -129,7 +129,7 @@ func TestStartRejectsCanceledContext(t *testing.T) {
 // (review finding 8).
 func TestCommandsAfterStopChangeNothing(t *testing.T) {
 	s := NewStore()
-	x := newIndexer(s, NewRuntime(), time.Second)
+	x := newIndexer(s, NewRuntime(context.Background()), time.Second)
 	life, stop := context.WithCancel(context.Background())
 	if err := x.Start(life); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func drain(t *testing.T, x *Indexer) {
 func startTestIndexer(t *testing.T) (*Store, *Indexer) {
 	t.Helper()
 	s := NewStore()
-	x := newIndexer(s, NewRuntime(), time.Second)
+	x := newIndexer(s, NewRuntime(context.Background()), time.Second)
 	life, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
 	if err := x.Start(life); err != nil {

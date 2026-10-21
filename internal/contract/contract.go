@@ -32,17 +32,18 @@ var (
 	ErrUnknownAsset = errors.New("unknown asset")
 	// ErrConflict is returned by Downloader.Ensure when a key is held with a different descriptor.
 	ErrConflict = errors.New("asset key is held with a different descriptor")
-	// ErrNotReady is returned by a Session that is not ready to embed (its sidecar is stopped or failed).
+	// ErrNotReady is returned by a Session that is not ready to embed (its sidecar is stopped or failed), and by
+	// Runtime.Session when a stop or failure ends its start.
 	ErrNotReady = errors.New("runtime is not ready")
-	// ErrRestarting is returned by a Session whose sidecar is starting or restarting. Callers retry after
-	// Runtime.Use returns.
+	// ErrRestarting is returned by a Session whose sidecar is starting or restarting, and by Runtime.Use when a
+	// later Use or Stop supersedes it. Callers wait with Session.Ready and then retry.
 	ErrRestarting = errors.New("runtime is restarting")
 	// ErrTooManySpaces is returned by Runtime.Session when two other vector spaces are already open.
 	ErrTooManySpaces = errors.New("two vector spaces are already open")
 	// ErrIncomplete is returned by Store.ActivateGeneration for a generation that does not cover every file.
 	ErrIncomplete = errors.New("generation does not cover every file")
-	// ErrStopped is returned by Indexer commands after the indexer's lifetime ends, and by Runtime waits
-	// that are cut short by Stop.
+	// ErrStopped is returned by Indexer, Lab and Runtime calls after the lifetime of that service ends. For the
+	// Runtime, the lifetime is the one set at construction; Stop does not end it.
 	ErrStopped = errors.New("service is stopped")
 )
 
@@ -594,50 +595,76 @@ const (
 	RuntimeFailed      RuntimeState = "failed"
 )
 
-// RuntimeStatus is the state of the sidecar and the combination it runs.
+// SpaceStatus is the state of the sidecar of one open vector space.
+type SpaceStatus struct {
+	Space VectorSpace
+	State RuntimeState
+	Err   string // why the sidecar is stopped, failed or on the CPU fallback, for display; empty otherwise
+}
+
+// RuntimeStatus is the state of the runtime: its backend, and one entry per open vector space, in the order
+// the spaces were opened. State is the worst of the spaces' states, from failed, stopped, cpu-fallback,
+// restarting and starting down to ready, and stopped when no space is open.
+//
+// The UI shows the backend and precisions of the active generation by joining Runtime.Backend with the
+// active generation's Space from the store. The runtime does not know which space is active.
 type RuntimeStatus struct {
+	Backend Backend
 	State   RuntimeState
-	Combo   Combo
-	Message string // for example "GPU backend failed twice; indexing continues on the CPU"
-	Since   time.Time
+	Spaces  []SpaceStatus
 }
 
 // Session embeds text and images in one vector space. Every vector it returns belongs to Space, and callers
 // search and store those vectors only in a generation whose Space equals it.
+//
+// A Session returned by Runtime.Session is valid until Close, and it is ready when it is returned. Close is
+// idempotent. The sidecar of its space stops when its last session closes.
 type Session interface {
 	Embedder
 	// Space returns the vector space of the session.
 	Space() VectorSpace
-	// Close releases the session. The sidecar of its space stops when no session of that space is open.
+	// Ready waits until the session's sidecar is ready again, after a Use or a crash restart. It returns when
+	// ready, ErrNotReady when the session is closed, ctx.Err() when ctx ends first, and ErrStopped when the
+	// runtime's lifetime ends.
+	Ready(ctx context.Context) error
+	// Close releases the session. A closed session fails with ErrNotReady.
 	Close() error
 }
 
-// Runtime runs the sidecars. The backend (cpu, vulkan, cuda) is runtime-wide. The runtime keeps one
-// sidecar per open vector space, and at most two spaces are open: the active space and, during a rebuild,
-// the building space. Embedding goes through a Session.
+// Runtime runs the sidecars: one llama-server per open vector space, with the backend that is runtime-wide.
+// At most two spaces are open: the active space and, during a rebuild, the building space. Embedding goes
+// through a Session.
 //
-// Readiness: a session embeds only while its sidecar is ready (or on the CPU fallback). A request that
-// is in flight while the sidecar starts or restarts fails with ErrRestarting, and the caller retries after
-// Use returns. A session whose sidecar is stopped or failed fails with ErrNotReady.
+// Readiness: a session embeds only while its sidecar is ready (or on the CPU fallback). A request that is in
+// flight while the sidecar starts or restarts fails with ErrRestarting; the caller waits with Session.Ready and
+// retries. A session whose sidecar is stopped or failed fails with ErrNotReady.
+//
+// Lifetime: the implementation takes the lifetime context at construction. When it ends, the sidecars stop,
+// Subscribe streams close, and calls return ErrStopped. Stop stops the sidecars but does not end the lifetime,
+// so a later Use or Session starts them again.
 type Runtime interface {
-	// Active returns the combination the sidecar runs, or the one it is starting.
-	Active() Combo
+	// Backend returns the backend of every sidecar.
+	Backend() Backend
 	// Status returns the current status.
 	Status() RuntimeStatus
-	// Subscribe streams status changes. Stopped and failed are terminal.
+	// Subscribe streams the status on every change, starting with the current one. No value is terminal. The
+	// channel closes when ctx ends or the runtime's lifetime ends.
 	Subscribe(ctx context.Context) <-chan RuntimeStatus
-	// Session opens a session for vector space s. Opening a space that is open shares its sidecar.
-	// It returns ErrTooManySpaces when two other spaces are open.
+	// Session returns a session for vector space s once its sidecar is ready. A space that is not open starts its
+	// sidecar, and opening an open space shares it. ctx bounds only this call: when ctx ends first, Session returns
+	// ctx.Err() and releases its reference, and a sidecar that only this call started stops. It returns
+	// ErrTooManySpaces when two other spaces are open, ErrNotReady when a stop or failure ends the start, and
+	// ErrStopped after the lifetime ends.
 	Session(ctx context.Context, s VectorSpace) (Session, error)
-	// Use makes b the backend of every sidecar, and restarts the open ones ("Make active"). The precisions
-	// of a sidecar come from its vector space, not from Use. It returns when every open session is ready
-	// again, or when ctx ends. ctx also bounds the restart: when it ends first, the restart is abandoned and
-	// the sidecar is stopped. A Use that a later Use or Stop supersedes returns ErrRestarting. With no session
-	// open, Use returns at once.
+	// Use makes b the backend of every sidecar, and restarts the open ones ("Make active"). The precisions of a
+	// sidecar come from its vector space, not from Use. It returns when every open session is ready again, or
+	// when ctx ends. ctx also bounds the restart: when it ends first, the restart is abandoned and the unfinished
+	// sidecars are stopped. A Use that a later Use or Stop supersedes returns ErrRestarting. With no session open,
+	// Use only sets the backend that sidecars start with.
 	Use(ctx context.Context, b Backend) error
 	// RetryGPU tries the GPU backend again after a CPU fallback ("Try GPU again").
 	RetryGPU(ctx context.Context) error
-	// Stop stops every sidecar when the app quits. It ends a pending restart, and sessions fail with
-	// ErrNotReady until Use starts the sidecar again.
+	// Stop stops every sidecar when the app quits. It ends a pending restart. Sessions fail with ErrNotReady until
+	// Use or Session starts the sidecar again.
 	Stop(ctx context.Context) error
 }

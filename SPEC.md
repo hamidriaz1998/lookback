@@ -296,11 +296,23 @@ spaces are not comparable, so the runtime never mixes them:
   space and, during a rebuild, the building space. A third space returns `ErrTooManySpaces`.
 - Callers embed through a `Session` for one space (`Runtime.Session`). Every vector it returns belongs to
   `Session.Space()`. Callers search and store those vectors only in a generation whose space equals it.
+- `Session(ctx, space)` returns when that space's sidecar is ready. A space that is not open starts its
+  sidecar and waits. `ctx` bounds only that call: when it ends first, the call returns `ctx.Err()`, releases
+  its reference, and stops a sidecar that only that call started. A session stays valid until `Close`, which
+  is idempotent. The sidecar of a space stops when its last session closes.
+- `Session.Ready(ctx)` waits until the sidecar is ready again after a `Use` restart or a crash restart.
 - The backend is runtime-wide. `Use` on a new backend restarts every open sidecar. A request in flight on a
-  restarting sidecar fails with `ErrRestarting`, and the caller retries after `Use` returns. A stopped or
+  restarting sidecar fails with `ErrRestarting`; the caller waits with `Ready` and retries. A stopped or
   failed sidecar fails with `ErrNotReady`.
-- The test lab runs in its own temporary session, and the indexer pauses with reason `lab` while a run
-  lasts. Search keeps working on the active session.
+- `Runtime.Status` has the backend, the worst state of the open spaces, and one entry per open space with its
+  own state. It is `stopped` when no space is open. The runtime does not know which space is active. The UI
+  shows the backend and precisions of the active generation by joining `Runtime.Backend()` with that
+  generation's `Space` from the store.
+- The runtime has a lifetime set at construction. `Stop` stops the sidecars without ending it, so a later
+  `Use` or `Session` starts them again. When the lifetime ends, the status streams close.
+- The test lab starts its own temporary `llama-server` for each run, with the run's backend and precisions,
+  separate from the runtime's sidecars. The indexer pauses with reason `lab` while the lab queue is busy.
+  Search keeps working on the active session.
 
 ### Embedder API
 

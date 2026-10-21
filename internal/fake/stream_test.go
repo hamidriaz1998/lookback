@@ -49,7 +49,7 @@ func TestLateSubscriberGetsSnapshot(t *testing.T) {
 // non-terminal updates (review finding 6).
 func TestTerminalStateReachesEveryReader(t *testing.T) {
 	ctx := context.Background()
-	r := NewRuntime()
+	r := NewRuntime(context.Background())
 	fast := r.Subscribe(ctx)
 	slow := r.Subscribe(ctx) // not read until the end
 	for i := 0; i < 80; i++ {
@@ -74,7 +74,7 @@ func TestTerminalStateReachesEveryReader(t *testing.T) {
 
 // Canceling the subscriber's context closes its channel.
 func TestSubscriptionClosesWithItsContext(t *testing.T) {
-	r := NewRuntime()
+	r := NewRuntime(context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := r.Subscribe(ctx)
 	if _, ok := wait(t, ch); !ok {

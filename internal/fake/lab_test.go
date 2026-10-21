@@ -35,7 +35,7 @@ func lockedPause(x *Indexer) contract.PauseReason {
 // paused while a run uses the runtime (review finding 7).
 func TestLabRunsAreSerializedByID(t *testing.T) {
 	ctx := context.Background()
-	rt := NewRuntime()
+	rt := NewRuntime(context.Background())
 	ix := NewIndexer(NewStore(), rt)
 	l := NewLab(ctx, ix)
 	events := l.Subscribe(ctx)
@@ -99,7 +99,7 @@ func TestLabRunsAreSerializedByID(t *testing.T) {
 // Canceling a run emits a canceled step with its ID, and a run canceled while it waits never starts.
 func TestLabCancelEmitsTerminalStep(t *testing.T) {
 	ctx := context.Background()
-	rt := NewRuntime()
+	rt := NewRuntime(context.Background())
 	ix := NewIndexer(NewStore(), rt)
 	l := NewLab(ctx, ix)
 	events := l.Subscribe(ctx)
@@ -166,7 +166,7 @@ func lockedTemp(l *Lab) int {
 // starts its own temporary sidecar, and none is left after the queue empties.
 func TestLabCanceledQueuedRunKeepsOrder(t *testing.T) {
 	ctx := context.Background()
-	rt := NewRuntime()
+	rt := NewRuntime(context.Background())
 	ix := NewIndexer(NewStore(), rt)
 	l := NewLab(ctx, ix)
 	events := l.Subscribe(ctx)
@@ -235,7 +235,7 @@ func TestLabCanceledQueuedRunKeepsOrder(t *testing.T) {
 // with their own live contexts, and then the streams close (review finding 7). No run starts afterward.
 func TestLabLifetimeEndCancelsEveryRun(t *testing.T) {
 	bg := context.Background()
-	rt := NewRuntime()
+	rt := NewRuntime(context.Background())
 	ix := NewIndexer(NewStore(), rt)
 	life, endLife := context.WithCancel(bg)
 	l := NewLab(life, ix)

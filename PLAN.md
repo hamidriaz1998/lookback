@@ -197,7 +197,7 @@ WP2, so M0 closes with them open.
 Pause, Resume, Retry, RetryAll, Rescan, Rebuild, Subscribe, SubscribeRebuild), `ThemeSource`, `Catalog`
 (Assets, Backends), `Downloader` (Ensure, Pause, Resume, PauseAll, ResumeAll, Retry, Subscribe; keyed by
 `Asset.Key()`), `Detector` (Detect, Probe), `Lab` (Run returns a `RunID`, Subscribe, Recommend), and
-`Runtime` (Active, Status, Subscribe, Session, Use, RetryGPU, Stop; it no longer embeds `Embedder`).
+`Runtime` (Backend, Status, Subscribe, Session, Use, RetryGPU, Stop; it no longer embeds `Embedder`).
 Streams share one rule, documented in `internal/contract`: each Subscribe gets its own channel, starts
 with the snapshot, keeps terminal values, and closes with its ctx.
 
@@ -230,7 +230,8 @@ them start after M0 merges.
   returns a `RunID`, `Subscribe`, `Recommend`; runs form one FIFO queue, and each one starts its own temporary
   llama-server with its combination's backend and precisions, separate from the runtime, and pauses the
   indexer with `PauseLab`); `contract.Runtime`, implemented by `runtime.Sidecar`,
-  which adds `Active`, `Status`, `Subscribe`, `Session`, `Use`, `RetryGPU` and `Stop`. `Session` embeds
+  which adds `Backend`, `Status`, `Subscribe`, `Session`, `Use`, `RetryGPU` and `Stop`; `Session` returns
+  when ready and `Session.Ready` waits after a restart. `Session` embeds
   for one vector space; the sidecar keeps at most two spaces open (SPEC §8).
 - **Tasks:** Linux detection; `--list-devices` parsing; the CUDA driver-version rule
   (verify and record the minimum driver versions); sidecar flags, free port, API key, health, logs,

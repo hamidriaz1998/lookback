@@ -208,7 +208,7 @@ func TestByteFallbackTokenizer(t *testing.T) {
 func TestIndexerCompletesIntoStore(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	x := newIndexer(s, NewRuntime(), time.Second)
+	x := newIndexer(s, NewRuntime(context.Background()), time.Second)
 	life, stop := context.WithCancel(ctx)
 	defer stop()
 	if err := x.Start(life); err != nil {
@@ -265,7 +265,7 @@ func TestIndexerCompletesIntoStore(t *testing.T) {
 // The ETA counts down steadily once estimating ends.
 func TestIndexerETACountsDown(t *testing.T) {
 	ctx := context.Background()
-	x := newIndexer(NewStore(), NewRuntime(), time.Second)
+	x := newIndexer(NewStore(), NewRuntime(context.Background()), time.Second)
 	life, stop := context.WithCancel(ctx)
 	defer stop()
 	_ = x.Start(life)
@@ -291,7 +291,7 @@ func TestIndexerETACountsDown(t *testing.T) {
 func TestRebuildRunsBesideActiveJob(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	x := newIndexer(s, NewRuntime(), 10*time.Second) // a 10 s tick keeps the simulated rebuild short
+	x := newIndexer(s, NewRuntime(context.Background()), 10*time.Second) // a 10 s tick keeps the simulated rebuild short
 	if _, err := x.Rebuild(ctx, contract.QuantBF16, contract.QuantBF16); !errors.Is(err, contract.ErrNotStarted) {
 		t.Fatalf("Rebuild before Start: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestRebuildRunsBesideActiveJob(t *testing.T) {
 func TestRebuildKeepsFilesCompletedDuringRebuild(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	x := newIndexer(s, NewRuntime(), 10*time.Second)
+	x := newIndexer(s, NewRuntime(context.Background()), 10*time.Second)
 	life, stop := context.WithCancel(ctx)
 	defer stop()
 	_ = x.Start(life)
@@ -416,7 +416,7 @@ func TestRebuildKeepsFilesCompletedDuringRebuild(t *testing.T) {
 func TestRebuildReconcilesEditedFile(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	x := newIndexer(s, NewRuntime(), 10*time.Second)
+	x := newIndexer(s, NewRuntime(context.Background()), 10*time.Second)
 	life, stop := context.WithCancel(ctx)
 	defer stop()
 	_ = x.Start(life)
