@@ -108,6 +108,7 @@ func (s *system) Changed() <-chan struct{} { return s.changed }
 
 func (s *system) Theme(base *ui.Theme) *ui.Theme {
 	t := *base
+	guard(&t)
 	return &t
 }
 

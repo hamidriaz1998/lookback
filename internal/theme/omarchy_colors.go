@@ -12,7 +12,7 @@ import (
 // present must be a #rrggbb color, or the file is invalid.
 var omarchyKeys = []string{
 	"background", "lighter_background", "foreground", "muted", "accent", "red",
-	"yellow", "bright_yellow", "green", "selection", "bright_foreground",
+	"yellow", "bright_yellow", "green", "selection",
 }
 
 // parseColors reads the flat TOML of an Omarchy theme: blank lines, # comments and `key = "value"`
@@ -82,15 +82,10 @@ func omarchyTheme(base *ui.Theme, kv map[string]string) *ui.Theme {
 	t.SurfacePressed = lighter.Mix(fg, 0.15)
 	t.Border = bg.Mix(fg, 0.18)
 	t.Text = fg
-	t.TextMuted = mutedGuard(col("muted", base.TextMuted), fg, bg, surface)
+	t.TextMuted = col("muted", base.TextMuted)
 	t.Accent = ac
 	t.AccentHover = ac.Mix(white, 0.12)
 	t.AccentPressed = ac.Mix(black, 0.12)
-	// Accent text is whichever of the background and the bright foreground contrasts more.
-	t.AccentText = bg
-	if contrast(col("bright_foreground", white), ac) > contrast(bg, ac) {
-		t.AccentText = col("bright_foreground", white)
-	}
 	t.Danger = col("red", base.Danger)
 	yellow := "yellow"
 	if dark {
@@ -101,6 +96,7 @@ func omarchyTheme(base *ui.Theme, kv map[string]string) *ui.Theme {
 	t.Selection = col("selection", base.Selection)
 	t.Focus = ac.Alpha(0.8)
 	t.Scrollbar = fg.Alpha(0.35)
+	guard(&t)
 	return &t
 }
 
