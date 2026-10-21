@@ -78,6 +78,11 @@ type file struct {
 	cancel      context.CancelFunc // non-nil while a goroutine runs this file
 }
 
+type installRecord struct {
+	Asset contract.Asset
+	Files []string
+}
+
 // New starts a downloader that stops when ctx ends. It resumes every download that a previous run left
 // unfinished, so a crash or kill loses nothing (SPEC section 7).
 func New(ctx context.Context, cfg Config) (*Downloader, error) {
@@ -95,19 +100,19 @@ func New(ctx context.Context, cfg Config) (*Downloader, error) {
 			return p.State == contract.FileDone || p.State == contract.FileFailed
 		},
 	)}
-	d.offline = cfg.Network != nil && !cfg.Network.Online()
 	if err := d.resumeFromDisk(); err != nil {
 		return nil, err
 	}
 	d.mu.Lock()
+	if cfg.Network != nil {
+		cfg.Network.OnChanged(func(online bool) { d.setOffline(!online) })
+		d.offline = !cfg.Network.Online()
+	}
 	for _, k := range d.order {
 		d.publishLocked(d.files[k])
 		d.startLocked(d.files[k])
 	}
 	d.mu.Unlock()
-	if cfg.Network != nil {
-		cfg.Network.OnChanged(func(online bool) { d.setOffline(!online) })
-	}
 	go func() {
 		<-ctx.Done()
 		d.shutdown()
@@ -129,10 +134,11 @@ func (d *Downloader) resumeFromDisk() error {
 			os.Remove(meta)
 			continue
 		}
-		if _, err := os.Stat(d.donePath(a)); err == nil {
+		if d.installed(a) {
 			removeIfExists(d.partPath(a), meta)
 			continue
 		}
+		removeIfExists(d.donePath(a))
 		d.add(&file{asset: a, phase: contract.FileQueued, done: max(fileSize(d.partPath(a)), 0)})
 	}
 	return nil
@@ -168,6 +174,10 @@ func (d *Downloader) Ensure(ctx context.Context, assets []contract.Asset) error 
 		f := &file{asset: a, phase: contract.FileQueued, userPaused: d.allPaused}
 		if d.installed(a) {
 			f.phase, f.done = contract.FileDone, a.Bytes
+		} else {
+			if err := os.Remove(d.donePath(a)); err != nil && !os.IsNotExist(err) {
+				return err
+			}
 		}
 		d.add(f)
 		d.publishLocked(f)
@@ -176,7 +186,7 @@ func (d *Downloader) Ensure(ctx context.Context, assets []contract.Asset) error 
 	return nil
 }
 
-// Pause pauses one file by key. A file that is queued or downloading stops; other phases are left alone.
+// Pause pauses one file by key. Verification may finish, but a canceled verifier cannot retry a transfer.
 func (d *Downloader) Pause(key string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -184,7 +194,7 @@ func (d *Downloader) Pause(key string) error {
 	if !ok {
 		return contract.ErrUnknownAsset
 	}
-	if f.phase == contract.FileQueued || f.phase == contract.FileDownloading {
+	if f.phase != contract.FileDone && f.phase != contract.FileFailed {
 		f.userPaused = true
 		d.stopLocked(f)
 		d.publishLocked(f)
@@ -208,13 +218,13 @@ func (d *Downloader) Resume(key string) error {
 	return nil
 }
 
-// PauseAll pauses every queued or downloading file, and files ensured or retried from now on.
+// PauseAll pauses every unfinished file, and files ensured or retried from now on.
 func (d *Downloader) PauseAll() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.allPaused = true
 	for _, k := range d.order {
-		if f := d.files[k]; f.phase == contract.FileQueued || f.phase == contract.FileDownloading {
+		if f := d.files[k]; f.phase != contract.FileDone && f.phase != contract.FileFailed {
 			f.userPaused = true
 			d.stopLocked(f)
 			d.publishLocked(f)
@@ -572,7 +582,11 @@ func (d *Downloader) copy(f *file, w io.Writer, body io.Reader, start int64, tou
 // unpacked into runtimes/. Then it writes the done marker and removes the part.
 func (d *Downloader) install(a contract.Asset, part string) error {
 	if a.Archive {
-		if err := unpack(part, a.Name, filepath.Join(d.cfg.Dir, "runtimes", runtimeFolder(a))); err != nil {
+		files, err := unpackFiles(part, a.Name, filepath.Join(d.cfg.Dir, "runtimes", runtimeFolder(a)))
+		if err != nil {
+			return err
+		}
+		if err := writeJSON(d.donePath(a), installRecord{Asset: a, Files: files}); err != nil {
 			return err
 		}
 	} else {
@@ -582,9 +596,9 @@ func (d *Downloader) install(a contract.Asset, part string) error {
 		if err := os.Rename(part, d.modelPath(a)); err != nil {
 			return err
 		}
-	}
-	if err := writeJSON(d.donePath(a), a); err != nil {
-		return err
+		if err := writeJSON(d.donePath(a), a); err != nil {
+			return err
+		}
 	}
 	removeIfExists(part, part+".json")
 	return nil
@@ -596,8 +610,21 @@ func (d *Downloader) installed(a contract.Asset) bool {
 		return false
 	}
 	if a.Archive {
-		st, err := os.Stat(filepath.Join(d.cfg.Dir, "runtimes", runtimeFolder(a)))
-		return err == nil && st.IsDir()
+		var record installRecord
+		if err := readJSON(d.donePath(a), &record); err != nil || record.Asset != a || len(record.Files) == 0 {
+			return false
+		}
+		root := filepath.Join(d.cfg.Dir, "runtimes", runtimeFolder(a))
+		for _, name := range record.Files {
+			clean, err := entryName(name)
+			if err != nil {
+				return false
+			}
+			if _, err := os.Lstat(filepath.Join(root, clean)); err != nil {
+				return false
+			}
+		}
+		return true
 	}
 	return fileSize(d.modelPath(a)) >= 0
 }

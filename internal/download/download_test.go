@@ -316,6 +316,34 @@ func TestOfflineDuringChecksumVerificationRestarts(t *testing.T) {
 	}
 }
 
+func TestPauseAllDuringChecksumVerificationDefersRetry(t *testing.T) {
+	content := randomBytes(32 * mib)
+	wrongPin := append([]byte(nil), content...)
+	wrongPin[0] ^= 0xff
+	ts := newTestServer(t, content)
+	a := modelAsset(ts.URL+"/model-test.gguf", wrongPin)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d, err := New(ctx, Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, a.Key(), isState(contract.FileVerifying))
+	d.PauseAll()
+	waitFor(t, d, a.Key(), isState(contract.FilePaused))
+	if got := len(ts.requests()); got != 1 {
+		t.Fatalf("requests while paused = %d, want only the original request", got)
+	}
+	d.ResumeAll()
+	waitFor(t, d, a.Key(), isState(contract.FileFailed))
+	if got := len(ts.requests()); got != 3 {
+		t.Fatalf("requests after resume = %d, want original plus two checksum attempts", got)
+	}
+}
+
 func TestRecoveredOfflineDownloadPublishesSavedBytes(t *testing.T) {
 	content := randomBytes(2 * mib)
 	ts := newTestServer(t, content)
@@ -347,6 +375,48 @@ func TestRecoveredOfflineDownloadPublishesSavedBytes(t *testing.T) {
 	}
 	if len(ts.requests()) != 0 {
 		t.Fatal("offline recovery started a request")
+	}
+}
+
+type registrationRaceNet struct {
+	mu     sync.Mutex
+	online bool
+	fns    []func(bool)
+}
+
+func (n *registrationRaceNet) Online() bool { n.mu.Lock(); defer n.mu.Unlock(); return n.online }
+func (n *registrationRaceNet) OnChanged(fn func(bool)) {
+	n.mu.Lock()
+	n.online = true // Connection returns after the constructor's old initial sample.
+	n.fns = append(n.fns, fn)
+	n.mu.Unlock()
+}
+
+func TestStartupReconcilesNetworkChangeAtRegistration(t *testing.T) {
+	content := randomBytes(2 * mib)
+	ts := newTestServer(t, content)
+	a := modelAsset(ts.URL+"/model-test.gguf", content)
+	dir := t.TempDir()
+	part := partOf(dir, a)
+	if err := os.MkdirAll(filepath.Dir(part), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(part, content[:mib], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(part+".json", a); err != nil {
+		t.Fatal(err)
+	}
+	net := &registrationRaceNet{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d, err := New(ctx, Config{Dir: dir, Network: net})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, a.Key(), isState(contract.FileDone))
+	if reqs := ts.requests(); len(reqs) != 1 || reqs[0] != "bytes="+strconv.Itoa(mib)+"-" {
+		t.Fatalf("requests = %q, want startup resume after registration-time network change", reqs)
 	}
 }
 
@@ -405,7 +475,7 @@ func TestCopyClassifiesLocalWriteFailure(t *testing.T) {
 }
 
 func TestMissingRuntimeRestoresDespiteDoneMarker(t *testing.T) {
-	body := tarGz(t, map[string]string{"llama-server": "runtime"})
+	body := tarGz(t, map[string]string{"llama-b11755/llama-server": "runtime"})
 	ts := newTestServer(t, body)
 	a := contract.Asset{Name: "llama-b11755-bin-ubuntu-x64.tar.gz", URL: ts.URL + "/b11755/llama-b11755-bin-ubuntu-x64.tar.gz", Bytes: int64(len(body)), SHA256: sumHex(body), Part: contract.PartRuntime, Backend: contract.BackendCPU, Archive: true}
 	dir := t.TempDir()
@@ -418,7 +488,8 @@ func TestMissingRuntimeRestoresDespiteDoneMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, d, a.Key(), isState(contract.FileDone))
-	if err := os.RemoveAll(filepath.Join(dir, "runtimes", runtimeFolder(a))); err != nil {
+	server := filepath.Join(dir, "runtimes", runtimeFolder(a), "llama-b11755", "llama-server")
+	if err := os.Remove(server); err != nil {
 		t.Fatal(err)
 	}
 	stop(t, cancel, d)
@@ -435,8 +506,95 @@ func TestMissingRuntimeRestoresDespiteDoneMarker(t *testing.T) {
 	if len(ts.requests()) != 2 {
 		t.Fatalf("requests = %d, want restoration download despite stale marker", len(ts.requests()))
 	}
-	if _, err := os.Stat(filepath.Join(dir, "runtimes", runtimeFolder(a))); err != nil {
-		t.Fatalf("runtime was not restored: %v", err)
+	if got, err := os.ReadFile(server); err != nil || string(got) != "runtime" {
+		t.Fatalf("missing runtime file was not restored: %q, %v", got, err)
+	}
+}
+
+func TestInterruptedRuntimeRepairKeepsPartialOnRestart(t *testing.T) {
+	body := tarGz(t, map[string]string{"llama-b11755/llama-server": "runtime", "lib/cuda.so": "cuda"})
+	ts := newTestServer(t, body)
+	a := contract.Asset{Name: "llama-b11755-bin-ubuntu-x64.tar.gz", URL: ts.URL + "/b11755/llama-b11755-bin-ubuntu-x64.tar.gz", Bytes: int64(len(body)), SHA256: sumHex(body), Part: contract.PartRuntime, Backend: contract.BackendCPU, Archive: true}
+	dir := t.TempDir()
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	d1, err := New(ctx1, Config{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d1.Ensure(context.Background(), []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d1, a.Key(), isState(contract.FileDone))
+	server := filepath.Join(dir, "runtimes", runtimeFolder(a), "llama-b11755", "llama-server")
+	if err := os.Remove(server); err != nil {
+		t.Fatal(err)
+	}
+	stop(t, cancel1, d1)
+
+	part := partOf(dir, a)
+	if err := os.WriteFile(part, body[:len(body)/2], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(part+".json", a); err != nil {
+		t.Fatal(err)
+	}
+	net := &fakeNet{online: false}
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	d2, err := New(ctx2, Config{Dir: dir, Network: net})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileSize(part) != int64(len(body)/2) {
+		t.Fatal("startup discarded the repair's resumable part")
+	}
+	if _, err := os.Stat(d2.donePath(a)); !os.IsNotExist(err) {
+		t.Fatalf("stale completion marker remains: %v", err)
+	}
+	net.set(true)
+	waitFor(t, d2, a.Key(), isState(contract.FileDone))
+	if got, err := os.ReadFile(server); err != nil || string(got) != "runtime" {
+		t.Fatalf("repaired runtime file = %q, %v", got, err)
+	}
+}
+
+func TestSharedRuntimeArchivesValidateTheirOwnFiles(t *testing.T) {
+	coreBody := tarGz(t, map[string]string{"llama-b11755/llama-server": "runtime"})
+	cudaBody := tarGz(t, map[string]string{"lib/cudart.so": "cuda"})
+	coreServer, cudaServer := newTestServer(t, coreBody), newTestServer(t, cudaBody)
+	core := contract.Asset{Name: "llama-b11755-bin-ubuntu-x64.tar.gz", URL: coreServer.URL + "/b11755/llama-b11755-bin-ubuntu-x64.tar.gz", Bytes: int64(len(coreBody)), SHA256: sumHex(coreBody), Part: contract.PartRuntime, Backend: contract.BackendCUDA12, Archive: true}
+	cuda := contract.Asset{Name: "cudart-llama-b11755-bin-ubuntu-cuda-12.8-x64.tar.gz", URL: cudaServer.URL + "/b11755/cudart-llama-b11755-bin-ubuntu-cuda-12.8-x64.tar.gz", Bytes: int64(len(cudaBody)), SHA256: sumHex(cudaBody), Part: contract.PartRuntime, Backend: contract.BackendCUDA12, Archive: true}
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	d, err := New(ctx, Config{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{core, cuda}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, core.Key(), isState(contract.FileDone))
+	waitFor(t, d, cuda.Key(), isState(contract.FileDone))
+	cudaFile := filepath.Join(dir, "runtimes", runtimeFolder(cuda), "lib", "cudart.so")
+	if err := os.Remove(cudaFile); err != nil {
+		t.Fatal(err)
+	}
+	stop(t, cancel, d)
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	d, err = New(ctx, Config{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{cuda}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, cuda.Key(), isState(contract.FileDone))
+	if got := len(cudaServer.requests()); got != 2 {
+		t.Fatalf("cudart requests = %d, want repair of its own missing file", got)
+	}
+	if got, err := os.ReadFile(cudaFile); err != nil || string(got) != "cuda" {
+		t.Fatalf("cudart file = %q, %v", got, err)
 	}
 }
 

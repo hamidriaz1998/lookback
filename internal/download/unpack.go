@@ -20,39 +20,51 @@ var errUnsafe = errors.New("archive entry leaves the runtime folder")
 // through an os.Root on dest, so symlinks already extracted cannot redirect a later entry outside it. Entry
 // names and link targets are also checked lexically, so the refusal does not depend on the order of entries.
 func unpack(path, name, dest string) error {
+	_, err := unpackFiles(path, name, dest)
+	return err
+}
+
+func unpackFiles(path, name, dest string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	root, err := os.OpenRoot(dest)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer root.Close()
+	var files []string
 	switch {
 	case strings.HasSuffix(name, ".tar.gz"):
 		gz, err := gzip.NewReader(f)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer gz.Close()
-		return untar(tar.NewReader(gz), root)
+		if err := untar(tar.NewReader(gz), root, func(name string) { files = append(files, filepath.ToSlash(name)) }); err != nil {
+			return nil, err
+		}
 	case strings.HasSuffix(name, ".zip"):
 		st, err := f.Stat()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		zr, err := zip.NewReader(f, st.Size())
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return unzip(zr, root)
+		if err := unzip(zr, root, func(name string) { files = append(files, filepath.ToSlash(name)) }); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("download: %s is not a .tar.gz or .zip archive", name)
 	}
-	return fmt.Errorf("download: %s is not a .tar.gz or .zip archive", name)
+	return files, nil
 }
 
 // entryName cleans an archive name and refuses one that is absolute or climbs out of the archive root.
@@ -67,7 +79,7 @@ func entryName(name string) (string, error) {
 	return clean, nil
 }
 
-func untar(tr *tar.Reader, root *os.Root) error {
+func untar(tr *tar.Reader, root *os.Root, record func(string)) error {
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -109,10 +121,11 @@ func untar(tr *tar.Reader, root *os.Root) error {
 		default:
 			return fmt.Errorf("download: unsupported archive entry %s (type %c)", hdr.Name, hdr.Typeflag)
 		}
+		record(name)
 	}
 }
 
-func unzip(zr *zip.Reader, root *os.Root) error {
+func unzip(zr *zip.Reader, root *os.Root, record func(string)) error {
 	for _, zf := range zr.File {
 		name, err := entryName(zf.Name)
 		if err != nil {
@@ -125,12 +138,14 @@ func unzip(zr *zip.Reader, root *os.Root) error {
 			if err := root.MkdirAll(name, 0o755); err != nil {
 				return err
 			}
+			record(name)
 			continue
 		}
 		rc, err := zf.Open()
 		if err != nil {
 			return err
 		}
+		record(name)
 		err = writeFile(root, name, rc, zf.Mode())
 		rc.Close()
 		if err != nil {
