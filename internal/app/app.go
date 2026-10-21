@@ -58,7 +58,8 @@ type application struct {
 	pause    *pauses
 	win      *mygo.Window
 	tray     *mygo.Tray
-	quitting bool // set before the windows close on a quit, so close-to-tray lets them close
+	commands *commandRouter // second-instance commands; runs them once the window exists
+	quitting bool           // set before the windows close on a quit, so close-to-tray lets them close
 }
 
 // Run starts the app and blocks until it quits. A second instance hands its command line to the
@@ -70,18 +71,20 @@ func Run(opts Options, cfg Config, idx contract.Indexer) error {
 		return nil
 	}
 	a := &application{cfg: cfg, pause: newPauses(pauseTarget(idx))}
-	mygo.App.OnSecondInstance(func(args []string, _ string) {
-		o, err := ParseArgs(args)
-		if err != nil {
-			log.Printf("second instance: %v", err)
-			a.show()
-			return
-		}
+	a.commands = &commandRouter{act: func(o Options) {
 		if o.Toggle {
 			a.toggle()
 		} else {
 			a.show()
 		}
+	}}
+	mygo.App.OnSecondInstance(func(args []string, _ string) {
+		o, err := ParseArgs(args)
+		if err != nil {
+			log.Printf("second instance: %v", err)
+			o = Options{}
+		}
+		a.commands.receive(o)
 	})
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitting = true })
 	// The window hides instead of closing, so the app keeps running in the tray (SPEC section 13).
@@ -106,6 +109,7 @@ func (a *application) start() {
 		Height:  640,
 		Content: ui.View(a.view),
 	})
+	a.commands.open()
 	a.win.OnClose(func(e *mygo.CloseEvent) {
 		if !a.quitting {
 			e.PreventDefault()
