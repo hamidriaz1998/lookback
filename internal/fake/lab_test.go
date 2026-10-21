@@ -23,6 +23,13 @@ func nextStep(t *testing.T, ch <-chan contract.LabStep, timeout time.Duration) c
 	return contract.LabStep{}
 }
 
+// lockedPause returns the indexer's pause reason under its lock, as a test may read it while a run pauses it.
+func lockedPause(x *Indexer) contract.PauseReason {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.pauseReason()
+}
+
 // Two runs of the same combination are serialized, each step carries its run's ID, and the indexer is
 // paused while a run uses the runtime (review finding 7).
 func TestLabRunsAreSerializedByID(t *testing.T) {
@@ -55,7 +62,7 @@ func TestLabRunsAreSerializedByID(t *testing.T) {
 		if s.Combo != vulkanBF16Q8 {
 			t.Fatalf("run %d reports combo %s", s.RunID, s.Combo.ID())
 		}
-		if s.RunID == first && s.State == contract.LabEmbedding && ix.pauseReason() == contract.PauseLab {
+		if s.RunID == first && s.State == contract.LabEmbedding && lockedPause(ix) == contract.PauseLab {
 			pausedDuringRun = true
 		}
 		if s.RunID == second && secondStarted < 0 {
@@ -80,11 +87,11 @@ func TestLabRunsAreSerializedByID(t *testing.T) {
 		}
 	}
 	deadline := time.Now().Add(time.Second)
-	for ix.pauseReason() != contract.PauseNone && time.Now().Before(deadline) {
+	for lockedPause(ix) != contract.PauseNone && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if ix.pauseReason() != contract.PauseNone {
-		t.Fatalf("the indexer is still paused after the runs: %s", ix.pauseReason())
+	if lockedPause(ix) != contract.PauseNone {
+		t.Fatalf("the indexer is still paused after the runs: %s", lockedPause(ix))
 	}
 }
 
