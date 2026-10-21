@@ -1,0 +1,10 @@
+# Hand-made fixture: no mode key, so the mode follows the background; a mid-tone teal accent.
+background = "#f5f5f5"
+lighter_background = "#ffffff"
+
+foreground = "#222222"
+muted = "#9a9a9a"
+accent = "#2a9d8f"
+bright_foreground = "#ffffff"
+red = "#c0392b"
+green = "#27ae60"

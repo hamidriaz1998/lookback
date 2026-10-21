@@ -1,0 +1,29 @@
+# Hand-made fixture: a light, warm palette.
+mode = "light"
+
+accent = "#b57614"
+selection = "#d5c4a1"
+muted = "#7c6f64"
+
+background = "#fbf1c7"
+dark_background = "#f2e5bc"
+darker_background = "#ebdbb2"
+lighter_background = "#ebdbb2"
+
+foreground = "#3c3836"
+dark_foreground = "#504945"
+light_foreground = "#665c54"
+bright_foreground = "#282828"
+
+red = "#cc241d"
+yellow = "#98971a"
+orange = "#d65d0e"
+green = "#689d6a"
+cyan = "#689d6a"
+blue = "#458588"
+magenta = "#b16286"
+brown = "#a89984"
+
+bright_red = "#9d0006"
+bright_yellow = "#b57614"
+bright_green = "#79740e"

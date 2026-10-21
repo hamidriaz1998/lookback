@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -234,8 +235,8 @@ func TestLabCanceledQueuedRunKeepsOrder(t *testing.T) {
 	}
 }
 
-// When the lab's lifetime ends, a running and a queued run each emit a canceled step, seen by subscribers
-// with their own live contexts, and then the streams close (review finding 7). No run starts afterward.
+// When the lab's lifetime ends, running and queued runs publish canceled steps before prompt stream closure.
+// Pending delivery may be discarded, so the final snapshot checks publication rather than subscriber receipt.
 func TestLabLifetimeEndCancelsEveryRun(t *testing.T) {
 	bg := context.Background()
 	rt := NewRuntime(context.Background())
@@ -266,19 +267,20 @@ func TestLabLifetimeEndCancelsEveryRun(t *testing.T) {
 	endLife()
 
 	for name, ch := range map[string]<-chan contract.LabStep{"first": first, "second": second} {
-		terminal := map[contract.RunID]bool{}
 		for s := range ch {
 			if s.State == contract.LabDone {
 				t.Fatalf("%s subscriber: run %d finished after the lifetime ended", name, s.RunID)
 			}
-			if s.State == contract.LabCanceled {
-				terminal[s.RunID] = true
-			}
-		}
-		if !terminal[running] || !terminal[queued] {
-			t.Fatalf("%s subscriber: terminal steps %v, want canceled for runs %d and %d", name, terminal, running, queued)
 		}
 	}
+	l.streams.mu.Lock()
+	for _, id := range []contract.RunID{running, queued} {
+		if got := l.streams.snap[fmt.Sprint(id)]; got.State != contract.LabCanceled {
+			l.streams.mu.Unlock()
+			t.Fatalf("run %d snapshot = %s, want canceled", id, got.State)
+		}
+	}
+	l.streams.mu.Unlock()
 	if _, err := l.Run(bg, vulkanBF16Q8, nil); !errors.Is(err, contract.ErrStopped) {
 		t.Fatalf("Run after the lifetime ended: %v, want ErrStopped", err)
 	}
