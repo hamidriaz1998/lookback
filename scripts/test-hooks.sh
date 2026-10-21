@@ -16,11 +16,12 @@ repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
 git config core.hooksPath .githooks
-mkdir -p .githooks scripts a
+mkdir -p .githooks scripts a cmd/demo
 cp -a "$here/.githooks/." .githooks/
 cp -a "$here/scripts/check-colors.sh" scripts/
 printf 'module example.com/hooks\n\ngo 1.21\n' > go.mod
 printf 'package a\n\nfunc A() int { return 1 }\n' > a/a.go
+printf 'package main\n\nimport "example.com/hooks/a"\n\nfunc main() { a.A() }\n' > cmd/demo/main.go
 printf 'package a\n\nimport "testing"\n\nfunc TestA(t *testing.T) {\n\tif A() < 0 {\n\t\tt.Fatal("A")\n\t}\n}\n' > a/a_test.go
 git add -A
 git commit -qm init
