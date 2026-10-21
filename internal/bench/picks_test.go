@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
+	"github.com/hamidriaz1998/lookback/internal/extract"
 	"github.com/hamidriaz1998/lookback/internal/runtime"
 )
 
@@ -160,5 +161,20 @@ func TestMeasureDoesNotBlockOnASpecialFile(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("measure blocked on a FIFO")
+	}
+}
+
+// A pick whose extracted output exceeds the budget is refused instead of being held in memory whole (review r3 #1).
+func TestPickExtractionHasAnOutputBudget(t *testing.T) {
+	old := maxPickExtracted
+	maxPickExtracted = 4 << 10
+	t.Cleanup(func() { maxPickExtracted = old })
+	p := filepath.Join(t.TempDir(), "big.txt")
+	if err := os.WriteFile(p, []byte(strings.Repeat("lookback words ", 2000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	units, err := extractPick(context.Background(), extract.NewRegistry(), p)
+	if err == nil || !strings.Contains(err.Error(), "extracted content over") {
+		t.Fatalf("err = %v with %d units, want the extracted-content limit", err, len(units))
 	}
 }
