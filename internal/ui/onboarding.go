@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -36,6 +37,36 @@ type onboarding struct {
 	extra         []string
 	skipShow      bool
 	offline       bool
+}
+
+// setStep moves the first run to step n and saves the step, so a restart returns to it (SPEC section 6). A run from
+// Models is not saved: it is not the first run.
+func (a *App) setStep(n int) {
+	a.onb.step = n
+	if !a.onb.fromModels {
+		a.setting("onboard_step", strconv.Itoa(n))
+	}
+}
+
+// restoreOnboarding returns the first run to the step and the chosen combination it was on when the app stopped.
+// It runs when the first run starts, not for the test lab from Models.
+func (a *App) restoreOnboarding() {
+	if n, err := strconv.Atoi(a.data.setting("onboard_step", "")); err == nil && n >= 1 && n <= 3 {
+		a.onb.step = n
+	}
+	if cb, ok := parseCombo(a.data.setting("onboard_combo", "")); ok {
+		a.picked = &cb
+		a.ensureFiles(cb)
+	}
+}
+
+// parseCombo reads a combination ID, such as "vulkan/bf16/q8_0", as Combo.ID writes it.
+func parseCombo(id string) (contract.Combo, bool) {
+	parts := strings.Split(id, "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return contract.Combo{}, false
+	}
+	return contract.Combo{Backend: contract.Backend(parts[0]), TextQuant: contract.Quant(parts[1]), EncQuant: contract.Quant(parts[2])}, true
 }
 
 // startOnboarding creates the flow and detects the hardware in the background.
@@ -257,12 +288,12 @@ func (a *App) stepHardware(c *ui.Context) {
 	}
 	ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Children(func() {
 		if ui.Button(c, "Compare combinations").Clicked() {
-			o.step = 2
+			a.setStep(2)
 		}
 		if ui.PrimaryButton(c, "Continue with recommended").Disabled(o.detecting).Clicked() {
 			if rec, ok := a.recommendedCombo(); ok {
 				a.pickCombo(rec)
-				o.step = 3
+				a.setStep(3)
 			}
 		}
 	})
@@ -428,7 +459,7 @@ func (a *App) stepLab(c *ui.Context) {
 				a.onb = nil
 				return
 			}
-			o.step = 1
+			a.setStep(1)
 		}
 		chosen := a.chosenCombo()
 		label := "Use the chosen combination"
@@ -758,7 +789,7 @@ func (a *App) useLab(cb contract.Combo) {
 	if a.onb.fromModels {
 		a.onb = nil
 	} else {
-		a.onb.step = 3
+		a.setStep(3)
 	}
 }
 
@@ -809,7 +840,6 @@ func (a *App) pickReady() bool {
 func (a *App) stepFolders(c *ui.Context) {
 	t := c.Theme()
 	f := &a.folders
-	o := a.onb
 	ui.Text(c, "What should Lookback index?").FontSize(t.Rem(1.6)).Bold()
 	if len(a.data.folders) == 0 {
 		ui.Column(c).Gap(t.Space(3)).Padding(t.Space(6)).Radius(8).Background(t.Surface).Center().Children(func() {
@@ -853,7 +883,7 @@ func (a *App) stepFolders(c *ui.Context) {
 	}
 	ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Children(func() {
 		if ui.Button(c, "Back").Clicked() {
-			o.step = 2
+			a.setStep(2)
 		}
 		if a.picked != nil && !a.pickReady() {
 			ui.Text(c, "Waiting for the files of "+comboLabel(*a.picked)+" to download.").TextColor(t.TextMuted).SingleLine()

@@ -33,6 +33,7 @@ type harness struct {
 	tt    *ui.Tester
 	queue chan func()
 	store contract.Store
+	stop  context.CancelFunc // ends the app's lifetime, as quitting the app does
 }
 
 // newHarness builds the App over the fixture store, starts it, and returns its tester. setup, when set,
@@ -80,7 +81,7 @@ func newHarnessTweak(t *testing.T, setup func(*fake.Store) contract.Store, theme
 	if err := ix.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, queue: make(chan func(), 256), store: store}
+	h := &harness{t: t, queue: make(chan func(), 256), store: store, stop: cancel}
 	deps := Deps{
 		Store:      store,
 		Indexer:    ix,

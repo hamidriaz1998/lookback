@@ -336,6 +336,7 @@ func (a *App) View(c *ui.Context) {
 	a.applyPick()
 	if a.onb == nil && !a.data.onboarded() && a.page != pageSettings {
 		a.startOnboarding()
+		a.restoreOnboarding()
 	}
 	if a.onb != nil {
 		a.onboardingView(c)
