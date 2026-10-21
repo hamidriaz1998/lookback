@@ -315,6 +315,40 @@ func TestOfflineDuringChecksumVerificationRestarts(t *testing.T) {
 	}
 }
 
+func TestRecoveredOfflineDownloadPublishesSavedBytes(t *testing.T) {
+	content := randomBytes(2 * mib)
+	ts := newTestServer(t, content)
+	a := modelAsset(ts.URL+"/model-test.gguf", content)
+	dir := t.TempDir()
+	part := partOf(dir, a)
+	if err := os.MkdirAll(filepath.Dir(part), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(part, content[:mib], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(part+".json", a); err != nil {
+		t.Fatal(err)
+	}
+	net := &fakeNet{online: false}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d, err := New(ctx, Config{Dir: dir, Network: net})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitFor(t, d, a.Key(), func(p contract.DownloadProgress) bool { return true })
+	if got.State != contract.FileOffline || got.Done != mib {
+		t.Fatalf("snapshot = %+v, want offline at %d bytes", got, mib)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ts.requests()) != 0 {
+		t.Fatal("offline recovery started a request")
+	}
+}
+
 // Acceptance: an archive with ../ entries is refused, and nothing lands outside the runtime folder.
 func TestArchiveWithParentPathIsRefused(t *testing.T) {
 	entries := map[string][]byte{

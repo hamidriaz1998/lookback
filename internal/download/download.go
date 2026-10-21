@@ -132,7 +132,7 @@ func (d *Downloader) resumeFromDisk() error {
 			removeIfExists(d.partPath(a), meta)
 			continue
 		}
-		d.add(&file{asset: a, phase: contract.FileQueued})
+		d.add(&file{asset: a, phase: contract.FileQueued, done: max(fileSize(d.partPath(a)), 0)})
 	}
 	return nil
 }
