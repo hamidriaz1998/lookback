@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -306,13 +307,24 @@ func (a *App) emptyState(c *ui.Context, title, body string, toFolders bool) {
 	})
 }
 
-// items returns what the grid shows: the results of the query, or the recent files before one.
+// items returns what the grid shows: the results of the query, or the recent files before one. The type filter
+// applies to the recent files, up to recentLimit of them.
 func (a *App) items() []contract.Hit {
 	s := &a.search
-	if s.key() == "" {
-		return a.data.recent
+	if s.key() != "" {
+		return s.hits
 	}
-	return s.hits
+	kinds := s.kinds()
+	var out []contract.Hit
+	for _, h := range a.data.recent {
+		if len(out) == recentLimit {
+			break
+		}
+		if kinds == nil || slices.Contains(kinds, h.Kind) {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // selectedHit returns the highlighted result.

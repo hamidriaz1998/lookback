@@ -103,3 +103,47 @@ func TestSearchAppliesFilenameBoostAndPageLimit(t *testing.T) {
 		t.Errorf("%d results, want the top 60", n)
 	}
 }
+
+// mixedRecent returns recent files of both kinds, newest first: even positions are images, odd ones documents.
+type mixedRecent struct{ contract.Store }
+
+func (m mixedRecent) RecentItems(_ context.Context, _ int64, limit int) ([]contract.Hit, error) {
+	var out []contract.Hit
+	for i := 0; i < min(limit, 240); i++ {
+		h := contract.Hit{FileID: int64(i + 1), ItemID: int64(i + 1), Path: "/pics/file.png", Kind: contract.KindImage, Modality: "image"}
+		if i%2 == 1 {
+			h.Path, h.Kind, h.Modality = "/docs/notes.txt", contract.KindText, "text"
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// TestIdleFilterShowsOnlyChosenKind checks that the type filter applies to the recent files before a query:
+// Documents shows documents and Images shows images, each up to the recent-file limit.
+func TestIdleFilterShowsOnlyChosenKind(t *testing.T) {
+	h := newHarness(t, func(s *fake.Store) contract.Store { return mixedRecent{s} })
+	h.wait("recent files", func() bool { return len(h.app.data.recent) > 0 })
+	h.tt.Click("Documents")
+	h.pump(0)
+	docs := h.app.items()
+	if len(docs) != recentLimit {
+		t.Errorf("Documents shows %d files, want %d", len(docs), recentLimit)
+	}
+	for _, r := range docs {
+		if r.Kind == contract.KindImage {
+			t.Errorf("Documents shows the image %s", r.Path)
+		}
+	}
+	h.tt.Click("Images")
+	h.pump(0)
+	imgs := h.app.items()
+	if len(imgs) != recentLimit {
+		t.Errorf("Images shows %d files, want %d", len(imgs), recentLimit)
+	}
+	for _, r := range imgs {
+		if r.Kind != contract.KindImage {
+			t.Errorf("Images shows the %s %s", r.Kind, r.Path)
+		}
+	}
+}

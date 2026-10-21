@@ -16,6 +16,11 @@ import (
 // recentLimit is how many files the Search page shows before the first query (UI guide section 3.4).
 const recentLimit = 24
 
+// recentPool is how many of the newest files the snapshot keeps, so the type filter can show recentLimit files of
+// one kind. ponytail: the store's RecentItems has no kind argument, so the filter runs on this pool; a kind
+// argument on RecentItems would make the filter exact past 240 files.
+const recentPool = 240
+
 // snapshot is the data the screens read. buildSnapshot makes it off the main thread; the App swaps it in.
 type snapshot struct {
 	ready    bool
@@ -100,7 +105,7 @@ func buildSnapshot(ctx context.Context, d Deps) snapshot {
 		for _, r := range rows {
 			s.index[r.FileID] = r
 		}
-		recent, err := d.Store.RecentItems(ctx, s.active.ID, recentLimit)
+		recent, err := d.Store.RecentItems(ctx, s.active.ID, recentPool)
 		if err != nil {
 			return fail(err)
 		}
