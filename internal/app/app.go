@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/hamidriaz1998/lookback/internal/contract"
+	lookui "github.com/hamidriaz1998/lookback/internal/ui"
 )
 
 const (
@@ -75,6 +77,8 @@ func ApplySettings(cfg Config) error {
 // thread only, which MyGo runs their callbacks on.
 type application struct {
 	cfg      Config
+	svc      *Services
+	ui       *lookui.App // the search window's screens, on the real services
 	pause    *pauses
 	win      *mygo.Window
 	tray     *mygo.Tray
@@ -84,14 +88,28 @@ type application struct {
 }
 
 // Run starts the app and blocks until it quits. A second instance hands its command line to the
-// running one and returns at once (MyGo's single instance lock). idx is the indexer that pauses
-// apply to; nil leaves the pause reasons tracked but unused until WP9 wires the indexer.
-func Run(opts Options, cfg Config, idx contract.Indexer) error {
+// running one and returns at once (MyGo's single instance lock), before it opens the data folder.
+// life ends the services.
+func Run(opts Options, life context.Context) error {
 	mygo.App.SetName(appName)
 	if !mygo.App.RequestSingleInstanceLock() {
 		return nil
 	}
-	a := &application{cfg: cfg, pause: newPauses(pauseTarget(idx))}
+	dataDir := opts.DataDir
+	if dataDir == "" {
+		var err error
+		if dataDir, err = DefaultDataDir(); err != nil {
+			return err
+		}
+	}
+	svc, err := OpenServices(life, dataDir)
+	if err != nil {
+		return err
+	}
+	defer svc.Close()
+	a := &application{cfg: svc.Config, svc: svc, pause: newPauses(pauseTarget(svc.Indexer))}
+	svc.Deps.Hide = a.hide
+	a.ui = lookui.New(svc.Deps)
 	a.commands = &commandRouter{act: func(o Options) {
 		if o.Toggle {
 			a.toggle()
@@ -131,6 +149,7 @@ func (a *application) start() {
 		Content: ui.View(a.view),
 	})
 	a.commands.open()
+	a.ui.Start(a.svc.life, a.win.Update)
 	a.win.OnClose(func(e *mygo.CloseEvent) {
 		if !a.quitting {
 			e.PreventDefault()
@@ -225,6 +244,13 @@ func reconcileBattery(p *pauses, enabled, onBattery bool) {
 	p.set(contract.PauseBattery, enabled && onBattery)
 }
 
+// hide hides the window; the app keeps running in the tray.
+func (a *application) hide() {
+	if a.win != nil {
+		a.win.Hide()
+	}
+}
+
 // show shows and focuses the window.
 func (a *application) show() {
 	a.win.Show()
@@ -258,10 +284,7 @@ func (a *application) trayMenu() *mygo.Menu {
 	})
 }
 
-// view is the placeholder window. WP6 and WP9 replace it with the search UI.
+// view draws the window: the search UI and its pages.
 func (a *application) view(c *ui.Context) {
-	ui.Column(c).Fill().Center().Gap(8).Children(func() {
-		ui.Text(c, appName).FontSize(28).Bold()
-		ui.Text(c, "Placeholder window. The search UI arrives with WP6 and WP9.")
-	})
+	a.ui.View(c)
 }

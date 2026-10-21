@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -12,8 +13,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("lookback: %v", err)
 	}
-	// nil: the indexer is wired in WP9, so pause reasons are tracked but not yet applied.
-	if err := app.Run(opts, app.DefaultConfig(), nil); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := app.Run(opts, ctx); err != nil {
 		log.Fatalf("lookback: %v", err)
 	}
 }
