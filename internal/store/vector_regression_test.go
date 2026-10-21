@@ -1,4 +1,4 @@
-package spike
+package store
 
 import (
 	"database/sql"

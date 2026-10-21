@@ -324,9 +324,9 @@ files over 50 MB, images under 64×64 px, and symlinks that resolve outside the 
   Both come from the model's `config_sentence_transformers.json`. The file name as the title is allowed
   by the format and helps short chunks.
 - Windows of 512 tokens including the prompt prefix, overlapping by 64 tokens. Use `/tokenize` with
-  `with_pieces` to map each window back to character offsets.
-- Store, per chunk: the unit (page, slide or sheet), the character range, and a snippet (the first 300
-  characters, whitespace collapsed).
+  `with_pieces` to map each window back to character offsets (in runes).
+- Store, per chunk: the unit (page, slide or sheet), the character range (in runes, Unicode code points), and a
+  snippet (the first 300 characters, whitespace collapsed).
 - Send text chunks in batches of up to 8 per request. Send images one per request, to keep payloads small.
 
 ## 10. Storage (Turso)
@@ -370,7 +370,7 @@ CREATE TABLE file_index (             -- per generation: what was indexed, and h
 CREATE TABLE items (
   id INTEGER PRIMARY KEY, gen INTEGER NOT NULL, file_id INTEGER NOT NULL,
   unit INTEGER NOT NULL DEFAULT 0,    -- page, slide or sheet number; 0 for whole files
-  start INTEGER, "end" INTEGER,       -- character range; NULL for images
+  start INTEGER, "end" INTEGER,       -- rune range; NULL for images
   modality TEXT NOT NULL,             -- 'text' | 'image'
   snippet TEXT, embedding BLOB NOT NULL
 );
