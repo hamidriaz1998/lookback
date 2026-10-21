@@ -3,12 +3,17 @@ package extract
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
+	"image/gif"
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
@@ -37,7 +42,7 @@ func extractFile(t *testing.T, r *Registry, name string) []contract.Unit {
 
 func TestKindOf(t *testing.T) {
 	cases := map[string]contract.Kind{
-		"a.PNG": contract.KindImage, "b.jpeg": contract.KindImage, "c.gif": contract.KindImage,
+		"a.PNG": contract.KindImage, "b.jpeg": contract.KindImage, "c.gif": contract.KindImage, "d.webp": contract.KindImage,
 		"d.md": contract.KindText, "e.go": contract.KindText, "f.htm": contract.KindText,
 		"g.pdf": contract.KindPDF, "h.docx": contract.KindOffice, "i.rtf": contract.KindOffice,
 		"j.exe": "", "k": "",
@@ -81,13 +86,41 @@ func TestImageUnits(t *testing.T) {
 	}
 
 	// GIF: the first frame, as PNG. BMP: re-encoded as PNG.
-	for _, name := range []string{"anim.gif", "tiny.bmp"} {
+	for _, name := range []string{"anim.gif", "tiny.bmp", "sample.webp"} {
 		units = extractFile(t, r, name)
 		if len(units) != 1 {
 			t.Fatalf("%s: got %d units", name, len(units))
 		}
 		if _, format, err := image.DecodeConfig(bytes.NewReader(units[0].Image)); err != nil || format != "png" {
 			t.Fatalf("%s output: format %q, err %v", name, format, err)
+		}
+		if name == "anim.gif" || name == "sample.webp" {
+			first, _, err := image.Decode(bytes.NewReader(units[0].Image))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := first.At(0, 0)
+			r, g, b, _ := got.RGBA()
+			if name == "anim.gif" && (r < 0xF000 || g > 0x1000 || b > 0x1000) {
+				t.Fatalf("GIF output pixel is not first-frame red: %v", got)
+			}
+			if name == "sample.webp" && (g < 0xF000 || r > 0x1000 || b > 0x1000) {
+				t.Fatalf("WebP output pixel is not green: %v", got)
+			}
+		}
+		if name == "anim.gif" {
+			file, err := os.Open(filepath.Join("testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			animation, err := gif.DecodeAll(file)
+			file.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(animation.Image) != 2 {
+				t.Fatalf("animated GIF fixture has %d frames; want two", len(animation.Image))
+			}
 		}
 	}
 }
@@ -134,8 +167,8 @@ func TestOfficeUnits(t *testing.T) {
 	}
 	cases := []want{
 		{"sample.docx", []string{"Quarterly plan\nBudget for Oslo travel"}},
-		{"sample.pptx", []string{"Title slide\nLaunch date", "Roadmap\nShip the indexer"}},
-		{"sample.xlsx", []string{"Name |  | Amount\nRent |  | 1200", "Totals"}},
+		{"sample.pptx", []string{"Roadmap\nShip the indexer", "Title slide\nLaunch date"}},
+		{"sample.xlsx", []string{"Totals", "Name |  | Amount\nRent |  | 1200"}},
 		{"sample.odt", []string{"Meeting notes\nAgreed on the storage plan.\nNext steps"}},
 		{"sample.odp", []string{"Slide one heading", "Slide two body"}},
 		{"sample.ods", []string{"Item | Cost\nDesk | 40 | 40"}},
@@ -166,6 +199,68 @@ func TestOfficeUnits(t *testing.T) {
 	}
 }
 
+func TestSheetRowsCellReferences(t *testing.T) {
+	got, err := sheetRows(context.Background(), []byte(`<worksheet><sheetData><row><c><v>first</v></c><c><v>second</v></c></row></sheetData></worksheet>`), nil)
+	if err != nil || got != "first | second" {
+		t.Fatalf("omitted cell references: got %q, %v; want inferred consecutive columns", got, err)
+	}
+	if _, err := sheetRows(context.Background(), []byte(`<worksheet><sheetData><row><c r="XFE1"><v>outside</v></c></row></sheetData></worksheet>`), nil); err == nil {
+		t.Fatal("column XFE, outside XLSX's XFD limit, was accepted")
+	}
+	if got := columnIndex("ZZZZZZ"); got != -1 {
+		t.Fatalf("oversized column parsed as %d, want invalid", got)
+	}
+	if _, err := sheetRows(context.Background(), []byte(`<worksheet><sheetData><row r="1"><c r="ZZZZZZ1"><v>outside</v></c></row></sheetData></worksheet>`), nil); err == nil {
+		t.Fatal("oversized cell reference was accepted")
+	}
+}
+
+func TestRTFSupplementaryUnicodeAndGroupState(t *testing.T) {
+	got, err := rtfText(context.Background(), []byte(`{\rtf1\uc1 \u-10179?\u-8704?}`))
+	if want := "😀"; err != nil || got != want {
+		t.Errorf("surrogate pair: got %q, %v; want %q", got, err, want)
+	}
+	got, err = rtfText(context.Background(), []byte(`{\rtf1\uc1 {\uc0 X}\u233?}`))
+	if want := "Xé"; err != nil || got != want {
+		t.Errorf("group-scoped uc: got %q, %v; want %q", got, err, want)
+	}
+}
+
+func TestTextImageAndOfficeCancelBeforeFurtherEmission(t *testing.T) {
+	t.Run("text", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		err := (Text{}).Extract(ctx, contract.FileRec{ID: 1, Path: filepath.Join("testdata", "notes.txt")}, func(contract.Unit) error {
+			cancel()
+			return nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("text extraction after callback cancel: %v", err)
+		}
+	})
+	t.Run("image", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		err := (Image{}).Extract(ctx, contract.FileRec{ID: 1, Path: filepath.Join("testdata", "wide.png")}, func(contract.Unit) error {
+			cancel()
+			return nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("image extraction after callback cancel: %v", err)
+		}
+	})
+	t.Run("office", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		count := 0
+		err := (Office{}).Extract(ctx, contract.FileRec{ID: 1, Path: filepath.Join("testdata", "sample.pptx")}, func(contract.Unit) error {
+			count++
+			cancel()
+			return nil
+		})
+		if !errors.Is(err, context.Canceled) || count != 1 {
+			t.Fatalf("office extraction after first unit cancellation: emitted %d units, err %v", count, err)
+		}
+	})
+}
+
 func TestPDFUnits(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PDF runtime start is heavy; skipped under -short")
@@ -193,5 +288,85 @@ func TestPDFUnits(t *testing.T) {
 		if cfg.Height > maxRenderEdge || cfg.Width > maxRenderEdge {
 			t.Errorf("page %d rendered at %dx%d, long edge over %d", i+1, cfg.Width, cfg.Height, maxRenderEdge)
 		}
+		if i == 1 {
+			rendered, _, err := image.Decode(bytes.NewReader(u.Image))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, g, b, _ := rendered.At(rendered.Bounds().Dx()/2, rendered.Bounds().Dy()/2).RGBA()
+			if r == 0xFFFF && g == 0xFFFF && b == 0xFFFF {
+				t.Fatal("scanned-page fixture rendered as a blank white page")
+			}
+		}
 	}
+}
+
+func TestPDFWaiterCancellationLeavesActiveExtractionAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("PDF runtime start is heavy; skipped under -short")
+	}
+	p := NewPDF()
+	defer p.Close()
+	f := contract.FileRec{ID: 1, Path: filepath.Join("testdata", "text-and-image.pdf"), Kind: contract.KindPDF}
+	firstUnit, release, firstDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	go func() {
+		n := 0
+		firstDone <- p.Extract(context.Background(), f, func(contract.Unit) error {
+			n++
+			if n == 1 {
+				close(firstUnit)
+				<-release
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-firstUnit:
+	case <-time.After(15 * time.Second):
+		t.Fatal("first PDF extraction did not reach its callback")
+	}
+
+	base, cancel := context.WithCancel(context.Background())
+	ctx := &observedContext{Context: base, checked: make(chan struct{})}
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- p.Extract(ctx, f, func(contract.Unit) error { return nil }) }()
+	select {
+	case <-ctx.checked:
+	case <-time.After(time.Second):
+		t.Fatal("second PDF extraction did not start")
+	}
+	// Let the second call reach the serialized PDF gate before cancelling its context.
+	runtime.Gosched()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("waiting extraction returned %v, want context.Canceled", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Error("cancelled PDF waiter remained blocked behind active extraction")
+	}
+	close(release)
+	released = true
+	if err := <-firstDone; err != nil {
+		t.Errorf("active extraction was interrupted by cancelled waiter: %v", err)
+	}
+}
+
+type observedContext struct {
+	context.Context
+	checked chan struct{}
+	once    sync.Once
+}
+
+func (c *observedContext) Err() error {
+	c.once.Do(func() { close(c.checked) })
+	return c.Context.Err()
 }

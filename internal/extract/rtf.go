@@ -1,9 +1,11 @@
 package extract
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
-	"unicode/utf8"
+	"unicode/utf16"
 )
 
 // rtfSkipped lists the destination control words whose whole group is dropped (SPEC section 9).
@@ -12,13 +14,41 @@ var rtfSkipped = map[string]bool{"fonttbl": true, "colortbl": true, "pict": true
 // rtfText returns the plain text of an RTF document. It strips control words, decodes \uN and \'hh escapes,
 // and skips {\*...} groups and the fonttbl, colortbl and pict groups. \par and \line become newlines and
 // \tab becomes a tab. \'hh is read as Latin-1, not as the code page the document names (a known ceiling).
-func rtfText(src []byte) string {
+func rtfText(ctx context.Context, src []byte) (string, error) {
 	var out strings.Builder
 	uc := 1   // characters to skip after \uN (the \uc control word)
 	skip := 0 // characters still to skip after \uN
-	type group struct{ skipping bool }
+	type group struct {
+		skipping bool
+		uc       int
+		skip     int
+	}
 	var stack []group
 	skipping := func() bool { return len(stack) > 0 && stack[len(stack)-1].skipping }
+	var highSurrogate uint16
+	flushHigh := func() {
+		if highSurrogate != 0 {
+			out.WriteRune('\uFFFD')
+			highSurrogate = 0
+		}
+	}
+	writeUnit := func(unit uint16) {
+		switch {
+		case unit >= 0xD800 && unit <= 0xDBFF:
+			flushHigh()
+			highSurrogate = unit
+		case unit >= 0xDC00 && unit <= 0xDFFF:
+			if highSurrogate == 0 {
+				out.WriteRune('\uFFFD')
+			} else {
+				out.WriteRune(utf16.DecodeRune(rune(highSurrogate), rune(unit)))
+				highSurrogate = 0
+			}
+		default:
+			flushHigh()
+			out.WriteRune(rune(unit))
+		}
+	}
 
 	emit := func(s string) {
 		if skip > 0 {
@@ -26,16 +56,22 @@ func rtfText(src []byte) string {
 			return
 		}
 		if !skipping() {
+			flushHigh()
 			out.WriteString(s)
 		}
 	}
 
 	for i := 0; i < len(src); i++ {
+		if i&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+		}
 		c := src[i]
 		switch c {
 		case '{':
 			// A group is ignorable when it starts with \* or names a skipped destination.
-			g := group{skipping: skipping()}
+			g := group{skipping: skipping(), uc: uc, skip: skip}
 			if !g.skipping {
 				word, star := rtfPeekWord(src, i+1)
 				if star || rtfSkipped[word] {
@@ -45,7 +81,9 @@ func rtfText(src []byte) string {
 			stack = append(stack, g)
 		case '}':
 			if len(stack) > 0 {
+				g := stack[len(stack)-1]
 				stack = stack[:len(stack)-1]
+				uc, skip = g.uc, g.skip
 			}
 		case '\\':
 			if i+1 >= len(src) {
@@ -96,27 +134,29 @@ func rtfText(src []byte) string {
 				switch word {
 				case "par", "line", "row":
 					if !skipping() {
+						flushHigh()
 						out.WriteByte('\n')
 					}
 				case "tab":
 					if !skipping() {
+						flushHigh()
 						out.WriteByte('\t')
 					}
 				case "uc":
 					if hasParam {
 						uc, _ = strconv.Atoi(param)
+						uc = max(0, uc)
 					}
 				case "u":
 					if hasParam && !skipping() {
-						v, _ := strconv.Atoi(param)
+						v, err := strconv.Atoi(param)
+						if err != nil || v < -32768 || v > 32767 {
+							return "", fmt.Errorf("invalid RTF Unicode value %q", param)
+						}
 						if v < 0 {
 							v += 65536
 						}
-						r := rune(v)
-						if !utf8.ValidRune(r) {
-							r = utf8.RuneError
-						}
-						out.WriteRune(r)
+						writeUnit(uint16(v))
 						skip = uc
 					}
 				}
@@ -130,7 +170,8 @@ func rtfText(src []byte) string {
 			emit(string(c))
 		}
 	}
-	return out.String()
+	flushHigh()
+	return out.String(), ctx.Err()
 }
 
 // rtfPeekWord returns the control word that starts at src[i] (after a '{'), and whether the group starts

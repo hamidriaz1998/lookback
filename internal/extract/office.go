@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -23,6 +26,15 @@ const maxEntryBytes = 64 << 20
 // sheet does not produce a huge row.
 const maxRepeat = 64
 
+const (
+	maxSpreadsheetColumns = 16384
+	maxSpreadsheetRows    = 1048576
+	maxSpreadsheetCells   = 1 << 20
+	maxSpreadsheetText    = 64 << 20
+)
+
+var errMissingPart = errors.New("missing Office part")
+
 // Office extracts the text of DOCX, PPTX, XLSX, ODT, ODP, ODS and RTF files. A DOCX, ODT or RTF file is one unit;
 // a PPTX slide, an ODP page, an XLSX sheet or an ODS sheet is one unit numbered from 1. Units with no text emit
 // nothing.
@@ -35,18 +47,25 @@ func (Office) Extract(ctx context.Context, f contract.FileRec, emit func(contrac
 	}
 	ext := strings.ToLower(filepath.Ext(f.Path))
 	unitOut := func(n int, text string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		return emit(textUnit(f, n, text))
+		return emitUnit(ctx, emit, textUnit(f, n, text))
 	}
 
 	if ext == ".rtf" {
-		raw, err := readFileLimited(f.Path)
+		raw, err := readFileLimited(ctx, f.Path)
 		if err != nil {
 			return err
 		}
-		return unitOut(0, rtfText(raw))
+		text, err := rtfText(ctx, raw)
+		if err != nil {
+			return err
+		}
+		return unitOut(0, text)
 	}
 
 	zr, err := zip.OpenReader(f.Path)
@@ -54,7 +73,7 @@ func (Office) Extract(ctx context.Context, f contract.FileRec, emit func(contrac
 		return fmt.Errorf("%s: %w", ext, err)
 	}
 	defer zr.Close()
-	part := func(name string) ([]byte, error) { return zipPart(zr, name) }
+	part := func(name string) ([]byte, error) { return zipPart(ctx, zr, name) }
 
 	switch ext {
 	case ".docx":
@@ -62,19 +81,22 @@ func (Office) Extract(ctx context.Context, f contract.FileRec, emit func(contrac
 		if err != nil {
 			return err
 		}
-		text, err := wordText(data)
+		text, err := wordText(ctx, data)
 		if err != nil {
 			return err
 		}
 		return unitOut(0, text)
 	case ".pptx":
-		slides := zipNames(zr, "ppt/slides/slide", ".xml")
+		slides, err := orderedRelationshipParts(ctx, zr, "ppt/presentation.xml", "sldId")
+		if err != nil {
+			return err
+		}
 		for i, name := range slides {
 			data, err := part(name)
 			if err != nil {
 				return err
 			}
-			text, err := wordText(data)
+			text, err := wordText(ctx, data)
 			if err != nil {
 				return err
 			}
@@ -84,7 +106,7 @@ func (Office) Extract(ctx context.Context, f contract.FileRec, emit func(contrac
 		}
 		return nil
 	case ".xlsx":
-		return xlsxUnits(zr, unitOut)
+		return xlsxUnits(ctx, zr, unitOut)
 	case ".odt", ".odp", ".ods":
 		data, err := part("content.xml")
 		if err != nil {
@@ -92,32 +114,36 @@ func (Office) Extract(ctx context.Context, f contract.FileRec, emit func(contrac
 		}
 		switch ext {
 		case ".odt":
-			text, err := odfParagraphs(data)
+			text, err := odfParagraphs(ctx, data)
 			if err != nil {
 				return err
 			}
 			return unitOut(0, text)
 		case ".odp":
-			return odpUnits(data, unitOut)
+			return odpUnits(ctx, data, unitOut)
 		default:
-			return odsUnits(data, unitOut)
+			return odsUnits(ctx, data, unitOut)
 		}
 	}
 	return ErrUnsupported
 }
 
 // readFileLimited reads a whole file, refusing one larger than maxEntryBytes.
-func readFileLimited(name string) ([]byte, error) {
+func readFileLimited(ctx context.Context, name string) ([]byte, error) {
 	f, err := os.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, maxEntryBytes+1))
+	data, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: f}, maxEntryBytes+1))
+	if err == nil && len(data) > maxEntryBytes {
+		return nil, fmt.Errorf("file is over %d bytes", maxEntryBytes)
+	}
+	return data, err
 }
 
 // zipPart returns the bytes of one part of an Office file.
-func zipPart(zr *zip.ReadCloser, name string) ([]byte, error) {
+func zipPart(ctx context.Context, zr *zip.ReadCloser, name string) ([]byte, error) {
 	for _, f := range zr.File {
 		if f.Name != name {
 			continue
@@ -126,17 +152,20 @@ func zipPart(zr *zip.ReadCloser, name string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer rc.Close()
-		data, err := io.ReadAll(io.LimitReader(rc, maxEntryBytes+1))
+		data, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: rc}, maxEntryBytes+1))
+		closeErr := rc.Close()
 		if err != nil {
 			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
 		}
 		if len(data) > maxEntryBytes {
 			return nil, fmt.Errorf("%s: part is over %d bytes", name, maxEntryBytes)
 		}
 		return data, nil
 	}
-	return nil, fmt.Errorf("missing part %s", name)
+	return nil, fmt.Errorf("%w: %s", errMissingPart, name)
 }
 
 // zipNames returns the parts whose names are prefix + number + suffix, sorted by number.
@@ -164,13 +193,109 @@ func zipNames(zr *zip.ReadCloser, prefix, suffix string) []string {
 	return names
 }
 
+type packageRelationship struct {
+	ID         string `xml:"Id,attr"`
+	Target     string `xml:"Target,attr"`
+	TargetMode string `xml:"TargetMode,attr"`
+}
+
+// orderedRelationshipParts follows the ordered part IDs in an OOXML manifest and resolves them through its rels.
+func orderedRelationshipParts(ctx context.Context, zr *zip.ReadCloser, manifest, itemName string) ([]string, error) {
+	data, err := zipPart(ctx, zr, manifest)
+	if err != nil {
+		return nil, err
+	}
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	var ids []string
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok || start.Name.Local != itemName {
+			continue
+		}
+		id := ""
+		for _, attr := range start.Attr {
+			if attr.Name.Local == "id" {
+				id = attr.Value
+				break
+			}
+		}
+		if id == "" {
+			return nil, fmt.Errorf("%s entry has no relationship id", itemName)
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	relsName := path.Join(path.Dir(manifest), "_rels", path.Base(manifest)+".rels")
+	data, err = zipPart(ctx, zr, relsName)
+	if err != nil {
+		return nil, err
+	}
+	var rels struct {
+		Items []packageRelationship `xml:"Relationship"`
+	}
+	if err := xml.Unmarshal(data, &rels); err != nil {
+		return nil, err
+	}
+	byID := make(map[string]packageRelationship, len(rels.Items))
+	for _, rel := range rels.Items {
+		if rel.ID == "" || rel.Target == "" {
+			return nil, fmt.Errorf("invalid relationship in %s", relsName)
+		}
+		if _, exists := byID[rel.ID]; exists {
+			return nil, fmt.Errorf("duplicate relationship %q in %s", rel.ID, relsName)
+		}
+		byID[rel.ID] = rel
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		rel, ok := byID[id]
+		if !ok || rel.TargetMode == "External" {
+			return nil, fmt.Errorf("unresolved internal relationship %q in %s", id, relsName)
+		}
+		u, err := url.Parse(rel.Target)
+		if err != nil || u.IsAbs() || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, `\`) {
+			return nil, fmt.Errorf("invalid internal relationship target %q", rel.Target)
+		}
+		target, err := url.PathUnescape(u.EscapedPath())
+		if err != nil {
+			return nil, fmt.Errorf("invalid relationship target %q: %w", rel.Target, err)
+		}
+		if strings.HasPrefix(target, "/") {
+			target = strings.TrimPrefix(target, "/")
+		} else {
+			target = path.Join(path.Dir(manifest), target)
+		}
+		target = path.Clean(target)
+		if target == "." || target == ".." || strings.HasPrefix(target, "../") || path.IsAbs(target) {
+			return nil, fmt.Errorf("relationship target escapes package: %q", rel.Target)
+		}
+		parts = append(parts, target)
+	}
+	return parts, nil
+}
+
 // wordText returns the text of a WordprocessingML or DrawingML part: the text of each t element, with a
 // newline at the end of each p element and a tab for tab elements.
-func wordText(data []byte) (string, error) {
+func wordText(ctx context.Context, data []byte) (string, error) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	var b strings.Builder
 	inText := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		tok, err := dec.Token()
 		if err == io.EOF {
 			return b.String(), nil
@@ -201,37 +326,51 @@ func wordText(data []byte) (string, error) {
 	}
 }
 
-// xlsxUnits emits one unit per worksheet: rows as "A | B | C" lines, read through the shared strings table.
-func xlsxUnits(zr *zip.ReadCloser, unitOut func(int, string) error) error {
+// xlsxUnits emits one unit per worksheet in workbook order.
+func xlsxUnits(ctx context.Context, zr *zip.ReadCloser, unitOut func(int, string) error) error {
 	var shared []string
-	if data, err := zipPart(zr, "xl/sharedStrings.xml"); err == nil {
-		if shared, err = sharedStrings(data); err != nil {
+	if data, err := zipPart(ctx, zr, "xl/sharedStrings.xml"); err == nil {
+		if shared, err = sharedStrings(ctx, data); err != nil {
 			return err
 		}
+	} else if !errors.Is(err, errMissingPart) {
+		return err
 	}
-	for i, name := range zipNames(zr, "xl/worksheets/sheet", ".xml") {
-		data, err := zipPart(zr, name)
+	sheets, err := orderedRelationshipParts(ctx, zr, "xl/workbook.xml", "sheet")
+	if err != nil {
+		return err
+	}
+	remaining := maxSpreadsheetText
+	for i, name := range sheets {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data, err := zipPart(ctx, zr, name)
 		if err != nil {
 			return err
 		}
-		text, err := sheetRows(data, shared)
+		text, err := sheetRowsLimit(ctx, data, shared, remaining)
 		if err != nil {
 			return err
 		}
 		if err := unitOut(i+1, text); err != nil {
 			return err
 		}
+		remaining -= len(text)
 	}
 	return nil
 }
 
 // sharedStrings returns the text of each si element of a shared strings table.
-func sharedStrings(data []byte) ([]string, error) {
+func sharedStrings(ctx context.Context, data []byte) ([]string, error) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	var out []string
 	var cur *strings.Builder
 	inText := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		tok, err := dec.Token()
 		if err == io.EOF {
 			return out, nil
@@ -264,15 +403,24 @@ func sharedStrings(data []byte) ([]string, error) {
 }
 
 // sheetRows renders a worksheet: one line per row, cells separated by " | ", in their column positions.
-func sheetRows(data []byte, shared []string) (string, error) {
+func sheetRows(ctx context.Context, data []byte, shared []string) (string, error) {
+	return sheetRowsLimit(ctx, data, shared, maxSpreadsheetText)
+}
+
+func sheetRowsLimit(ctx context.Context, data []byte, shared []string, budget int) (string, error) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	var lines []string
 	var row map[int]string
-	var maxCol int
+	var maxCol, rowNumber, nextCol, rowBytes int
 	var cellRef, cellType string
 	var cellVal *strings.Builder // text of the v or inline t element of the current cell
 	inCell, inVal := false, false
+	totalBytes := 0
+	totalCells := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		tok, err := dec.Token()
 		if err == io.EOF {
 			break
@@ -284,7 +432,17 @@ func sheetRows(data []byte, shared []string) (string, error) {
 		case xml.StartElement:
 			switch t.Name.Local {
 			case "row":
-				row, maxCol = map[int]string{}, 0
+				row, maxCol, nextCol, rowBytes = map[int]string{}, -1, 0, 0
+				rowNumber++
+				for _, a := range t.Attr {
+					if a.Name.Local == "r" {
+						n, err := strconv.Atoi(a.Value)
+						if err != nil || n < 1 || n > maxSpreadsheetRows {
+							return "", fmt.Errorf("invalid spreadsheet row reference %q", a.Value)
+						}
+						rowNumber = n
+					}
+				}
 			case "c":
 				inCell = true
 				cellRef, cellType = "", ""
@@ -310,24 +468,62 @@ func sheetRows(data []byte, shared []string) (string, error) {
 				inVal = false
 			case "c":
 				inCell = false
-				col := columnIndex(cellRef)
-				val := cellVal.String()
-				if cellType == "s" {
-					if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 && n < len(shared) {
-						val = shared[n]
+				totalCells++
+				if totalCells > maxSpreadsheetCells {
+					return "", fmt.Errorf("spreadsheet cell count exceeds %d", maxSpreadsheetCells)
+				}
+				col := nextCol
+				if cellRef != "" {
+					var cellRow int
+					col, cellRow, err = parseCellRef(cellRef)
+					if err != nil {
+						return "", err
+					}
+					if cellRow != rowNumber {
+						return "", fmt.Errorf("cell %s does not belong to row %d", cellRef, rowNumber)
 					}
 				}
-				if val != "" {
-					row[col] = val
-					maxCol = max(maxCol, col)
+				if col < 0 || col >= maxSpreadsheetColumns {
+					return "", fmt.Errorf("cell column %d is outside the spreadsheet limit", col+1)
 				}
+				val := cellVal.String()
+				if cellType == "s" {
+					n, err := strconv.Atoi(strings.TrimSpace(val))
+					if err != nil || n < 0 || n >= len(shared) {
+						return "", fmt.Errorf("invalid shared string index %q", val)
+					}
+					val = shared[n]
+				}
+				old := row[col]
+				rowBytes += len(val) - len(old)
+				maxCol = max(maxCol, col)
+				if rowBytes+maxCol*3 > budget-totalBytes {
+					return "", fmt.Errorf("spreadsheet text exceeds %d bytes", budget)
+				}
+				row[col] = val
+				nextCol = max(nextCol, col+1)
 			case "row":
-				cells := make([]string, maxCol+1)
-				for c, v := range row {
-					cells[c] = v
-				}
-				if line := strings.Join(cells, " | "); strings.Trim(line, " |") != "" {
+				if maxCol >= 0 {
+					lineBytes := rowBytes + maxCol*3
+					if len(lines) > 0 {
+						lineBytes++
+					}
+					if lineBytes > budget-totalBytes {
+						return "", fmt.Errorf("spreadsheet text exceeds %d bytes", budget)
+					}
+					cells := make([]string, maxCol+1)
+					for c, v := range row {
+						cells[c] = v
+					}
+					line := strings.Join(cells, " | ")
+					if strings.Trim(line, " |") == "" {
+						continue
+					}
 					lines = append(lines, line)
+					totalBytes += len(line)
+					if len(lines) > 1 {
+						totalBytes++
+					}
 				}
 			}
 		}
@@ -335,23 +531,53 @@ func sheetRows(data []byte, shared []string) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-// columnIndex returns the zero-based column of a cell reference such as "B3".
-func columnIndex(ref string) int {
-	col := 0
+// parseCellRef validates an A1 reference and returns its zero-based column and one-based row.
+func parseCellRef(ref string) (int, int, error) {
+	col, row, letters, digits := 0, 0, 0, 0
 	for _, c := range ref {
-		if c < 'A' || c > 'Z' {
-			break
+		switch {
+		case c >= 'A' && c <= 'Z' && digits == 0:
+			letters++
+			if letters > 3 {
+				return 0, 0, fmt.Errorf("invalid spreadsheet cell reference %q", ref)
+			}
+			col = col*26 + int(c-'A'+1)
+			if col > maxSpreadsheetColumns {
+				return 0, 0, fmt.Errorf("spreadsheet column in %q exceeds XFD", ref)
+			}
+		case c >= '0' && c <= '9' && letters > 0:
+			digits++
+			row = row*10 + int(c-'0')
+			if row > maxSpreadsheetRows {
+				return 0, 0, fmt.Errorf("spreadsheet row in %q exceeds %d", ref, maxSpreadsheetRows)
+			}
+		default:
+			return 0, 0, fmt.Errorf("invalid spreadsheet cell reference %q", ref)
 		}
-		col = col*26 + int(c-'A'+1)
 	}
-	return col - 1
+	if letters == 0 || digits == 0 || row == 0 {
+		return 0, 0, fmt.Errorf("invalid spreadsheet cell reference %q", ref)
+	}
+	return col - 1, row, nil
+}
+
+// columnIndex returns the zero-based column of a valid A1 reference, or -1 otherwise.
+func columnIndex(ref string) int {
+	col, _, err := parseCellRef(ref)
+	if err != nil {
+		return -1
+	}
+	return col
 }
 
 // odfParagraphs returns the paragraphs of an ODF content.xml, one per line.
-func odfParagraphs(data []byte) (string, error) {
+func odfParagraphs(ctx context.Context, data []byte) (string, error) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	var b strings.Builder
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		tok, err := dec.Token()
 		if err == io.EOF {
 			return b.String(), nil
@@ -380,11 +606,14 @@ func odfParagraphs(data []byte) (string, error) {
 }
 
 // odpUnits emits one unit per draw:page of an ODP content.xml.
-func odpUnits(data []byte, unitOut func(int, string) error) error {
+func odpUnits(ctx context.Context, data []byte, unitOut func(int, string) error) error {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	var page *strings.Builder
 	n := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		tok, err := dec.Token()
 		if err == io.EOF {
 			return nil
@@ -426,7 +655,11 @@ func odpUnits(data []byte, unitOut func(int, string) error) error {
 }
 
 // odsUnits emits one unit per table:table of an ODS content.xml, rows as "A | B | C" lines.
-func odsUnits(data []byte, unitOut func(int, string) error) error {
+func odsUnits(ctx context.Context, data []byte, unitOut func(int, string) error) error {
+	return odsUnitsWithLimit(ctx, data, maxSpreadsheetText, unitOut)
+}
+
+func odsUnitsWithLimit(ctx context.Context, data []byte, limit int, unitOut func(int, string) error) error {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	var lines []string
 	var cells []string
@@ -434,7 +667,11 @@ func odsUnits(data []byte, unitOut func(int, string) error) error {
 	repeat := 1
 	inTable := false
 	n := 0
+	usedBytes, tableBytes, totalCells := 0, 0, 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		tok, err := dec.Token()
 		if err == io.EOF {
 			return nil
@@ -446,14 +683,18 @@ func odsUnits(data []byte, unitOut func(int, string) error) error {
 		case xml.StartElement:
 			switch t.Name.Local {
 			case "table":
-				inTable, lines = true, nil
+				inTable, lines, tableBytes = true, nil, 0
 			case "table-row":
 				cells = nil
 			case "table-cell", "covered-table-cell":
 				cell, repeat = &strings.Builder{}, 1
 				for _, a := range t.Attr {
 					if a.Name.Local == "number-columns-repeated" {
-						repeat, _ = strconv.Atoi(a.Value)
+						var err error
+						repeat, err = strconv.Atoi(a.Value)
+						if err != nil {
+							return fmt.Errorf("invalid ODS column repetition %q", a.Value)
+						}
 						repeat = min(max(repeat, 1), maxRepeat)
 					}
 				}
@@ -475,9 +716,24 @@ func odsUnits(data []byte, unitOut func(int, string) error) error {
 			case "table-cell", "covered-table-cell":
 				if cell != nil {
 					text := strings.TrimSpace(cell.String())
+					if repeat > maxSpreadsheetColumns-len(cells) || repeat > maxSpreadsheetCells-totalCells {
+						return fmt.Errorf("ODS spreadsheet cell count exceeds limit")
+					}
+					if len(text) > 0 && repeat > (limit-usedBytes-tableBytes)/len(text) {
+						return fmt.Errorf("ODS spreadsheet text exceeds %d bytes", limit)
+					}
+					separators := repeat - 1
+					if len(cells) > 0 {
+						separators += repeat
+					}
+					addBytes := len(text)*repeat + separators*3
+					if addBytes > limit-usedBytes-tableBytes {
+						return fmt.Errorf("ODS spreadsheet text exceeds %d bytes", limit)
+					}
 					for i := 0; i < repeat; i++ {
 						cells = append(cells, text)
 					}
+					totalCells += repeat
 				}
 				cell = nil
 			case "p":
@@ -489,14 +745,31 @@ func odsUnits(data []byte, unitOut func(int, string) error) error {
 					cells = cells[:len(cells)-1]
 				}
 				if len(cells) > 0 {
+					lineBytes := 0
+					for _, text := range cells {
+						lineBytes += len(text)
+					}
+					lineBytes += max(0, len(cells)-1) * 3
+					if lineBytes+max(0, len(lines)) > limit-usedBytes-tableBytes {
+						return fmt.Errorf("ODS spreadsheet text exceeds %d bytes", limit)
+					}
 					lines = append(lines, strings.Join(cells, " | "))
+					tableBytes += lineBytes
+					if len(lines) > 1 {
+						tableBytes++
+					}
 				}
 			case "table":
 				if inTable {
 					n++
-					if err := unitOut(n, strings.Join(lines, "\n")); err != nil {
+					text := strings.Join(lines, "\n")
+					if len(text) > limit-usedBytes {
+						return fmt.Errorf("ODS spreadsheet text exceeds %d bytes", limit)
+					}
+					if err := unitOut(n, text); err != nil {
 						return err
 					}
+					usedBytes += len(text)
 					inTable = false
 				}
 			}

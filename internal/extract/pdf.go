@@ -5,15 +5,19 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"io"
 	"math"
 	"os"
 	"sync"
-	"time"
 	"unicode"
 
 	"github.com/klippa-app/go-pdfium"
 	"github.com/klippa-app/go-pdfium/requests"
+	"github.com/klippa-app/go-pdfium/responses"
 	"github.com/klippa-app/go-pdfium/webassembly"
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
@@ -32,42 +36,77 @@ const (
 // The PDF engine is PDFium compiled to WebAssembly, run by the wazero runtime, so there is no cgo. The runtime
 // starts on first use and is shared by every extraction; Close releases it.
 type PDF struct {
-	mu   sync.Mutex
-	pool pdfium.Pool
-	inst pdfium.Pdfium
+	gateMu sync.Mutex
+	gate   chan struct{}
+	pool   pdfium.Pool
+	inst   pdfium.Pdfium
 }
 
 // NewPDF returns a PDF extractor. It does not start the runtime until the first Extract.
-func NewPDF() *PDF { return &PDF{} }
+func NewPDF() *PDF { return &PDF{gate: make(chan struct{}, 1)} }
 
-// instance starts the runtime on first use. The caller holds p.mu.
-func (p *PDF) instance() (pdfium.Pdfium, error) {
+func (p *PDF) acquire(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.gateMu.Lock()
+	if p.gate == nil {
+		p.gate = make(chan struct{}, 1)
+	}
+	gate := p.gate
+	p.gateMu.Unlock()
+	select {
+	case gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-gate
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *PDF) release() { <-p.gate }
+
+// instance starts the runtime on first use. The caller holds the extraction gate.
+func (p *PDF) instance(ctx context.Context) (pdfium.Pdfium, error) {
 	if p.inst != nil {
 		return p.inst, nil
 	}
-	pool, err := webassembly.Init(webassembly.Config{MinIdle: 1, MaxIdle: 1, MaxTotal: 1})
+	if p.pool == nil {
+		runtimeConfig := wazero.NewRuntimeConfig().WithCoreFeatures(
+			api.CoreFeaturesV2 | experimental.CoreFeaturesExceptionHandling).WithCloseOnContextDone(true)
+		pool, err := webassembly.Init(webassembly.Config{
+			MinIdle: 1, MaxIdle: 1, MaxTotal: 1, RuntimeConfig: runtimeConfig,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("pdfium: %w", err)
+		}
+		p.pool = pool
+	}
+	inst, err := p.pool.GetInstanceWithContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("pdfium: %w", err)
 	}
-	inst, err := pool.GetInstance(30 * time.Second)
-	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("pdfium: %w", err)
-	}
-	p.pool, p.inst = pool, inst
+	p.inst = inst
 	return inst, nil
 }
 
 // Close releases the runtime. The extractor starts it again on the next Extract.
 func (p *PDF) Close() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.inst == nil {
-		return nil
+	if err := p.acquire(context.Background()); err != nil {
+		return err
 	}
-	err := p.inst.Close()
-	if perr := p.pool.Close(); err == nil {
-		err = perr
+	defer p.release()
+	var err error
+	if p.inst != nil {
+		err = p.inst.Close()
+	}
+	if p.pool != nil {
+		if perr := p.pool.Close(); err == nil {
+			err = perr
+		}
 	}
 	p.inst, p.pool = nil, nil
 	return err
@@ -75,54 +114,92 @@ func (p *PDF) Close() error {
 
 // Extract emits the units of the PDF f, one per page, in page order.
 func (p *PDF) Extract(ctx context.Context, f contract.FileRec, emit func(contract.Unit) error) error {
+	if err := p.acquire(ctx); err != nil {
+		return err
+	}
+	defer p.release()
+	file, err := os.Open(f.Path)
+	if err != nil {
+		return err
+	}
+	data, err := io.ReadAll(contextReader{ctx: ctx, r: file})
+	file.Close()
+	if err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(f.Path)
+	inst, err := p.instance(ctx)
 	if err != nil {
 		return err
 	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	inst, err := p.instance()
-	if err != nil {
-		return err
-	}
-	doc, err := inst.OpenDocument(&requests.OpenDocument{File: &data})
-	if err != nil {
-		return fmt.Errorf("open pdf: %w", err)
-	}
-	defer inst.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
-
-	count, err := inst.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
-	if err != nil {
-		return fmt.Errorf("page count: %w", err)
-	}
-	for i := 0; i < count.PageCount; i++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		page := requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: i}}
-		text, err := inst.GetPageText(&requests.GetPageText{Page: page})
+	var doc *responses.OpenDocument
+	interrupted, err := interruptPDFCall(ctx, inst.Kill, func() error {
+		var err error
+		doc, err = inst.OpenDocument(&requests.OpenDocument{File: &data})
 		if err != nil {
-			return fmt.Errorf("page %d text: %w", i+1, err)
+			return fmt.Errorf("open pdf: %w", err)
 		}
-		if countNonSpace(text.Text) >= minPageText {
-			if err := emit(textUnit(f, i+1, text.Text)); err != nil {
+		count, err := inst.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
+		if err != nil {
+			return fmt.Errorf("page count: %w", err)
+		}
+		for i := 0; i < count.PageCount; i++ {
+			if err := ctx.Err(); err != nil {
 				return err
 			}
-			continue
+			page := requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: i}}
+			text, err := inst.GetPageText(&requests.GetPageText{Page: page})
+			if err != nil {
+				return fmt.Errorf("page %d text: %w", i+1, err)
+			}
+			if countNonSpace(text.Text) >= minPageText {
+				if err := emitUnit(ctx, emit, textUnit(f, i+1, text.Text)); err != nil {
+					return err
+				}
+				continue
+			}
+			img, err := renderPage(inst, page)
+			if err != nil {
+				return fmt.Errorf("page %d render: %w", i+1, err)
+			}
+			if err := emitUnit(ctx, emit, contract.Unit{FileID: f.ID, Unit: i + 1, Start: -1, End: -1, Image: img, EstTokens: 1500}); err != nil {
+				return err
+			}
 		}
-		img, err := renderPage(inst, page)
-		if err != nil {
-			return fmt.Errorf("page %d render: %w", i+1, err)
-		}
-		if err := emit(contract.Unit{FileID: f.ID, Unit: i + 1, Start: -1, End: -1, Image: img, EstTokens: 1500}); err != nil {
-			return err
-		}
+		return nil
+	})
+	if interrupted {
+		p.inst = nil
+	} else if doc != nil {
+		inst.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
 	}
-	return nil
+	return err
+}
+
+func interruptPDFCall(ctx context.Context, kill func() error, call func() error) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	done := make(chan struct{})
+	result := make(chan bool, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = kill()
+			result <- true
+		case <-done:
+			result <- false
+		}
+	}()
+	err := call()
+	close(done)
+	interrupted := <-result
+	if err := ctx.Err(); err != nil {
+		return interrupted, err
+	}
+	return interrupted, err
 }
 
 // renderPage renders one page at renderDPI, scaled down so its long edge is at most maxRenderEdge, and returns

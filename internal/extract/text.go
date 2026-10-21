@@ -3,6 +3,7 @@ package extract
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,8 +29,16 @@ func (Text) Extract(ctx context.Context, f contract.FileRec, emit func(contract.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	raw, err := os.ReadFile(f.Path)
+	file, err := os.Open(f.Path)
 	if err != nil {
+		return err
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(contextReader{ctx: ctx, r: file})
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	text, ok := decodeText(raw)
@@ -37,7 +46,7 @@ func (Text) Extract(ctx context.Context, f contract.FileRec, emit func(contract.
 		return nil
 	}
 	if ext := strings.ToLower(filepath.Ext(f.Path)); ext == ".html" || ext == ".htm" {
-		text, err = htmlText(text)
+		text, err = htmlText(ctx, text)
 		if err != nil {
 			return err
 		}
@@ -45,7 +54,7 @@ func (Text) Extract(ctx context.Context, f contract.FileRec, emit func(contract.
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	return emit(textUnit(f, 0, text))
+	return emitUnit(ctx, emit, textUnit(f, 0, text))
 }
 
 // decodeText returns the UTF-8 text of raw. ok is false when raw is binary or not text.
@@ -80,19 +89,22 @@ func decodeUTF16(raw []byte) (string, bool) {
 }
 
 // htmlText returns the text of an HTML document, one block per line, without script and style content.
-func htmlText(src string) (string, error) {
-	doc, err := html.Parse(strings.NewReader(src))
+func htmlText(ctx context.Context, src string) (string, error) {
+	doc, err := html.Parse(contextReader{ctx: ctx, r: strings.NewReader(src)})
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
+	var walk func(*html.Node) error
+	walk = func(n *html.Node) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		switch n.Type {
 		case html.ElementNode:
 			switch n.Data {
 			case "script", "style", "head":
-				return
+				return nil
 			case "p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article":
 				b.WriteByte('\n')
 			}
@@ -100,9 +112,14 @@ func htmlText(src string) (string, error) {
 			b.WriteString(n.Data)
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
+			if err := walk(c); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	walk(doc)
+	if err := walk(doc); err != nil {
+		return "", err
+	}
 	return b.String(), nil
 }

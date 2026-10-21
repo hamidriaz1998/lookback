@@ -45,7 +45,8 @@ func (Image) Extract(ctx context.Context, f contract.FileRec, emit func(contract
 	defer file.Close()
 
 	// Header-only read: the dimensions and the format, with no pixel decoding.
-	cfg, format, err := image.DecodeConfig(file)
+	reader := contextReader{ctx: ctx, r: file}
+	cfg, format, err := image.DecodeConfig(reader)
 	if err != nil {
 		return fmt.Errorf("image header: %w", err)
 	}
@@ -55,16 +56,17 @@ func (Image) Extract(ctx context.Context, f contract.FileRec, emit func(contract
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
+	reader = contextReader{ctx: ctx, r: file}
 	long := max(cfg.Width, cfg.Height)
 
 	var out []byte
 	if (format == "png" || format == "jpeg") && long <= maxLongEdge {
-		out, err = io.ReadAll(file)
+		out, err = io.ReadAll(reader)
 		if err != nil {
 			return err
 		}
 	} else {
-		img, _, err := image.Decode(file)
+		img, _, err := image.Decode(reader)
 		if err != nil {
 			return fmt.Errorf("image decode: %w", err)
 		}
@@ -76,7 +78,10 @@ func (Image) Extract(ctx context.Context, f contract.FileRec, emit func(contract
 			return err
 		}
 	}
-	return emit(contract.Unit{FileID: f.ID, Start: -1, End: -1, Image: out, EstTokens: 1500})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return emitUnit(ctx, emit, contract.Unit{FileID: f.ID, Start: -1, End: -1, Image: out, EstTokens: 1500})
 }
 
 // downscale returns img scaled so its long edge is at most edge. It keeps the aspect ratio.

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/zlib"
+	_ "embed"
 	"encoding/binary"
 	"fmt"
 	"image"
@@ -20,6 +21,9 @@ import (
 	"testing"
 	"unicode/utf16"
 )
+
+//go:embed testdata/sample.webp
+var sampleWebP []byte
 
 // Fixtures are self-made. TestWriteFixtures regenerates everything in testdata when
 // LOOKBACK_WRITE_FIXTURES=1; the other tests only read the committed files.
@@ -43,17 +47,20 @@ func TestWriteFixtures(t *testing.T) {
 </w:body></w:document>`,
 	}))
 	add("sample.pptx", zipBytes(map[string]string{
-		"ppt/slides/slide1.xml": slideXML("Title slide", "Launch date"),
-		"ppt/slides/slide2.xml": slideXML("Roadmap", "Ship the indexer"),
-		"ppt/slides/slide3.xml": `<?xml version="1.0"?><p:sld xmlns:p="x" xmlns:a="y"><p:cSld><p:spTree/></p:cSld></p:sld>`,
+		"ppt/presentation.xml":            `<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId r:id="rId2"/><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>`,
+		"ppt/_rels/presentation.xml.rels": `<Relationships><Relationship Id="rId1" Target="slides/cover.xml"/><Relationship Id="rId2" Target="slides/roadmap.xml"/></Relationships>`,
+		"ppt/slides/cover.xml":            slideXML("Title slide", "Launch date"),
+		"ppt/slides/roadmap.xml":          slideXML("Roadmap", "Ship the indexer"),
 	}))
 	add("sample.xlsx", zipBytes(map[string]string{
-		"xl/sharedStrings.xml": `<?xml version="1.0"?><sst><si><t>Name</t></si><si><t>Amount</t></si><si><t>Rent</t></si></sst>`,
-		"xl/worksheets/sheet1.xml": `<?xml version="1.0"?><worksheet><sheetData>
+		"xl/workbook.xml":            `<workbook xmlns:r="r"><sheets><sheet name="Summary" r:id="rId2"/><sheet name="Data" r:id="rId1"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<Relationships><Relationship Id="rId1" Target="worksheets/main-grid.xml"/><Relationship Id="rId2" Target="worksheets/summary.xml"/></Relationships>`,
+		"xl/sharedStrings.xml":       `<?xml version="1.0"?><sst><si><t>Name</t></si><si><t>Amount</t></si><si><t>Rent</t></si></sst>`,
+		"xl/worksheets/main-grid.xml": `<?xml version="1.0"?><worksheet><sheetData>
 <row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row>
 <row r="2"><c r="A2" t="s"><v>2</v></c><c r="C2"><v>1200</v></c></row>
 </sheetData></worksheet>`,
-		"xl/worksheets/sheet2.xml": `<?xml version="1.0"?><worksheet><sheetData>
+		"xl/worksheets/summary.xml": `<?xml version="1.0"?><worksheet><sheetData>
 <row r="1"><c r="B1" t="inlineStr"><is><t>Totals</t></is></c></row>
 </sheetData></worksheet>`,
 	}))
@@ -85,8 +92,9 @@ Caf\'e9 and \u8364?euro\tab done\line
 <body><script>var secret = 1;</script><h1>Heading</h1><p>Body &amp; text.</p></body></html>`))
 
 	add("wide.png", encodePNG(gradient(2000, 1000)))
+	add("sample.webp", sampleWebP)
 	add("photo.jpg", encodeJPEG(gradient(1000, 500)))
-	add("anim.gif", encodeGIF(gradient(120, 80)))
+	add("anim.gif", encodeAnimatedGIF())
 	add("tiny.bmp", bmp24(3, 2))
 
 	add("text-and-image.pdf", buildPDF([]pdfPage{{text: longText}, {image: true}, {text: "Page three text"}}))
@@ -168,6 +176,22 @@ func encodeGIF(img *image.RGBA) []byte {
 	draw.Draw(pal, img.Bounds(), img, img.Bounds().Min, draw.Src)
 	var b bytes.Buffer
 	if err := gif.Encode(&b, pal, nil); err != nil {
+		panic(err)
+	}
+	return b.Bytes()
+}
+
+func encodeAnimatedGIF() []byte {
+	pal := color.Palette{color.RGBA{R: 255, A: 255}, color.RGBA{B: 255, A: 255}}
+	frames := make([]*image.Paletted, 2)
+	for i := range frames {
+		frames[i] = image.NewPaletted(image.Rect(0, 0, 120, 80), pal)
+		for j := range frames[i].Pix {
+			frames[i].Pix[j] = byte(i)
+		}
+	}
+	var b bytes.Buffer
+	if err := gif.EncodeAll(&b, &gif.GIF{Image: frames, Delay: []int{10, 10}, LoopCount: 0}); err != nil {
 		panic(err)
 	}
 	return b.Bytes()

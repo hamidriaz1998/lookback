@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -93,4 +94,26 @@ func snippet(s string) string {
 func textUnit(f contract.FileRec, unit int, text string) contract.Unit {
 	return contract.Unit{FileID: f.ID, Unit: unit, Start: 0, End: len(text), Text: text, Snippet: snippet(text),
 		EstTokens: len(text) / 4}
+}
+
+func emitUnit(ctx context.Context, emit func(contract.Unit) error, unit contract.Unit) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := emit(unit); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
 }
