@@ -253,6 +253,14 @@ any combination with **Use this combination**.
 - Unpack runtime archives (`.tar.gz`, `.zip`) into `runtimes/<tag>-<backend>/`, refusing paths that
   leave that folder.
 - Report progress as `{file, done, total, bytesPerSec}` at most 4 times per second.
+- **Identity.** A file is keyed by its SHA-256, and the `.part` files already are. Two combinations that
+  need the same file download it once. A new pin has a new SHA-256, so it downloads again, and the file
+  it replaces stays until the new one is verified. An unpinned runtime archive has no SHA-256 yet, so its
+  key is its URL. Asking again for a key with the same descriptor changes nothing. A different descriptor
+  under a known key is refused.
+- **Pause.** The user's pause (per file, or Pause all) and the connection are separate. A file shows
+  offline while the connection is down, and coming back online does not clear a user pause. A file
+  ensured or retried while Pause all is in effect starts paused.
 
 ## 8. Sidecar runtime
 
