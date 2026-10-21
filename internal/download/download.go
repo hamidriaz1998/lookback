@@ -615,6 +615,9 @@ func (d *Downloader) modelPath(a contract.Asset) string {
 	revision := "unknown"
 	if err == nil {
 		revision = path.Base(path.Dir(u.Path))
+		if revision == "." || revision == "/" || revision == ".." {
+			revision = "unknown"
+		}
 	}
 	return filepath.Join(d.cfg.Dir, "models", revision, a.Name)
 }

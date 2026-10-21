@@ -606,6 +606,14 @@ func TestModelRevisionsKeepSameNamedPins(t *testing.T) {
 	}
 }
 
+func TestModelWithoutURLRevisionUsesUnknownDirectory(t *testing.T) {
+	a := modelAsset("https://example.test/shared.gguf", []byte("model"))
+	d := &Downloader{cfg: Config{Dir: t.TempDir()}}
+	if got := filepath.Base(filepath.Dir(d.modelPath(a))); got != "unknown" {
+		t.Fatalf("model revision directory = %q, want unknown", got)
+	}
+}
+
 type fakeNet struct {
 	mu     sync.Mutex
 	online bool
