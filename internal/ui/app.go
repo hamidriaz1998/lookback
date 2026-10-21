@@ -91,6 +91,9 @@ type App struct {
 	nowT       time.Time // the clock of the current frame
 	indexRev   uint64
 
+	errList ui.ListState // the Activity page's error rows
+	errSel  int          // the selected error row, -1 for none
+
 	usage     []diskPart // what the data folder holds, read when Settings shows it
 	usageBusy bool
 	usageAt   time.Time
@@ -133,6 +136,7 @@ func New(d Deps) *App {
 		labSteps:    map[contract.RunID]contract.LabStep{},
 		search:      newSearchState(),
 		models:      modelsState{selected: -1},
+		errSel:      -1,
 	}
 }
 

@@ -133,29 +133,48 @@ func (a *App) folderProgress(c *ui.Context) {
 	}
 }
 
-// errorList lists the files whose last indexing failed, each with Retry, and Retry all.
+// errorListHeight is the most a list of errors takes; past it the list scrolls within itself.
+const errorListHeight = 360
+
+// errorRowHeight is the height of one error row, to size a short list.
+const errorRowHeight = 44
+
+// errorList lists the files whose last indexing failed, each with Retry, and Retry all. The rows are a virtual list
+// with a selection: Up and Down move it, and Enter retries the selected file (UI guide section 6). Only the rows on
+// screen are built, so a folder with thousands of failed files costs what a folder with a few does.
 func (a *App) errorList(c *ui.Context) {
 	t := c.Theme()
-	if len(a.data.errors) == 0 {
+	errs := a.data.errors
+	if len(errs) == 0 {
 		return
 	}
 	ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, fmt.Sprintf("Errors (%s)", count(len(a.data.errors)))).FontSize(t.Rem(1.15)).Bold().Grow(1)
+		ui.Text(c, fmt.Sprintf("Errors (%s)", count(len(errs)))).FontSize(t.Rem(1.15)).Bold().Grow(1)
 		if ui.Button(c, "Retry all").Clicked() {
 			a.run(func(ctx context.Context) error { return a.d.Indexer.RetryAll(ctx) })
 		}
 	})
-	for _, e := range a.data.errors {
+	a.errList.Selected = &a.errSel
+	a.errList.Key = func(row int) any { return errs[row].file.ID }
+	list := ui.List(c, &a.errList, len(errs), func(i int) {
+		e := errs[i]
 		ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, icon("triangle-alert")).TextColor(t.Danger)
 			ui.Text(c, filepath.Base(e.file.Path)).SingleLine().Basis(260)
 			ui.Text(c, e.msg).TextColor(t.TextMuted).Grow(1).Lines(1, 2)
 			if ui.Button(c, "Retry").Clicked() {
-				id := e.file.ID
-				a.run(func(ctx context.Context) error { return a.d.Indexer.Retry(ctx, []int64{id}) })
+				a.retryFile(e.file.ID)
 			}
 		})
+	}).Height(float32(min(len(errs)*errorRowHeight, errorListHeight)))
+	if list.Submitted() && a.errSel >= 0 && a.errSel < len(errs) {
+		a.retryFile(errs[a.errSel].file.ID)
 	}
+}
+
+// retryFile queues one failed file for indexing again.
+func (a *App) retryFile(id int64) {
+	a.run(func(ctx context.Context) error { return a.d.Indexer.Retry(ctx, []int64{id}) })
 }
 
 // run runs a command in the background, then reloads the snapshot. A failure is shown on the page it started on,
