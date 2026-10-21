@@ -315,7 +315,12 @@ func quality(vecs [][]float32, ref assets.Reference) (float64, error) {
 	}
 	var sum float64
 	for i := range vecs {
-		sum += cosine(vecs[i], ref.Vectors[i])
+		c := cosine(vecs[i], ref.Vectors[i])
+		if math.IsNaN(c) || math.IsInf(c, 0) {
+			// A zero or non-finite vector has no cosine; a NaN mean would pass the quality bar.
+			return 0, fmt.Errorf("bench: item %d has a zero or non-finite vector", i)
+		}
+		sum += c
 	}
 	return sum / float64(len(vecs)), nil
 }
@@ -355,7 +360,7 @@ func (l *Lab) Recommend(results []contract.LabResult) (contract.Combo, bool) {
 	found := false
 	for _, r := range results {
 		q := r.Bench.Quality
-		if q == nil || *q < qualityBar {
+		if q == nil || math.IsNaN(*q) || math.IsInf(*q, 0) || *q < qualityBar {
 			continue
 		}
 		if !found || r.Bench.ImageMS < best.Bench.ImageMS {

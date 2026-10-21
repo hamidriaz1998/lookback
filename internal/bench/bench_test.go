@@ -3,10 +3,12 @@ package bench
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hamidriaz1998/lookback/assets"
 	"github.com/hamidriaz1998/lookback/internal/contract"
 	"github.com/hamidriaz1998/lookback/internal/runtime"
 )
@@ -268,5 +270,35 @@ func TestMedianAndQuality(t *testing.T) {
 	}
 	if c := cosine([]float32{1, 0}, []float32{0, 1}); c != 0 {
 		t.Fatalf("orthogonal cosine %v", c)
+	}
+}
+
+// TestRecommendRejectsNaNQuality: a NaN quality is not at least 0.99, so a faster result with NaN never wins over a
+// valid result with quality 1.0.
+func TestRecommendRejectsNaNQuality(t *testing.T) {
+	q := func(v float64) *float64 { return &v }
+	nan := math.NaN()
+	valid := contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}
+	results := []contract.LabResult{
+		{Combo: contract.Combo{Backend: contract.BackendCUDA12}, Bench: contract.BenchResult{ImageMS: 500, Quality: &nan}},
+		{Combo: valid, Bench: contract.BenchResult{ImageMS: 4000, Quality: q(1.0)}},
+	}
+	got, ok := (&Lab{}).Recommend(results)
+	if !ok || got != valid {
+		t.Fatalf("Recommend = %+v, %v; want the valid result, not the NaN one", got, ok)
+	}
+	if _, ok := (&Lab{}).Recommend(results[:1]); ok {
+		t.Fatal("Recommend accepted a NaN quality alone")
+	}
+}
+
+// TestQualityRejectsZeroVector: a zero embedding has no cosine similarity, so the run fails instead of reporting NaN.
+func TestQualityRejectsZeroVector(t *testing.T) {
+	ref := assets.Reference{Vectors: [][]float32{{1, 0}, {0, 1}}}
+	if _, err := quality([][]float32{{1, 0}, {0, 0}}, ref); err == nil {
+		t.Fatal("quality of a zero vector returned no error")
+	}
+	if q, err := quality([][]float32{{1, 0}, {0, 1}}, ref); err != nil || q != 1 {
+		t.Fatalf("valid vectors: %v, %v", q, err)
 	}
 }
