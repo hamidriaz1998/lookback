@@ -73,12 +73,22 @@ func main() {
 	}
 
 	mygo.App.WhenReady(func() {
-		mygo.NewWindow(mygo.WindowOptions{
+		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:   "Theme demo: " + *id,
 			Width:   520,
 			Height:  420,
 			Content: ui.View(view),
 		})
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-mgr.Changes():
+					win.Update(func() {})
+				}
+			}
+		}()
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
