@@ -41,3 +41,14 @@ findings block a merge). Each item names its owner. The full findings are in the
 | Item | Owner | What to do |
 |---|---|---|
 | `TestRealCPURuntimeResume` times out on a slow network | WP9 | It failed once (57 s, "timed out waiting for" the runtime archive) and passed on two reruns (27 s, 33 s). Give the resume wait a deadline that scales with the archive size, or skip the real download under `-short`, so a slow link does not fail the gate. |
+
+## From WP4 review round 3
+
+| Item | Owner | What to do |
+|---|---|---|
+| R3-#1 (medium): RTF group nesting can allocate hundreds of MB below the file-size limit | WP9 | Cap group depth and per-group state in the RTF parser; add a deeply nested input under the size limit and assert bounded allocation or a typed error. |
+| R3-#2 (medium): the real PDFium interruption test can pass without entering the operation it interrupts | WP9 | Signal from inside the render call (or measure that the call started) before cancelling, so the test fails if the call never began. |
+| R3-#3 (medium): the detached-startup shutdown test does not verify resource disposal | WP9 | After Close, wait for the adopted startup to finish and assert the PDFium instance/pool is released (no leaked goroutines or module). |
+| R3-#4 (low): the PDF waiter regression depends on a 15 s cold-start deadline | WP9 | Replace the wall-clock bound with a readiness signal so parallel load cannot fail it. |
+
+See `.review/wp4-r3.md`.
