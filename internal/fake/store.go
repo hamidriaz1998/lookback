@@ -265,6 +265,9 @@ func (s *Store) CommitFile(ctx context.Context, idx contract.FileIndex, items []
 	if _, ok := s.gens[idx.Gen]; !ok {
 		return contract.ErrUnknownGen
 	}
+	if !terminalStatus(idx.Status) {
+		return errors.New("fake store: status must be done, error or skipped")
+	}
 	for _, it := range items {
 		if it.Gen != idx.Gen || it.FileID != idx.FileID {
 			return errors.New("fake store: item does not belong to the file and generation")
@@ -331,16 +334,21 @@ func (s *Store) GenerationComplete(ctx context.Context, gen int64) (bool, error)
 	return s.completeLocked(gen), nil
 }
 
-// completeLocked reports whether every file has a row in gen with the file's current size and mtime. The
-// caller holds s.mu.
+// completeLocked reports whether every file has a row in gen with the file's current size and mtime and a
+// terminal status. The caller holds s.mu.
 func (s *Store) completeLocked(gen int64) bool {
 	for id, f := range s.files {
 		ix, ok := s.index[[2]int64{id, gen}]
-		if !ok || ix.Size != f.Size || ix.MTime != f.MTime {
+		if !ok || !terminalStatus(ix.Status) || ix.Size != f.Size || ix.MTime != f.MTime {
 			return false
 		}
 	}
 	return true
+}
+
+// terminalStatus reports whether st is one of the statuses a finished file_index row has (SPEC section 10).
+func terminalStatus(st contract.Status) bool {
+	return st == contract.StatusDone || st == contract.StatusError || st == contract.StatusSkipped
 }
 
 // ActivateGeneration makes gen active and retires the previous active generation, in one step under the lock.

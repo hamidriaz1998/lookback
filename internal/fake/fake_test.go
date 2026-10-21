@@ -551,3 +551,42 @@ func TestActivateRefusesIncompleteGeneration(t *testing.T) {
 		t.Fatalf("a stale row: %v, want ErrIncomplete", err)
 	}
 }
+
+// CommitFile accepts only done, error and skipped, and activation refuses a generation whose row has any
+// other status, so the active generation stays (review finding 9).
+func TestActivateRefusesInvalidStatus(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore()
+	g := contract.Generation{Space: fixtureSpace}
+	if err := s.NewGeneration(ctx, &g); err != nil {
+		t.Fatal(err)
+	}
+	fillGeneration(t, s, g.ID)
+	var fileID int64
+	for id := range s.files {
+		fileID = id
+		break
+	}
+	f := s.files[fileID]
+	bad := contract.FileIndex{FileID: fileID, Gen: g.ID, Size: f.Size, MTime: f.MTime}
+	if err := s.CommitFile(ctx, bad, nil); err == nil {
+		t.Fatal("CommitFile accepted an empty status")
+	}
+	s.mu.Lock()
+	row := s.index[[2]int64{fileID, g.ID}]
+	row.Status = ""
+	s.index[[2]int64{fileID, g.ID}] = row
+	s.mu.Unlock()
+	if done, _ := s.GenerationComplete(ctx, g.ID); done {
+		t.Fatal("a generation with an empty status reports complete")
+	}
+	if err := s.ActivateGeneration(ctx, g.ID); !errors.Is(err, contract.ErrIncomplete) {
+		t.Fatalf("activating an invalid status: %v, want ErrIncomplete", err)
+	}
+	gens, _ := s.ListGenerations(ctx)
+	for _, x := range gens {
+		if x.ID == 1 && x.State != contract.GenActive {
+			t.Fatal("a refused activation retired the active generation")
+		}
+	}
+}
