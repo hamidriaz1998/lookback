@@ -2,6 +2,7 @@ package hw
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -15,11 +16,19 @@ var realBuilds = map[contract.Backend]string{
 	contract.BackendVulkan: "/home/hamid/Desktop/AI/embeddingGemma_test/llama-vulkan/llama-b11755/llama-server",
 }
 
+func requireGPUDevice(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/dev/dri"); errors.Is(err, os.ErrNotExist) {
+		t.Skip("GPU devices are not exposed to this environment")
+	}
+}
+
 // TestRealProbeListsTheRadeonThroughVulkan is the reference-laptop check: the Vulkan build lists the iGPU.
 func TestRealProbeListsTheRadeonThroughVulkan(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs llama-server --list-devices")
 	}
+	requireGPUDevice(t)
 	bin := realBuilds[contract.BackendVulkan]
 	if _, err := os.Stat(bin); err != nil {
 		t.Skipf("no Vulkan build: %v", err)
@@ -43,6 +52,7 @@ func TestRealDetectReadsThisMachine(t *testing.T) {
 	if testing.Short() {
 		t.Skip("reads /proc and /sys")
 	}
+	requireGPUDevice(t)
 	h, err := NewDetector(nil).Detect(context.Background())
 	if err != nil {
 		t.Fatal(err)

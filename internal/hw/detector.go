@@ -12,12 +12,10 @@ import (
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
-// Minimum NVIDIA driver versions for the CUDA builds (SPEC section 5). Sources, from the CUDA Toolkit
-// release notes, "CUDA Toolkit and Corresponding Driver Versions" (Table 4, CUDA 12.9 and earlier):
-// CUDA 12.8 GA needs Linux driver >= 570.26. For CUDA 13.x, the table "CUDA Toolkit and Minimum Required Driver
-// Version for CUDA Minor Version Compatibility" gives >= 580 (branch R580). The 13.4 build runs on any
-// driver >= 580 under minor version compatibility. Verify on NVIDIA hardware; no NVIDIA GPU is on the
-// reference laptop, so these minimums are unexercised there. The catalog (WP1) must carry the same values.
+// Minimum Linux driver versions for the CUDA builds (SPEC section 5). CUDA 12.8 GA needs >=570.26;
+// CUDA 13.x minor-version compatibility needs >=580. CUDA 13.4 features and newly enabled platforms can
+// require R615 or newer: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html. These baselines
+// are not exercised on the reference laptop, which has no NVIDIA GPU. The catalog (WP1) must carry the same values.
 const (
 	minDriverCUDA12 = "570.26"
 	minDriverCUDA13 = "580"
