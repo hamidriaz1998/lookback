@@ -325,8 +325,14 @@ files over 50 MB, images under 64×64 px, and symlinks that resolve outside the 
   Both come from the model's `config_sentence_transformers.json`. The file name as the title is allowed
   by the format and helps short chunks.
 - Windows of 512 tokens including the prompt prefix, overlapping by 64 tokens. Use `/tokenize` with
-  `with_pieces` to map each window back to byte offsets in the UTF-8 text. A token can split a character (byte-fallback
-  pieces), so offsets are bytes, not runes.
+  `with_pieces` to map each window back to byte offsets in the UTF-8 text. A token can split a character
+  (byte-fallback pieces), so offsets are bytes, not runes.
+- **UTF-8 boundaries.** A window's start and end must be character starts: a cut that falls inside a
+  character moves back (end) or forward (start) to the nearest character start. The text is never
+  re-encoded, so every chunk is valid UTF-8 and its bytes are the source bytes.
+- **Token cap.** The chunker counts tokens on the full prompt (prefix plus the window's text) and tokenizes
+  that again after cutting. If it is over 512 tokens, the window shrinks and is checked again. The 512 cap
+  applies to what is embedded, not to the window's text alone.
 - Store, per chunk: the unit (page, slide or sheet), the byte range in the text, and a
   snippet (the first 300 characters, whitespace collapsed).
 - Send text chunks in batches of up to 8 per request. Send images one per request, to keep payloads small.
