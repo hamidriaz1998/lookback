@@ -35,9 +35,17 @@ func checkContrast(t *testing.T, name string, th *ui.Theme) {
 
 // System in light and dark, after the guard.
 func TestSystemContrast(t *testing.T) {
-	src := System()
 	for _, base := range []*ui.Theme{ui.LightTheme(), ui.DarkTheme()} {
-		checkContrast(t, src.Name(), src.Theme(base))
+		checkContrast(t, "System", systemTheme(base, ui.Color{}))
+	}
+}
+
+func TestSystemUsesDesktopAccent(t *testing.T) {
+	for _, accent := range []ui.Color{mustHex("#b91c1c"), mustHex("#047857")} {
+		got := systemTheme(ui.LightTheme(), accent)
+		if got.Accent != accent {
+			t.Errorf("System Accent = %v, want desktop accent %v", got.Accent, accent)
+		}
 	}
 }
 
@@ -45,7 +53,7 @@ func TestSystemContrast(t *testing.T) {
 func TestGuardLeavesOtherFieldsAlone(t *testing.T) {
 	for _, base := range []*ui.Theme{ui.LightTheme(), ui.DarkTheme()} {
 		before := *base
-		after := *System().Theme(base)
+		after := *systemTheme(base, ui.Color{})
 		if after.Text != before.Text || after.Background != before.Background || after.Surface != before.Surface || after.Danger != before.Danger || after.Warning != before.Warning || after.Success != before.Success {
 			t.Errorf("guard changed Text, Background, Surface or a semantic color")
 		}
@@ -93,5 +101,55 @@ func TestMutedGuardOnReferenceMachine(t *testing.T) {
 	}
 	if r := contrast(th.TextMuted, th.Surface); r < 4.5 {
 		t.Errorf("guarded TextMuted on Surface is %.2f:1", r)
+	}
+}
+
+// Accepted data must not panic the guard (review r1 #1): an explicit mode that conflicts with the
+// background, and a sparse file that falls back to the light base background.
+func TestGuardRegressions(t *testing.T) {
+	cases := map[string]struct {
+		base *ui.Theme
+		kv   map[string]string
+	}{
+		"light mode on a dark background, accent equal to background": {
+			base: ui.LightTheme(),
+			kv: map[string]string{
+				"mode": "light", "background": "#111c18", "lighter_background": "#23372b",
+				"foreground": "#c1c497", "accent": "#111c18",
+			},
+		},
+		"dark mode, accent white, fallback light background": {
+			base: ui.LightTheme(),
+			kv:   map[string]string{"mode": "dark", "accent": "#ffffff"},
+		},
+		"dark mode, accent white, dark base": {
+			base: ui.DarkTheme(),
+			kv:   map[string]string{"mode": "dark", "accent": "#ffffff"},
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			checkContrast(t, name, omarchyTheme(c.base, c.kv))
+		})
+	}
+}
+
+// Focus is adjusted separately: it must not change an accent whose text already passes.
+func TestFocusAdjustmentLeavesReadableAccentUnchanged(t *testing.T) {
+	th := *ui.LightTheme()
+	th.Background = mustHex("#fafafa")
+	th.Surface = mustHex("#f4f4f5")
+	th.Text = mustHex("#18181b")
+	th.TextMuted = mustHex("#71717a")
+	th.Accent = mustHex("#aaaaaa")
+	guard(&th)
+	if th.Accent != mustHex("#aaaaaa") {
+		t.Errorf("Accent = %v, want unchanged #aaaaaa", th.Accent)
+	}
+	if r := contrast(th.AccentText, th.Accent); r < 4.5 {
+		t.Errorf("AccentText contrast = %.2f:1, want >= 4.5:1", r)
+	}
+	if r := contrast(th.Focus, th.Background); r < 3 {
+		t.Errorf("Focus contrast = %.2f:1, want >= 3:1", r)
 	}
 }

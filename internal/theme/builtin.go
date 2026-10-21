@@ -107,7 +107,19 @@ func (s *system) Name() string { return "System" }
 func (s *system) Changed() <-chan struct{} { return s.changed }
 
 func (s *system) Theme(base *ui.Theme) *ui.Theme {
+	p := mygo.Theme.Preferences().Accent
+	accent := ui.Color{}
+	if p.A != 0 {
+		accent = ui.RGB(p.R, p.G, p.B)
+	}
+	return systemTheme(base, accent)
+}
+
+func systemTheme(base *ui.Theme, accent ui.Color) *ui.Theme {
 	t := *base
+	if accent.A != 0 {
+		t.Accent = accent
+	}
 	guard(&t)
 	return &t
 }

@@ -577,14 +577,15 @@ function after they are built and before they are used. The four fixed palettes 
 as they are and are not guarded. The guard, in order:
 
 1. **TextMuted:** mix toward Text in 5% steps until ≥ 4.5:1 against both Background and Surface.
-2. **AccentText:** pick whichever of Background, Text, pure white and pure black has the highest contrast
-   with Accent. If that is still < 4.5:1, move the Accent in 5% steps (toward black in a light theme,
-   toward white in a dark theme) and pick again, until it reaches 4.5:1. AccentHover and AccentPressed
-   are derived from the final Accent.
-3. **Focus:** the Accent at 80% alpha, composited over Background, must be ≥ 3:1 against Background. If
-   it isn't, use the opaque Accent; if that's still < 3:1, move it as in step 2 until ≥ 3:1. Focus may
-   then differ from Accent.
-4. Text, Background, Surface and the semantic colors are left unchanged.
+2. **AccentText and Accent:** pick whichever of Background, Text, pure white and pure black has the highest
+   contrast with Accent. If that is still < 4.5:1, move the Accent in 5% steps toward black or white,
+   whichever contrasts more with Background, and pick again, until it reaches 4.5:1. AccentHover and
+   AccentPressed are derived from the final Accent. Accent is changed only for this step.
+3. **Focus:** derived after step 2 and separate from Accent. It is the final Accent at 80% alpha, composited
+   over Background, if that is ≥ 3:1 against Background; else the opaque final Accent if that is ≥ 3:1; else
+   the opaque final Accent moved in 5% steps toward the same end until ≥ 3:1. Only Focus moves in this step.
+4. The Focus adjustment can always reach the chosen endpoint, pure black or white, which exceeds 3:1
+   against any Background. Text, Background, Surface and the semantic colors are left unchanged.
 
 **Contrast test (required)**: a unit test checks every fixed palette as it is, System in light and dark
 after the guard, and every Omarchy fixture file after the guard, for Text and TextMuted ≥ 4.5:1 against

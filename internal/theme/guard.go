@@ -6,38 +6,49 @@ import "github.com/egoist/mygo/ui"
 // changes only TextMuted, AccentText, Accent and its hover and pressed colors, and Focus. Text,
 // Background, Surface and the semantic colors are left as they are.
 func guard(t *ui.Theme) {
-	bg, surface, fg := t.Background, t.Surface, t.Text
+	originalAccent := t.Accent
+	bg, fg := t.Background, t.Text
 
 	// 1. TextMuted: toward Text in 5% steps until 4.5:1 on Background and Surface.
-	t.TextMuted = mutedGuard(t.TextMuted, fg, bg, surface)
+	t.TextMuted = mutedGuard(t.TextMuted, fg, bg, t.Surface)
 
-	// 2 and 3. Accent: move it in 5% steps toward black (light) or white (dark) until AccentText
-	// reaches 4.5:1 and Focus reaches 3:1 on Background. Focus is the Accent at 80% alpha if that
-	// passes, else the opaque Accent. The loop ends at the target itself, which contrasts with
-	// both candidates by 21:1 or more.
-	target := white
-	if !t.Dark {
-		target = black
+	// 2. Accent moves only as needed for AccentText. Choose a direction from Background so it works
+	// even when an explicit mode conflicts with the actual color.
+	target := black
+	if contrast(white, bg) > contrast(black, bg) {
+		target = white
 	}
-	orig := t.Accent
 	for i := range 21 {
-		ac := orig.Mix(target, float32(i)*0.05)
+		ac := originalAccent.Mix(target, float32(i)*0.05)
 		at, ok := accentText(ac, bg, fg)
-		if !ok {
-			continue
+		if ok {
+			setAccent(t, ac, at)
+			break
 		}
-		focus, ok := focusFor(ac, bg)
-		if !ok {
-			continue
-		}
-		t.Accent = ac
-		t.AccentHover = ac.Mix(white, 0.12)
-		t.AccentPressed = ac.Mix(black, 0.12)
-		t.AccentText = at
+	}
+
+	// 3. Focus is separate: use translucent Accent, then opaque Accent, then move Focus alone.
+	if focus, ok := focusFor(t.Accent, bg); ok {
 		t.Focus = focus
 		return
 	}
-	panic("theme: guard found no accent") // unreachable: the target passes both rules
+	for i := 1; i <= 20; i++ {
+		focus := t.Accent.Mix(target, float32(i)*0.05)
+		if contrast(focus, bg) >= 3 {
+			t.Focus = focus
+			return
+		}
+	}
+	t.Focus = target
+}
+
+// setAccent sets Accent with the hover and pressed colors derived from it, and the accent-text and
+// focus colors.
+func setAccent(t *ui.Theme, ac, at ui.Color) {
+	t.Accent = ac
+	t.AccentHover = ac.Mix(white, 0.12)
+	t.AccentPressed = ac.Mix(black, 0.12)
+	t.AccentText = at
 }
 
 // accentText picks the candidate with the highest contrast on accent, and reports whether it
