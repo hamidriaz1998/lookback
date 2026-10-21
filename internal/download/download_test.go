@@ -404,6 +404,42 @@ func TestCopyClassifiesLocalWriteFailure(t *testing.T) {
 	}
 }
 
+func TestMissingRuntimeRestoresDespiteDoneMarker(t *testing.T) {
+	body := tarGz(t, map[string]string{"llama-server": "runtime"})
+	ts := newTestServer(t, body)
+	a := contract.Asset{Name: "llama-b11755-bin-ubuntu-x64.tar.gz", URL: ts.URL + "/b11755/llama-b11755-bin-ubuntu-x64.tar.gz", Bytes: int64(len(body)), SHA256: sumHex(body), Part: contract.PartRuntime, Backend: contract.BackendCPU, Archive: true}
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	d, err := New(ctx, Config{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, a.Key(), isState(contract.FileDone))
+	if err := os.RemoveAll(filepath.Join(dir, "runtimes", runtimeFolder(a))); err != nil {
+		t.Fatal(err)
+	}
+	stop(t, cancel, d)
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	d, err = New(ctx, Config{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, a.Key(), isState(contract.FileDone))
+	if len(ts.requests()) != 2 {
+		t.Fatalf("requests = %d, want restoration download despite stale marker", len(ts.requests()))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runtimes", runtimeFolder(a))); err != nil {
+		t.Fatalf("runtime was not restored: %v", err)
+	}
+}
+
 // Acceptance: an archive with ../ entries is refused, and nothing lands outside the runtime folder.
 func TestArchiveWithParentPathIsRefused(t *testing.T) {
 	entries := map[string][]byte{
