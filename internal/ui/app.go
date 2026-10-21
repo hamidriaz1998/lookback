@@ -7,7 +7,6 @@ package ui
 
 import (
 	"context"
-	"log"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -100,7 +99,15 @@ type App struct {
 	onb      *onboarding
 	picked   *contract.Combo // the combination the user chose, waiting for its files (onboarding.go)
 	theme    themeState
-	notice   string // the last failed command, shown on the page it came from
+	notice   *notice // the last failed command or save, shown on the page it came from
+	loadErr  error   // the last failed data load; the snapshot in data is the last good one
+}
+
+// notice is a failed command or save: its message, and the retry that runs it again.
+type notice struct {
+	page  page
+	msg   string
+	retry func()
 }
 
 // New returns the App for d. Call Start once the window exists, then use View as the window's content.
@@ -190,11 +197,17 @@ func (a *App) reload() {
 	go func() {
 		s := buildSnapshot(ctx, a.d)
 		a.dispatch(func() {
-			if s.indexSig != a.data.indexSig {
-				a.indexRev++
+			if s.err != nil {
+				// Keep the last good snapshot, and show the failure with Retry.
+				a.loadErr = s.err
+			} else {
+				a.loadErr = nil
+				if s.indexSig != a.data.indexSig {
+					a.indexRev++
+				}
+				a.thumbs.forgetErrors()
+				a.data = s
 			}
-			a.thumbs.forgetErrors()
-			a.data = s
 			a.reloading = false
 			if a.reloadWant {
 				a.reloadWant = false
@@ -234,15 +247,76 @@ func (a *App) refreshUsage() {
 	}()
 }
 
-// setting saves a setting in the background and reloads the snapshot when the write ends.
+// setting saves a setting in the background and reloads the snapshot when the write ends. A failed write is shown
+// on the page that changed the setting, with Retry.
 func (a *App) setting(key, value string) {
 	a.data.settings[key] = value
+	var save func()
+	save = func() {
+		a.bg(a.page, func(ctx context.Context) error { return a.d.Store.SetSetting(ctx, key, value) }, save)
+	}
+	save()
+}
+
+// bg runs cmd in the background, then reloads the snapshot. A failure is shown on page, with retry to run cmd
+// again. A success clears the notice of that page.
+func (a *App) bg(page page, cmd func(ctx context.Context) error, retry func()) {
 	ctx := a.ctx
 	go func() {
-		if err := a.d.Store.SetSetting(ctx, key, value); err != nil {
-			log.Printf("save setting %s: %v", key, err)
-		}
+		err := cmd(ctx)
+		a.dispatch(func() {
+			switch {
+			case err != nil:
+				a.notice = &notice{page: page, msg: err.Error(), retry: retry}
+			case a.notice != nil && a.notice.page == page:
+				a.notice = nil
+			}
+			a.reload()
+		})
 	}()
+}
+
+// noticeView shows the failure of the current page's last command, with Retry when it can run again, and the
+// failure of the last data load while the page shows the data before it.
+func (a *App) noticeView(c *ui.Context) {
+	t := c.Theme()
+	if a.loadErr != nil && a.data.ready {
+		ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Padding(t.Space(2)).Radius(8).Background(t.Surface).Children(func() {
+			ui.Icon(c, icon("triangle-alert")).TextColor(t.Warning)
+			ui.Text(c, "Lookback could not refresh its data. Showing the last data it read: "+a.loadErr.Error()).
+				TextColor(t.Warning).Grow(1).Lines(1, 2)
+			if ui.Button(c, "Retry").Clicked() {
+				a.reload()
+			}
+		})
+	}
+	n := a.notice
+	if n == nil || n.page != a.page {
+		return
+	}
+	ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Padding(t.Space(2)).Radius(8).Background(t.Surface).Children(func() {
+		ui.Icon(c, icon("triangle-alert")).TextColor(t.Danger)
+		ui.Text(c, "Could not finish: "+n.msg).TextColor(t.Danger).Grow(1).Lines(1, 2)
+		if n.retry != nil && ui.Button(c, "Retry").Clicked() {
+			a.notice = nil
+			n.retry()
+		}
+		if ui.Button(c, "Dismiss").Clicked() {
+			a.notice = nil
+		}
+	})
+}
+
+// loadFailed is the first frame when the data cannot be read: the error, and Retry.
+func (a *App) loadFailed(c *ui.Context) {
+	t := c.Theme()
+	ui.Column(c).Fill().Center().Gap(t.Space(2)).Children(func() {
+		ui.Text(c, "Lookback could not read its data.").Bold()
+		ui.Text(c, a.loadErr.Error()).TextColor(t.Danger).MaxWidth(640).Lines(1, 4)
+		if ui.PrimaryButton(c, "Retry").Clicked() {
+			a.reload()
+		}
+	})
 }
 
 // View builds the window from the state, once per frame.
@@ -252,7 +326,11 @@ func (a *App) View(c *ui.Context) {
 	a.theme.apply(c, a.data.setting("theme", ""))
 	a.shortcuts(c)
 	if !a.data.ready {
-		a.loading(c)
+		if a.loadErr != nil {
+			a.loadFailed(c)
+		} else {
+			a.loading(c)
+		}
 		return
 	}
 	a.applyPick()
@@ -268,6 +346,7 @@ func (a *App) View(c *ui.Context) {
 			a.sidebar(c)
 		}
 		ui.Column(c).Grow(1).Fill().Children(func() {
+			a.noticeView(c)
 			switch a.page {
 			case pageSearch:
 				a.searchPage(c)

@@ -182,6 +182,7 @@ func (a *App) onboardingView(c *ui.Context) {
 	t := c.Theme()
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Fill().Padding(t.Space(6)).Gap(t.Space(4)).Children(func() {
+			a.noticeView(c)
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Lookback").Bold().Grow(1)
 				ui.Text(c, fmt.Sprintf("Step %d of 3", o.step)).TextColor(t.TextMuted).FontFeatures("tnum")
@@ -776,7 +777,7 @@ func (a *App) pickCombo(cb contract.Combo) {
 func (a *App) ensureFiles(cb contract.Combo) {
 	assets, err := a.d.Catalog.Assets(a.d.OS, cb)
 	if err != nil {
-		a.notice = err.Error()
+		a.notice = &notice{page: a.page, msg: err.Error()}
 		return
 	}
 	a.run(func(ctx context.Context) error { return a.d.Downloader.Ensure(ctx, assets) })

@@ -158,18 +158,12 @@ func (a *App) errorList(c *ui.Context) {
 	}
 }
 
-// run runs a command in the background, then reloads the snapshot. A failure is kept for the page to show.
+// run runs a command in the background, then reloads the snapshot. A failure is shown on the page it started on,
+// with Retry.
 func (a *App) run(cmd func(ctx context.Context) error) {
-	ctx := a.ctx
-	go func() {
-		err := cmd(ctx)
-		a.dispatch(func() {
-			if err != nil {
-				a.notice = err.Error()
-			}
-			a.reload()
-		})
-	}()
+	var again func()
+	again = func() { a.bg(a.page, cmd, again) }
+	again()
 }
 
 // speed formats files per second, or "estimating…" before the first measurement.
