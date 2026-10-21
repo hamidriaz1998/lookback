@@ -5,16 +5,24 @@ import (
 	"errors"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
-// Embedder is a deterministic contract.Embedder. Vectors come from a hash of the input, so
-// equal inputs give equal vectors. Tokens are one per word, a rough stand-in for the real tokenizer.
-type Embedder struct{}
+// Embedder is a deterministic contract.Embedder. Vectors come from a hash of the input, so equal
+// inputs give equal vectors. Tokens are rough: one per word, about two per word in the prompt count.
+type Embedder struct {
+	// ByteFallback makes Tokenize split every non-ASCII rune into one token per byte, as llama.cpp does
+	// for characters outside its vocabulary. WP4 uses it to test chunk cuts inside a character.
+	ByteFallback bool
+}
 
-// NewEmbedder returns an Embedder.
+// NewEmbedder returns an Embedder that tokenizes by word.
 func NewEmbedder() *Embedder { return &Embedder{} }
+
+// NewByteFallbackEmbedder returns an Embedder whose Tokenize emits byte-fallback tokens for non-ASCII runes.
+func NewByteFallbackEmbedder() *Embedder { return &Embedder{ByteFallback: true} }
 
 // EmbedTexts returns one vector per prompt and the prompt token count, about two tokens per word.
 func (e *Embedder) EmbedTexts(ctx context.Context, prompts []string) ([][]float32, int, error) {
@@ -41,26 +49,36 @@ func (e *Embedder) EmbedImage(ctx context.Context, img []byte, mime string) ([]f
 	return unitVector(hashSeed(string(img))), 256 + len(img)/64, nil
 }
 
-// Tokenize returns one token per whitespace-separated word, with its byte range.
+// Tokenize splits text into tokens with byte ranges. Words are tokens. With ByteFallback, each
+// non-ASCII rune becomes one token per byte, and the pieces of those tokens are raw bytes.
 func (e *Embedder) Tokenize(ctx context.Context, text string) ([]contract.Token, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	var toks []contract.Token
 	start := -1
-	for i, r := range text {
-		if unicode.IsSpace(r) {
-			if start >= 0 {
-				toks = append(toks, wordToken(text, start, i))
-				start = -1
-			}
-		} else if start < 0 {
-			start = i
+	emitWord := func(end int) {
+		if start >= 0 {
+			toks = append(toks, wordToken(text, start, end))
+			start = -1
 		}
 	}
-	if start >= 0 {
-		toks = append(toks, wordToken(text, start, len(text)))
+	for i, r := range text {
+		switch {
+		case unicode.IsSpace(r):
+			emitWord(i)
+		case e.ByteFallback && r >= utf8.RuneSelf:
+			emitWord(i)
+			for b := 0; b < utf8.RuneLen(r); b++ {
+				toks = append(toks, wordToken(text, i+b, i+b+1))
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
 	}
+	emitWord(len(text))
 	return toks, nil
 }
 

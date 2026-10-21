@@ -358,12 +358,12 @@ CREATE TABLE folders (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
 CREATE TABLE files (
   id INTEGER PRIMARY KEY, folder_id INTEGER NOT NULL, path TEXT NOT NULL UNIQUE,
   kind TEXT NOT NULL,                 -- 'image' | 'text' | 'pdf' | 'office'
-  size INTEGER NOT NULL, mtime INTEGER NOT NULL
+  size INTEGER NOT NULL, mtime INTEGER NOT NULL      -- mtime: Unix nanoseconds
 );
 
 CREATE TABLE file_index (             -- per generation: what was indexed, and how it went
   file_id INTEGER NOT NULL, gen INTEGER NOT NULL,
-  size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+  size INTEGER NOT NULL, mtime INTEGER NOT NULL,     -- as the file was when indexed; nanoseconds
   status TEXT NOT NULL,               -- 'done' | 'error' | 'skipped'
   error TEXT, tokens INTEGER, ms INTEGER,
   PRIMARY KEY (file_id, gen)
@@ -396,8 +396,11 @@ In Go: group by file and keep each file's best item. Score = `1 − d` + filenam
 query word of 3 or more letters found in the file name or the last two path segments, at most 0.12).
 Return the top 60. A type filter adds `AND f.kind IN (...)`.
 
-**Find similar (Q6)** uses the stored vector, so no embedding is needed:
-`vector_distance_cos(i.embedding, (SELECT embedding FROM items WHERE id = ?1))`, excluding the same file.
+**Find similar (Q6)** uses the stored vector, so no embedding is needed. The seed must be an item of the
+requested generation, because a vector from another generation is in another vector space. Otherwise
+the query returns no rows and the store reports `ErrStaleItem`:
+`vector_distance_cos(i.embedding, (SELECT embedding FROM items WHERE id = ?1 AND gen = ?2))`, excluding the
+same file (`i.file_id != (SELECT file_id FROM items WHERE id = ?1 AND gen = ?2)`).
 
 Search is a linear scan (Q17). Measured with tursogo v0.8.3 on the reference laptop: 223–229 ms at
 100k items (spike 1, `docs/spikes.md`). Mark the query with a `ponytail:` comment, and revisit if
@@ -407,8 +410,9 @@ Turso adds a vector index.
 
 - The active generation serves every search.
 - When the user switches precision, create a `building` generation and index into it in the
-  background. The old one keeps serving. When the new one is complete, mark it `active`, mark the old
-  one `retired`, and delete its items.
+  background. The old one keeps serving. When the new one is complete, one transaction marks it `active`
+  and the old one `retired` (at most one generation is active at a time). Then the old one's items are
+  deleted.
 - Switching only the backend keeps the generation.
 
 ## 11. Indexing pipeline
@@ -418,6 +422,9 @@ Turso adds a vector index.
 - **Steps**: stat → exclusion check → extract → chunk → embed → write the items and the
   `file_index` row in one transaction. Delete a file's rows when it disappears.
 - **Errors**: record them in `file_index` (status `error`) and continue. Activity lists them with Retry.
+  A file with an error row whose size and mtime did not change needs no work by itself, so Retry clears its
+  row first. The indexer offers Retry, Retry all, Rescan (one folder) and Rebuild (a building generation for
+  new precisions) as commands. They queue work and return.
 - **Pause**: the user Pause button, battery power (Q16, configurable), and system suspend
   (`mygo.Power.OnSuspend` / `OnResume`). While indexing on AC power, hold `mygo.Power.KeepAwake`.
 

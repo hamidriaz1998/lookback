@@ -5,9 +5,31 @@ package contract
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+)
+
+// Errors that implementations return. Callers compare them with errors.Is.
+var (
+	// ErrNotStarted is returned by Indexer commands before Start.
+	ErrNotStarted = errors.New("indexer not started")
+	// ErrUnknownFile is returned when a file ID is not in the store.
+	ErrUnknownFile = errors.New("unknown file")
+	// ErrUnknownFolder is returned when a folder ID is not in the store.
+	ErrUnknownFolder = errors.New("unknown folder")
+	// ErrUnknownGen is returned when a generation ID is not in the store.
+	ErrUnknownGen = errors.New("unknown generation")
+	// ErrStaleItem is returned by Store.Similar when the seed item is not in the requested generation
+	// (or does not exist). The caller must drop the seed, since its vector is in another vector space.
+	ErrStaleItem = errors.New("item is not in the requested generation")
+	// ErrRebuildBusy is returned by Indexer.Rebuild while another rebuild runs.
+	ErrRebuildBusy = errors.New("a rebuild is already running")
+	// ErrUnknownCombo is returned by Catalog.Assets for a combination the catalog does not offer.
+	ErrUnknownCombo = errors.New("combination not in the catalog")
+	// ErrUnknownAsset is returned by Downloader for an asset it does not hold.
+	ErrUnknownAsset = errors.New("unknown asset")
 )
 
 // Backend is a llama.cpp compute backend.
@@ -24,7 +46,7 @@ const (
 // Quant is the precision of one model part: the text model or the encoders.
 type Quant string
 
-// The precisions that Lookback offers. F16 is never offered (SPEC §4).
+// The precisions that Lookback offers. F16 is never offered (SPEC section 4).
 const (
 	QuantQ8_0 Quant = "q8_0"
 	QuantBF16 Quant = "bf16"
@@ -42,13 +64,14 @@ func (c Combo) ID() string {
 	return string(c.Backend) + "/" + string(c.TextQuant) + "/" + string(c.EncQuant)
 }
 
-// BenchResult is one row of the test lab (SPEC §6, step 2) for an installed combination.
+// BenchResult is one row of the test lab (SPEC section 6, step 2) for a combination.
 type BenchResult struct {
 	ImageMS          float64  // median wall time per image request, in milliseconds
 	TextTokensPerSec float64  // usage.prompt_tokens divided by wall time over the text chunks
 	PeakRAM          int64    // bytes
 	VRAM             int64    // bytes, approximate; 0 for the CPU backend
 	Quality          *float64 // mean cosine against the BF16 reference; nil means n/a
+	QualityReason    string   // why Quality is nil, for the tooltip, such as "needs an installed BF16 combination"
 }
 
 // Installed is a combination whose parts are on disk, with its latest test result if it has one.
@@ -58,7 +81,7 @@ type Installed struct {
 	Bench       *BenchResult // nil until the lab has tested it
 }
 
-// Kind is the type of a file, as SPEC §9 groups them.
+// Kind is the type of a file, as SPEC section 9 groups them.
 type Kind string
 
 // The file kinds.
@@ -74,7 +97,8 @@ type FileRec struct {
 	ID, FolderID int64
 	Path         string
 	Kind         Kind
-	Size, MTime  int64 // bytes; Unix seconds
+	Size         int64 // bytes
+	MTime        int64 // modification time in Unix nanoseconds
 }
 
 // Unit is one thing to embed: a text chunk or an image.
@@ -90,7 +114,7 @@ type Unit struct {
 
 // Item is a stored vector: one unit of one file, in one generation.
 type Item struct {
-	ID, Gen, FileID int64
+	ID, Gen, FileID int64 // ID is assigned by the store when the item is committed; callers leave it 0
 	Unit            int
 	Start, End      int       // byte range in the text; -1 for images
 	Modality        string    // "text" or "image"
@@ -98,15 +122,15 @@ type Item struct {
 	Vector          []float32 // 768 values, L2-normalized
 }
 
-// Hit is one search result: the best item of a file.
+// Hit is one result: the best item of a file.
 type Hit struct {
 	ItemID, FileID int64
 	Path           string
 	Kind           Kind
-	Modality       string // "text" or "image"; PDF pages rendered as images have Kind pdf and Modality image
+	Modality       string // "text" or "image"; a PDF page rendered as an image has Kind pdf and Modality image
 	Unit           int
 	Snippet        string
-	Score          float64
+	Score          float64 // cosine similarity; the search package adds the filename boost
 }
 
 // FolderProgress is the indexing progress of one watched folder.
@@ -128,20 +152,22 @@ const (
 	PauseSuspend PauseReason = "suspend"
 )
 
-// Progress is a snapshot of the indexing job. Publishers send at most 4 per second.
+// Progress is a snapshot of one indexing job: the active generation, or the building one during a rebuild.
+// Publishers send at most 4 snapshots per second per stream.
 type Progress struct {
-	FilesDone, FilesTotal     int
+	Gen                       int64 // generation this snapshot describes
+	FilesDone, FilesTotal     int   // files with a file_index row in Gen, and the files this job covers
 	FilesPerSec, TokensPerSec float64
 	ETA                       time.Duration // negative while estimating
 	Current                   string        // the file being processed
 	PerFolder                 []FolderProgress
-	Errors                    int
+	Errors                    int // file_index rows with status error in Gen
 	Paused                    PauseReason
 }
 
 // Token is one token of a text, from Embedder.Tokenize. Start and End are the byte range of the
 // token in the text, so text[Start:End] is its source. A token can cover part of a UTF-8 character:
-// byte-fallback tokens do, and Piece then holds the raw bytes (see docs/spikes.md, spike 3).
+// byte-fallback tokens do, and Piece then holds the raw bytes (SPEC section 9, docs/spikes.md spike 3).
 type Token struct {
 	ID         int32
 	Piece      string
@@ -150,7 +176,8 @@ type Token struct {
 
 // Embedder turns text and images into vectors. The sidecar implements it.
 type Embedder interface {
-	// EmbedTexts embeds prompts (each already has its prefix) and returns the vectors and the prompt tokens used.
+	// EmbedTexts embeds prompts and returns the vectors and the prompt tokens used. Each prompt
+	// already has its prefix and must be within the 512-token cap (SPEC section 9).
 	EmbedTexts(ctx context.Context, prompts []string) (vecs [][]float32, tokens int, err error)
 	// EmbedImage embeds one PNG or JPEG image.
 	EmbedImage(ctx context.Context, img []byte, mime string) (vec []float32, tokens int, err error)
@@ -171,7 +198,7 @@ const (
 // GenState is the state of a generation.
 type GenState string
 
-// The generation states.
+// The generation states. At most one generation is active at a time.
 const (
 	GenBuilding GenState = "building"
 	GenActive   GenState = "active"
@@ -189,13 +216,20 @@ type Folder struct {
 // FileIndex records what was indexed for one file in one generation.
 type FileIndex struct {
 	FileID, Gen int64
-	Size, MTime int64
+	Size        int64 // bytes, as the file was when indexed
+	MTime       int64 // Unix nanoseconds, as the file was when indexed
 	Status      Status
 	Error       string // set when Status is StatusError
 	Tokens, Ms  int64
 }
 
-// Generation is one vector space: one precision pair (SPEC §10, Q26).
+// NeedsWork reports whether file f must be indexed for a generation (SPEC section 10): it has no
+// file_index row there (ix is nil), or its size or mtime differs from the row's.
+func NeedsWork(f FileRec, ix *FileIndex) bool {
+	return ix == nil || ix.Size != f.Size || ix.MTime != f.MTime
+}
+
+// Generation is one vector space: one precision pair (SPEC section 10, Q26).
 type Generation struct {
 	ID                  int64
 	TextQuant, EncQuant Quant
@@ -204,8 +238,8 @@ type Generation struct {
 	CreatedAt           time.Time
 }
 
-// Store persists folders, files, items and settings (SPEC §10). Search and
-// Similar read the items of one generation only.
+// Store persists folders, files, items and settings (SPEC section 10). Reads of items are scoped to
+// one generation. Every write method is atomic: on error (including a canceled context) nothing changes.
 type Store interface {
 	// GetSetting returns the value of key; ok is false when it is not set.
 	GetSetting(ctx context.Context, key string) (value string, ok bool, err error)
@@ -227,22 +261,25 @@ type Store interface {
 	DeleteFile(ctx context.Context, id int64) error
 	// CountFiles returns the number of files of each kind in one folder.
 	CountFiles(ctx context.Context, folderID int64) (map[Kind]int, error)
-	// RecentFiles returns the limit most recently modified files.
-	RecentFiles(ctx context.Context, limit int) ([]FileRec, error)
 
 	// ListFileIndex returns the file_index rows of one generation.
 	ListFileIndex(ctx context.Context, gen int64) ([]FileIndex, error)
-	// CommitFile replaces the items of idx.FileID in idx.Gen and upserts its file_index row,
-	// in one transaction. Every item must have Gen set to idx.Gen.
+	// ClearFileIndex removes a file's file_index row and items in one generation, so the file
+	// needs work again even if it did not change. Retry uses it.
+	ClearFileIndex(ctx context.Context, fileID, gen int64) error
+	// CommitFile replaces the items of idx.FileID in idx.Gen and upserts its file_index row, in one
+	// transaction. The store assigns every item ID and ignores Item.ID. Every item must have Gen and
+	// FileID set to idx.Gen and idx.FileID; otherwise nothing changes and an error is returned.
 	CommitFile(ctx context.Context, idx FileIndex, items []Item) error
 
-	// NewGeneration inserts g and sets g.ID.
+	// NewGeneration inserts g in state building and sets g.ID.
 	NewGeneration(ctx context.Context, g *Generation) error
 	// ListGenerations returns every generation, oldest first.
 	ListGenerations(ctx context.Context) ([]Generation, error)
-	// SetGenerationState changes the state of one generation.
-	SetGenerationState(ctx context.Context, id int64, state GenState) error
-	// DeleteItems removes the items and file_index rows of one generation.
+	// ActivateGeneration makes gen the active generation and retires the previous active one, in one
+	// transaction. The retired generation's items stay until DeleteItems removes them.
+	ActivateGeneration(ctx context.Context, gen int64) error
+	// DeleteItems removes the items and file_index rows of one generation. It refuses the active one.
 	DeleteItems(ctx context.Context, gen int64) error
 
 	// SaveCombo inserts or replaces an installed combination, keyed by Combo.ID.
@@ -252,11 +289,14 @@ type Store interface {
 	// DeleteCombo removes an installed combination.
 	DeleteCombo(ctx context.Context, c Combo) error
 
+	// RecentItems returns the limit most recently modified files that are indexed (status done) in gen,
+	// one hit each, with the item ID of its first item. Files are filtered before the limit applies.
+	RecentItems(ctx context.Context, gen int64, limit int) ([]Hit, error)
 	// Search returns the best item of each file in gen, nearest to query first, at most limit hits.
-	// Hit.Score is the cosine similarity (1 minus the distance); the search package adds the filename boost.
 	// kinds, when not empty, limits the files to those kinds.
 	Search(ctx context.Context, gen int64, query []float32, kinds []Kind, limit int) ([]Hit, error)
-	// Similar returns the files nearest to the stored vector of itemID, excluding its own file.
+	// Similar returns the files nearest to the stored vector of itemID, excluding its own file. The seed
+	// must be an item of gen; otherwise it returns ErrStaleItem.
 	Similar(ctx context.Context, gen int64, itemID int64, kinds []Kind, limit int) ([]Hit, error)
 
 	// Close releases the database.
@@ -269,16 +309,33 @@ type Extractor interface {
 	Extract(ctx context.Context, f FileRec, emit func(Unit) error) error
 }
 
-// Indexer runs the indexing job: queue, pipeline, pauses and progress.
+// Indexer runs the indexing job: queue, pipeline, pauses, progress, and the user commands from
+// Activity and Folders. Commands return ErrNotStarted before Start, and the context's error when ctx
+// is already done. They queue work and return; the job does the work in the background.
 type Indexer interface {
-	// Start begins indexing in the background. It returns when the job is running.
+	// Start begins the job in the background. Call it once; a second call is an error.
 	Start(ctx context.Context) error
 	// Pause stops the job for reason. Pauses for different reasons stack.
 	Pause(reason PauseReason)
 	// Resume lifts the pause for reason.
 	Resume(reason PauseReason)
-	// Progress returns the channel of progress snapshots.
+	// Retry queues the given files for indexing again in the active generation, even if they did not
+	// change (SPEC section 11, Activity's Retry). ErrUnknownFile for an ID not in the store.
+	Retry(ctx context.Context, fileIDs []int64) error
+	// RetryAll queues every file with an error row in the active generation.
+	RetryAll(ctx context.Context) error
+	// Rescan queues the files of one folder that need work (NeedsWork), as the startup rescan does.
+	Rescan(ctx context.Context, folderID int64) error
+	// Rebuild starts a building generation for the precisions text and enc, and indexes every file
+	// indexed in the active generation into it. The active generation keeps serving until the rebuild
+	// finishes, and then the rebuild activates the new generation (SPEC section 10). It returns the new
+	// generation's ID. ErrRebuildBusy while another rebuild runs.
+	Rebuild(ctx context.Context, text, enc Quant) (gen int64, err error)
+	// Progress returns snapshots of the active generation's job. The channel closes when the indexer stops.
 	Progress() <-chan Progress
+	// RebuildProgress returns snapshots of the building generation during a rebuild. It is quiet when no
+	// rebuild runs. The last snapshot of a rebuild has FilesDone equal to FilesTotal.
+	RebuildProgress() <-chan Progress
 }
 
 // ThemeSource provides a theme. Built-in themes and the Omarchy source implement it.
@@ -291,4 +348,195 @@ type ThemeSource interface {
 	Theme(base *ui.Theme) *ui.Theme
 	// Changed sends when the theme changes. It is nil for fixed themes.
 	Changed() <-chan struct{}
+}
+
+// OS names an operating system for the catalog: "linux" or "windows".
+type OS string
+
+// Part is the role of a file in a combination.
+type Part string
+
+// The parts of a combination.
+const (
+	PartRuntime Part = "runtime" // a llama.cpp archive for one backend
+	PartText    Part = "text"    // the text model GGUF
+	PartEncoder Part = "encoder" // the mmproj GGUF
+)
+
+// Asset is one pinned file the app may download (SPEC section 4).
+type Asset struct {
+	Name    string  // the file name in its release or repository; the key in Downloader
+	URL     string  // the pinned URL
+	Bytes   int64   // expected size
+	SHA256  string  // hex; empty for runtime archives until WP1 pins them
+	Part    Part    // what the file is
+	Backend Backend // runtime assets only
+	Quant   Quant   // model assets only
+	Archive bool    // .tar.gz or .zip: unpacked into runtimes/<tag>-<backend>/
+}
+
+// Catalog lists the pinned assets. It is compiled into the binary (SPEC section 4).
+type Catalog interface {
+	// Assets returns every file that combination c needs on os: its runtime archives and its model files.
+	// It returns ErrUnknownCombo for a combination the catalog does not offer.
+	Assets(os OS, c Combo) ([]Asset, error)
+	// Backends returns the backends the catalog offers on os. Detection decides which are candidates.
+	Backends(os OS) []Backend
+}
+
+// FileState is the state of one download.
+type FileState string
+
+// The download states, as the lab and Models screens show them.
+const (
+	FileQueued      FileState = "queued"
+	FileDownloading FileState = "downloading"
+	FilePaused      FileState = "paused"
+	FileVerifying   FileState = "verifying"
+	FileDone        FileState = "done"
+	FileFailed      FileState = "failed" // checksum or network failure, with Err set
+	FileOffline     FileState = "offline"
+)
+
+// DownloadProgress is one update for one file. Publishers send at most 4 updates per second per file.
+type DownloadProgress struct {
+	Name        string    // Asset.Name
+	State       FileState // the current state
+	Done, Total int64     // bytes
+	BytesPerSec float64
+	ResumedFrom int64  // bytes kept from an earlier run; set for a few seconds after a resume ("Resumed at 612 MB")
+	Err         string // set when State is FileFailed
+}
+
+// Downloader fetches assets with resume, verification and pause (SPEC section 7). Files are keyed by
+// Asset.Name, so a file shared by two combinations downloads once.
+type Downloader interface {
+	// Ensure queues the assets that are not yet verified on disk. Calling it again is safe.
+	Ensure(ctx context.Context, assets []Asset) error
+	// Pause pauses one file. ErrUnknownAsset when Ensure has not queued it.
+	Pause(name string) error
+	// Resume resumes one paused file from the bytes it has.
+	Resume(name string) error
+	// PauseAll pauses every file ("Pause all").
+	PauseAll()
+	// ResumeAll resumes every paused file.
+	ResumeAll()
+	// Retry queues a failed file again, from zero.
+	Retry(ctx context.Context, name string) error
+	// Progress returns the stream of updates for all files.
+	Progress() <-chan DownloadProgress
+}
+
+// GPU is a graphics adapter found by the OS.
+type GPU struct {
+	Name, Vendor        string // Vendor is "amd", "nvidia", "intel" or "other" (SPEC section 5)
+	Driver              string // empty when unknown
+	VRAMTotal, VRAMFree int64  // bytes; 0 when unknown
+}
+
+// Device is one device that llama-server --list-devices lists for a backend.
+type Device struct {
+	Name                string
+	VRAMTotal, VRAMFree int64 // bytes
+}
+
+// Hardware is what detection finds on this computer (SPEC section 5).
+type Hardware struct {
+	CPU                    string
+	Threads                int
+	RAMTotal, RAMAvailable int64 // bytes
+	GPUs                   []GPU
+	NvidiaDriver           string // from /proc/driver/nvidia/version or DXGI; empty when absent
+}
+
+// BackendProbe is the result of running llama-server --list-devices for one backend.
+type BackendProbe struct {
+	Backend   Backend
+	Candidate bool     // true when the probe lists at least one device; the CPU backend is always a candidate
+	Devices   []Device // empty for the CPU backend
+	Reason    string   // why it is not a candidate, such as "no NVIDIA GPU"
+}
+
+// Detector finds the hardware and asks each downloaded backend which devices it has.
+type Detector interface {
+	// Detect reads the CPU, RAM and GPUs of this computer.
+	Detect(ctx context.Context) (Hardware, error)
+	// Probe runs llama-server --list-devices for backend b. It needs the backend's build on disk.
+	Probe(ctx context.Context, b Backend) (BackendProbe, error)
+}
+
+// LabState is the state of one combination in the test lab.
+type LabState string
+
+// The lab states, which the test table shows in its row.
+const (
+	LabQueued    LabState = "queued"
+	LabStarting  LabState = "starting"
+	LabEmbedding LabState = "embedding"
+	LabDone      LabState = "done"
+	LabFailed    LabState = "failed"
+)
+
+// LabStep is one update of a test run.
+type LabStep struct {
+	Combo  Combo
+	State  LabState
+	Step   string     // the live step, such as "Embedding image 3 of 8"
+	Result *LabResult // set when State is LabDone
+	Err    string     // set when State is LabFailed
+}
+
+// LabResult is one row of the test table (SPEC section 6, step 2).
+type LabResult struct {
+	Combo Combo
+	Bench BenchResult
+}
+
+// Lab runs the test lab: it starts a combination, embeds the bundled sample and records the numbers.
+type Lab interface {
+	// Run tests combination c. extra holds up to 10 user-picked files to embed as well. It returns once the
+	// run has started; progress arrives on Progress.
+	Run(ctx context.Context, c Combo, extra []string) error
+	// Progress returns the stream of steps for all runs.
+	Progress() <-chan LabStep
+	// Recommend returns the fastest result whose quality is at least 0.99. Results with n/a quality do not qualify.
+	Recommend(results []LabResult) (Combo, bool)
+}
+
+// RuntimeState is the state of the sidecar.
+type RuntimeState string
+
+// The sidecar states (SPEC section 8, Q23).
+const (
+	RuntimeStarting    RuntimeState = "starting"
+	RuntimeReady       RuntimeState = "ready"
+	RuntimeRestarting  RuntimeState = "restarting"
+	RuntimeCPUFallback RuntimeState = "cpu-fallback"
+	RuntimeStopped     RuntimeState = "stopped"
+	RuntimeFailed      RuntimeState = "failed"
+)
+
+// RuntimeStatus is the state of the sidecar and the combination it runs.
+type RuntimeStatus struct {
+	State   RuntimeState
+	Combo   Combo
+	Message string // for example "GPU backend failed twice; indexing continues on the CPU"
+	Since   time.Time
+}
+
+// Runtime is the sidecar for the active combination. It is the Embedder the indexer and search use.
+type Runtime interface {
+	Embedder
+	// Active returns the combination the sidecar runs, or the one it is starting.
+	Active() Combo
+	// Status returns the current status.
+	Status() RuntimeStatus
+	// Changes returns the stream of status changes.
+	Changes() <-chan RuntimeStatus
+	// Use stops the sidecar and starts combination c ("Make active").
+	Use(ctx context.Context, c Combo) error
+	// RetryGPU tries the GPU backend again after a CPU fallback ("Try GPU again").
+	RetryGPU(ctx context.Context) error
+	// Stop stops the sidecar when the app quits.
+	Stop(ctx context.Context) error
 }
