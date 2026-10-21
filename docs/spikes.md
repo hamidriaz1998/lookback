@@ -34,9 +34,9 @@
 
 ## Spike 2: MyGo image grid
 
-**Status: decode passed; frame rate open, owned by WP6** (measure with MyGo Inspector). The grid draws
-1,000 thumbnails from the real screenshots, decoded off the main thread, and the view updates through
-`Window.Update`. The 60 fps scrolling gate of PLAN.md M0 was not measured, so Spike 2 is not closed.
+**Status: passed.** The grid draws 1,000 thumbnails from the real screenshots, decoded off the main
+thread, and the view updates through `Window.Update`. Scrolling holds 60 fps on the reference laptop
+(orchestrator run, 2026-10-21, below).
 
 - **Setup:** `github.com/egoist/mygo` v0.6.0 (`go.mod`), Go 1.27.1 toolchain, Linux (Wayland session,
   Hyprland), Ryzen 7 5700U (8 cores, 16 threads). Program: `cmd/spike-grid/main.go`. Run with
@@ -73,6 +73,15 @@ Findings and limits:
   Hyprland workspace (`16 silent`). The client was tiled at 1896×1025. The process was stopped after
   `timeout 5 grim -T <stableId>` timed out because the hidden static window did not produce a frame.
   No Inspector scrolling was performed and no FPS result was measured; the 60 fps gate remains open.
+- **Scroll frame rate (orchestrator, 2026-10-21): 60 fps held.** `LOOKBACK_AUTOSCROLL=8 MYGO_FRAME_STATS=all`
+  build of `cmd/spike-grid` (wp6 `aa4f1b3`), shown on workspace 16 at 1896×1025 on the 60.05 Hz eDP-1 panel
+  (temporary visible workspace, approved by the user; no simulated input). The grid steps one row every
+  frame through `GridState.ScrollTo`, a harsher case than wheel scrolling. Over 8 s: 60 frames in every
+  full second; 472 frames, all under 16.7 ms (p50 4.7, p95 12.3, p99 14.3, max 16.2 ms). The 242 frames
+  that drew new content: p50 6.3, p95 13.2, max 16.2 ms. One GC cycle. Measured with MyGo's frame log
+  (the data the Inspector's Performance panel shows), not by reading the Inspector panel. The margin at
+  the slowest frame is thin (0.5 ms); WP9 should re-check with real thumbnails from the `thumbs/` cache.
+  Earlier key-driven attempts did not scroll the grid and are not counted.
 - `ui.NewBitmap` runs for each of the 1,000 items. Duplicates share no bitmap, so the GPU holds 1,000
   textures of 320 px, about 230 MB of RGBA in memory. The app needs the thumbnail cache of UI guide
   section 10 (`thumbs/`), and a bitmap budget.
