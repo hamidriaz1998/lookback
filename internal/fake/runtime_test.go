@@ -13,7 +13,7 @@ import (
 var (
 	spaceA = fixtureSpace
 	spaceB = contract.VectorSpace{TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0, ModelRev: modelRev}
-	cpuBF  = contract.Combo{Backend: contract.BackendCPU, TextQuant: contract.QuantBF16, EncQuant: contract.QuantQ8_0}
+	cpuBackend = contract.BackendCPU
 )
 
 // waitState polls until the runtime reports state, or fails the test after a second.
@@ -34,7 +34,7 @@ func waitState(t *testing.T, r *Runtime, state contract.RuntimeState) contract.R
 func TestUseThenStopStaysStopped(t *testing.T) {
 	ctx := context.Background()
 	r := NewRuntime()
-	if err := r.Use(ctx, cpuBF); err != nil {
+	if err := r.Use(ctx, cpuBackend); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Stop(ctx); err != nil {
@@ -50,7 +50,7 @@ func TestUseThenStopStaysStopped(t *testing.T) {
 func TestUseThenCancelAbandonsStart(t *testing.T) {
 	r := NewRuntime()
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := r.Use(ctx, cpuBF); err != nil {
+	if err := r.Use(ctx, cpuBackend); err != nil {
 		t.Fatal(err)
 	}
 	cancel()
@@ -66,17 +66,16 @@ func TestCompetingTransitionsKeepTheLatest(t *testing.T) {
 	ctx := context.Background()
 	r := NewRuntime()
 	events := r.Subscribe(ctx)
-	first := contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0}
-	if err := r.Use(ctx, first); err != nil {
+	if err := r.Use(ctx, contract.BackendVulkan); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Use(ctx, cpuBF); err != nil {
+	if err := r.Use(ctx, cpuBackend); err != nil {
 		t.Fatal(err)
 	}
 	waitState(t, r, contract.RuntimeReady)
 	time.Sleep(3 * transitionTime / 2)
-	if st := r.Status(); st.State != contract.RuntimeReady || st.Combo != cpuBF {
-		t.Fatalf("final status %s on %s, want ready on %s", st.State, st.Combo.ID(), cpuBF.ID())
+	if st := r.Status(); st.State != contract.RuntimeReady || st.Combo.Backend != cpuBackend {
+		t.Fatalf("final status %s on %s, want ready on %s", st.State, st.Combo.ID(), cpuBackend)
 	}
 	timeout := time.After(time.Second)
 	for {
@@ -85,7 +84,7 @@ func TestCompetingTransitionsKeepTheLatest(t *testing.T) {
 			if !ok {
 				t.Fatal("stream closed")
 			}
-			if st.State == contract.RuntimeReady && st.Combo == first {
+			if st.State == contract.RuntimeReady && st.Combo.Backend == contract.BackendVulkan {
 				t.Fatal("the superseded start published Ready")
 			}
 		case <-timeout:
@@ -117,7 +116,7 @@ func TestRequestsWhileNotReady(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- r.Use(ctx, cpuBF) }()
+	go func() { done <- r.Use(ctx, cpuBackend) }()
 	sawRestart := false
 	for {
 		select {
@@ -149,7 +148,7 @@ func TestStopSupersedesWaitingUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- r.Use(ctx, cpuBF) }()
+	go func() { done <- r.Use(ctx, cpuBackend) }()
 	time.Sleep(20 * time.Millisecond)
 	if err := r.Stop(ctx); err != nil {
 		t.Fatal(err)
@@ -227,7 +226,7 @@ func TestBackendSwitchKeepsSpace(t *testing.T) {
 	otherVec, _, _ := other.EmbedTexts(ctx, []string{"query"})
 
 	done := make(chan error, 1)
-	go func() { done <- r.Use(ctx, cpuBF) }()
+	go func() { done <- r.Use(ctx, cpuBackend) }()
 	restarts := 0
 	for {
 		select {
@@ -238,7 +237,7 @@ func TestBackendSwitchKeepsSpace(t *testing.T) {
 			if restarts == 0 {
 				t.Fatal("no request overlapped the switch")
 			}
-			if r.Active() != cpuBF {
+			if r.Active().Backend != cpuBackend {
 				t.Fatalf("active %s after the switch", r.Active().ID())
 			}
 			after, _, err := s.EmbedTexts(ctx, []string{"query"})

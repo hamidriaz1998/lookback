@@ -627,11 +627,12 @@ type Runtime interface {
 	// Session opens a session for vector space s. Opening a space that is open shares its sidecar.
 	// It returns ErrTooManySpaces when two other spaces are open.
 	Session(ctx context.Context, s VectorSpace) (Session, error)
-	// Use makes the backend of c the backend of every sidecar, and restarts the open ones ("Make active").
-	// It returns when every open session is ready again, or when ctx ends. ctx also bounds the restart:
-	// when it ends first, the restart is abandoned and the sidecar is stopped. A Use that a later Use or
-	// Stop supersedes returns ErrRestarting. With no session open, Use returns at once.
-	Use(ctx context.Context, c Combo) error
+	// Use makes b the backend of every sidecar, and restarts the open ones ("Make active"). The precisions
+	// of a sidecar come from its vector space, not from Use. It returns when every open session is ready
+	// again, or when ctx ends. ctx also bounds the restart: when it ends first, the restart is abandoned and
+	// the sidecar is stopped. A Use that a later Use or Stop supersedes returns ErrRestarting. With no session
+	// open, Use returns at once.
+	Use(ctx context.Context, b Backend) error
 	// RetryGPU tries the GPU backend again after a CPU fallback ("Try GPU again").
 	RetryGPU(ctx context.Context) error
 	// Stop stops every sidecar when the app quits. It ends a pending restart, and sessions fail with

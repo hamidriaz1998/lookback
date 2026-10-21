@@ -53,7 +53,7 @@ func TestTerminalStateReachesEveryReader(t *testing.T) {
 	fast := r.Subscribe(ctx)
 	slow := r.Subscribe(ctx) // not read until the end
 	for i := 0; i < 80; i++ {
-		if err := r.Use(ctx, vulkanBF16Q8); err != nil {
+		if err := r.Use(ctx, contract.BackendVulkan); err != nil {
 			t.Fatal(err)
 		}
 	}

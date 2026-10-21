@@ -126,16 +126,18 @@ func readyState(s contract.RuntimeState) bool {
 	return s == contract.RuntimeReady || s == contract.RuntimeCPUFallback
 }
 
-// Use makes c's backend the backend of every sidecar and restarts the open ones. It returns when every
-// open session is ready again, or when ctx ends. With no session open it returns at once and the restart
-// runs in the background. A Use that a later Use or Stop supersedes returns ErrRestarting, and Stop
-// during the wait returns ErrStopped.
-func (r *Runtime) Use(ctx context.Context, c contract.Combo) error {
+// Use makes b the backend of every sidecar and restarts the open ones. It returns when every open session
+// is ready again, or when ctx ends. With no session open it returns at once and the restart runs in the
+// background. A Use that a later Use or Stop supersedes returns ErrRestarting, and Stop during the wait
+// returns ErrStopped.
+func (r *Runtime) Use(ctx context.Context, b contract.Backend) error {
 	r.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		r.mu.Unlock()
 		return err
 	}
+	c := r.status.Combo
+	c.Backend = b
 	st := contract.RuntimeRestarting
 	if r.status.State == contract.RuntimeStopped || r.status.State == contract.RuntimeFailed {
 		st = contract.RuntimeStarting

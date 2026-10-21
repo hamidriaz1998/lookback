@@ -34,7 +34,7 @@ func TestBackendSwitchDuringIndexingKeepsSpaces(t *testing.T) {
 	switching.Store(true)
 	done := make(chan error, 1)
 	go func() {
-		done <- rt.Use(ctx, cpuBF)
+		done <- rt.Use(ctx, cpuBackend)
 		switching.Store(false)
 	}()
 	stepsDuringSwitch := 0
