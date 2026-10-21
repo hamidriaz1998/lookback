@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ const (
 	thumbEdge  = 320  // longest edge of a decoded thumbnail, in pixels
 	tileWidth  = 180  // minimum tile width in DIPs
 	tileHeight = 150  // tile height in DIPs
+	autoSpeed  = 1200 // LOOKBACK_AUTOSCROLL scroll speed, in DIPs a second
 )
 
 // decoded is one thumbnail, ready to become a bitmap on the main thread.
@@ -45,13 +47,18 @@ type app struct {
 	start  time.Time
 	first  time.Duration // time from start to the first bitmap in the grid
 	done   time.Duration // time from start to the last bitmap in the grid
+
+	auto   time.Duration  // LOOKBACK_AUTOSCROLL: how long to scroll the grid, 0 for none
+	scroll ui.ScrollState // the grid's offset, which autoscroll sets
+	dir    float32        // autoscroll direction: 1 down, -1 up
+	last   time.Time      // when autoscroll last stepped
 }
 
 // view builds the window from the state, once per frame.
 func (a *app) view(c *ui.Context) {
 	ui.Column(c).Fill().Padding(12).Gap(8).Children(func() {
 		ui.Text(c, fmt.Sprintf("%d of %d thumbnails decoded", a.loaded, thumbCount)).SingleLine()
-		ui.GridView(c, &a.grid, thumbCount, tileWidth, tileHeight, func(i int) {
+		grid := ui.GridView(c, &a.grid, thumbCount, tileWidth, tileHeight, func(i int) {
 			ui.Column(c).Gap(4).Children(func() {
 				if bm := a.thumbs[i]; bm != nil {
 					ui.Image(c, bm).Fit(ui.Contain).Grow(1).Radius(8)
@@ -61,7 +68,25 @@ func (a *app) view(c *ui.Context) {
 				ui.Text(c, a.names[i]).SingleLine()
 			})
 		}).Grow(1)
+		if a.auto > 0 {
+			grid.TrackScroll(&a.scroll)
+			if a.loaded == thumbCount {
+				a.autoscroll(c)
+			}
+		}
 	})
+}
+
+// autoscroll moves the grid's offset by autoSpeed DIPs a second, reversing at either end, and asks
+// for the next frame, so the window redraws at display rate until the timer in load ends the run.
+func (a *app) autoscroll(c *ui.Context) {
+	now := time.Now()
+	if a.scroll.MaxY > 0 && (a.dir > 0 && a.scroll.Y >= a.scroll.MaxY || a.dir < 0 && a.scroll.Y <= 0) {
+		a.dir = -a.dir
+	}
+	a.scroll.Y += a.dir * autoSpeed * float32(now.Sub(a.last).Seconds())
+	a.last = now
+	c.AnimationFrame()
 }
 
 // screenshots returns the PNG files in dir whose names start with "screenshot", sorted.
@@ -173,6 +198,13 @@ func (a *app) load(win *mygo.Window, paths []string) {
 				a.done = time.Since(a.start)
 				log.Printf("decoded %d thumbnails with %d workers: first bitmap %s, all %s",
 					thumbCount, runtime.NumCPU(), a.first.Round(time.Millisecond), a.done.Round(time.Millisecond))
+				if a.auto > 0 {
+					a.last = time.Now()
+					time.AfterFunc(a.auto, func() {
+						fmt.Println("autoscroll done")
+						os.Exit(0)
+					})
+				}
 			}
 		})
 	}
@@ -192,7 +224,14 @@ func main() {
 	}
 	log.Printf("%d source screenshots", len(paths))
 
-	a := &app{names: make([]string, thumbCount), thumbs: make([]*ui.Bitmap, thumbCount)}
+	a := &app{names: make([]string, thumbCount), thumbs: make([]*ui.Bitmap, thumbCount), dir: 1}
+	if v := os.Getenv("LOOKBACK_AUTOSCROLL"); v != "" {
+		secs, err := strconv.ParseFloat(v, 64)
+		if err != nil || secs <= 0 {
+			log.Fatalf("LOOKBACK_AUTOSCROLL: want seconds above 0, got %q", v)
+		}
+		a.auto = time.Duration(secs * float64(time.Second))
+	}
 	for i := range a.names {
 		a.names[i] = filepath.Base(paths[i%len(paths)])
 	}
