@@ -17,6 +17,7 @@ type stream[T any] struct {
 	snap     map[string]T // the latest value per key
 	subs     map[*subscriber[T]]struct{}
 	closed   bool
+	done     chan struct{}
 }
 
 // subscriber holds the values a reader has not taken yet, in order.
@@ -33,7 +34,7 @@ type entry[T any] struct {
 // newStream returns a stream that keys each value with key and treats values that terminal reports as
 // terminal.
 func newStream[T any](key func(T) string, terminal func(T) bool) *stream[T] {
-	return &stream[T]{key: key, terminal: terminal, snap: map[string]T{}, subs: map[*subscriber[T]]struct{}{}}
+	return &stream[T]{key: key, terminal: terminal, snap: map[string]T{}, subs: map[*subscriber[T]]struct{}{}, done: make(chan struct{})}
 }
 
 // publish sends v to every subscriber. It does nothing after close.
@@ -111,6 +112,8 @@ func (s *stream[T]) pump(ctx context.Context, sub *subscriber[T], ch chan T) {
 				continue
 			case <-ctx.Done():
 				return
+			case <-s.done:
+				return
 			}
 		}
 		e := sub.queue[0]
@@ -119,6 +122,24 @@ func (s *stream[T]) pump(ctx context.Context, sub *subscriber[T], ch chan T) {
 		select {
 		case ch <- e.v:
 		case <-ctx.Done():
+			return
+		case <-s.done:
+			if s.terminal(e.v) {
+				select {
+				case ch <- e.v:
+				default:
+				}
+			}
+			s.mu.Lock()
+			for _, pending := range sub.queue {
+				if s.terminal(pending.v) {
+					select {
+					case ch <- pending.v:
+					default:
+					}
+				}
+			}
+			s.mu.Unlock()
 			return
 		}
 	}
@@ -132,10 +153,5 @@ func (s *stream[T]) close() {
 		return
 	}
 	s.closed = true
-	for sub := range s.subs {
-		select {
-		case sub.wake <- struct{}{}:
-		default:
-		}
-	}
+	close(s.done)
 }

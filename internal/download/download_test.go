@@ -349,6 +349,48 @@ func TestRecoveredOfflineDownloadPublishesSavedBytes(t *testing.T) {
 	}
 }
 
+func TestShutdownClosesUnreadSubscription(t *testing.T) {
+	content := randomBytes(64 << 10)
+	ts := newTestServer(t, content)
+	a := modelAsset(ts.URL+"/model-test.gguf", content)
+	ctx, cancel := context.WithCancel(context.Background())
+	d, err := New(ctx, Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	ch := d.Subscribe(subCtx)
+	if err := d.Ensure(context.Background(), []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	deadline := time.After(time.Second)
+	for {
+		d.streams.mu.Lock()
+		closed := d.streams.closed
+		d.streams.mu.Unlock()
+		if closed {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("downloader shutdown blocked on the unread subscription")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("unread subscription did not close after downloader shutdown")
+		}
+	}
+}
+
 // Acceptance: an archive with ../ entries is refused, and nothing lands outside the runtime folder.
 func TestArchiveWithParentPathIsRefused(t *testing.T) {
 	entries := map[string][]byte{
