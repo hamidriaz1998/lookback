@@ -16,3 +16,9 @@ findings block a merge). Each item names its owner. The full findings are in the
 | Item | Owner | What to do |
 |---|---|---|
 | R2-#1: rejected Wayland hotkey change drops the working shortcut and reports success | WP10 | MyGo v0.6.0 `Register` returns before the portal answers and exposes no accept/reject result. Get binding confirmation from MyGo (upstream API if needed), keep or restore the previous shortcut on rejection, allow retry, and add a regression for async rejection, status and retry. See `.review/wp7-r2.md`. |
+
+## From WP7 review round 3
+
+| Item | Owner | What to do |
+|---|---|---|
+| R3-#1: tray pause state diverges from Activity pause state | WP9 | The tray toggles WP7's cached `PauseUser`; WP6 Activity calls `Indexer.Pause/Resume(PauseUser)` directly. Route both through one owner, refresh the tray on either change, keep battery/suspend/lab reasons and the frozen Indexer interface. Add an integration regression: pause via tray, resume via Activity, and the reverse. See `.review/wp7-r3.md`. |
