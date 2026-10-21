@@ -80,10 +80,13 @@ type App struct {
 	reloading  bool
 	reloadWant bool
 
-	search  searchState
-	folders foldersState
-	theme   themeState
-	notice  string // the last failed command, shown on the page it came from
+	search   searchState
+	folders  foldersState
+	models   modelsState
+	settings settingsState
+	onb      *onboarding
+	theme    themeState
+	notice   string // the last failed command, shown on the page it came from
 }
 
 // New returns the App for d. Call Start once the window exists, then use View as the window's content.
@@ -97,6 +100,7 @@ func New(d Deps) *App {
 		downloads:   map[string]contract.DownloadProgress{},
 		labSteps:    map[contract.RunID]contract.LabStep{},
 		search:      newSearchState(),
+		models:      modelsState{selected: -1},
 	}
 }
 
@@ -184,6 +188,13 @@ func (a *App) View(c *ui.Context) {
 		a.loading(c)
 		return
 	}
+	if a.onb == nil && !a.data.onboarded() && a.page != pageSettings {
+		a.startOnboarding()
+	}
+	if a.onb != nil {
+		a.onboardingView(c)
+		return
+	}
 	ui.Row(c).Fill().Children(func() {
 		if a.sidebarOpen {
 			a.sidebar(c)
@@ -196,15 +207,14 @@ func (a *App) View(c *ui.Context) {
 				a.activityPage(c)
 			case pageFolders:
 				a.foldersPage(c)
-			default:
-				a.comingSoon(c)
+			case pageModels:
+				a.modelsPage(c)
+			case pageSettings:
+				a.settingsPage(c)
 			}
 		})
 	})
 }
-
-// comingSoon is the page of a screen that is not built yet.
-func (a *App) comingSoon(c *ui.Context) {}
 
 // loading is the first frame, before the first snapshot. It shows nothing but the window, so the first
 // paint is under a second (UI guide section 10).
@@ -213,6 +223,9 @@ func (a *App) loading(c *ui.Context) {
 		ui.Spinner(c)
 	})
 }
+
+// onboarded reports whether the first-run flow is done.
+func (s snapshot) onboarded() bool { return s.settings["onboarded"] == "1" }
 
 // shortcuts handles the keys of UI guide section 6 that do not depend on a control.
 func (a *App) shortcuts(c *ui.Context) {

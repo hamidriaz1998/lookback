@@ -3,8 +3,11 @@ package ui
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
@@ -25,7 +28,14 @@ type snapshot struct {
 	errors   []fileError
 	recent   []contract.Hit
 	settings map[string]string
+	usage    []diskPart // what the data folder holds, by part
 	err      error
+}
+
+// diskPart is the size of one part of the data folder.
+type diskPart struct {
+	name  string
+	bytes int64
 }
 
 // folderView is a watched folder with what the screens show about it.
@@ -120,7 +130,31 @@ func buildSnapshot(ctx context.Context, d Deps) snapshot {
 		}
 		s.folders = append(s.folders, fv)
 	}
+	s.usage = diskUsage(d.DataDir)
 	return s
+}
+
+// diskUsage sums the sizes of the top-level entries of dir, one part per entry, largest first.
+func diskUsage(dir string) []diskPart {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []diskPart
+	for _, e := range entries {
+		var n int64
+		_ = filepath.WalkDir(filepath.Join(dir, e.Name()), func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				if info, ierr := d.Info(); ierr == nil {
+					n += info.Size()
+				}
+			}
+			return nil
+		})
+		out = append(out, diskPart{name: e.Name(), bytes: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].bytes > out[j].bytes })
+	return out
 }
 
 // setting returns the value of key, or def when it is not set.

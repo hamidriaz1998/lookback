@@ -43,6 +43,10 @@ func newHarness(t *testing.T, setup func(*fake.Store) contract.Store) *harness {
 	t.Cleanup(cancel)
 	base := fake.NewStore()
 	var store contract.Store = base
+	// The fixture is past first run, as the entry point leaves it; a test may clear the setting in setup.
+	if err := base.SetSetting(ctx, "onboarded", "1"); err != nil {
+		t.Fatal(err)
+	}
 	if setup != nil {
 		store = setup(base)
 	}
@@ -71,6 +75,7 @@ func newHarness(t *testing.T, setup func(*fake.Store) contract.Store) *harness {
 		Catalog:    fake.NewCatalog(),
 		Themes:     []contract.ThemeSource{fixedTheme("light", false), fixedTheme("dark", true)},
 		Media:      solidMedia{},
+		DataDir:    t.TempDir(),
 		OS:         "linux",
 	})
 	h.app.Start(ctx, func(f func()) { h.queue <- f })
