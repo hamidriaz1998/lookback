@@ -276,6 +276,45 @@ func TestWrongChecksumRetriesOnceThenFails(t *testing.T) {
 	}
 }
 
+func TestOfflineDuringChecksumVerificationRestarts(t *testing.T) {
+	content := randomBytes(32 * mib)
+	wrongPin := append([]byte(nil), content...)
+	wrongPin[0] ^= 0xff
+	ts := newTestServer(t, content)
+	net := &fakeNet{online: true}
+	a := modelAsset(ts.URL+"/model-test.gguf", wrongPin)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d, err := New(ctx, Config{Dir: t.TempDir(), Network: net})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ensure(context.Background(), []contract.Asset{a}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, a.Key(), isState(contract.FileVerifying))
+	net.set(false)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		d.mu.Lock()
+		f := d.files[a.Key()]
+		ready := f.cancel == nil && f.phase == contract.FileQueued
+		d.mu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("canceled verification did not return to a restartable phase")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	net.set(true)
+	waitFor(t, d, a.Key(), isState(contract.FileFailed))
+	if len(ts.requests()) < 3 {
+		t.Fatalf("requests = %d, want interrupted transfer and checksum recovery", len(ts.requests()))
+	}
+}
+
 // Acceptance: an archive with ../ entries is refused, and nothing lands outside the runtime folder.
 func TestArchiveWithParentPathIsRefused(t *testing.T) {
 	entries := map[string][]byte{

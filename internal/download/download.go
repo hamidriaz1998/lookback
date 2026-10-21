@@ -94,12 +94,13 @@ func New(ctx context.Context, cfg Config) (*Downloader, error) {
 			return p.State == contract.FileDone || p.State == contract.FileFailed
 		},
 	)}
+	d.offline = cfg.Network != nil && !cfg.Network.Online()
 	if err := d.resumeFromDisk(); err != nil {
 		return nil, err
 	}
-	d.offline = cfg.Network != nil && !cfg.Network.Online()
 	d.mu.Lock()
 	for _, k := range d.order {
+		d.publishLocked(d.files[k])
 		d.startLocked(d.files[k])
 	}
 	d.mu.Unlock()
@@ -394,6 +395,9 @@ func (d *Downloader) run(ctx context.Context, f *file) {
 	case err == nil:
 		f.phase, f.done, f.err = contract.FileDone, f.asset.Bytes, ""
 	case stopped:
+		if f.phase == contract.FileVerifying {
+			f.phase, f.done = contract.FileQueued, max(fileSize(d.partPath(f.asset)), 0)
+		}
 		// Stopped on purpose; startLocked below restarts the file if it is still wanted.
 	default:
 		f.phase, f.err = contract.FileFailed, err.Error()
