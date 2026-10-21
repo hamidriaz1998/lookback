@@ -82,6 +82,7 @@ type App struct {
 
 	search searchState
 	theme  themeState
+	notice string // the last failed command, shown on the page it came from
 }
 
 // New returns the App for d. Call Start once the window exists, then use View as the window's content.
@@ -97,6 +98,9 @@ func New(d Deps) *App {
 		search:      newSearchState(),
 	}
 }
+
+// ShowPage makes the page with sidebar ID id the one on screen. It is for the entry points that open a page.
+func (a *App) ShowPage(id string) { a.page = pageFromID(id) }
 
 // Start subscribes to the services and loads the data. ctx is the app's lifetime. dispatch runs a function
 // on the main thread; in a window it is (*mygo.Window).Update.
@@ -184,10 +188,20 @@ func (a *App) View(c *ui.Context) {
 			a.sidebar(c)
 		}
 		ui.Column(c).Grow(1).Fill().Children(func() {
-			a.searchPage(c)
+			switch a.page {
+			case pageSearch:
+				a.searchPage(c)
+			case pageActivity:
+				a.activityPage(c)
+			default:
+				a.comingSoon(c)
+			}
 		})
 	})
 }
+
+// comingSoon is the page of a screen that is not built yet.
+func (a *App) comingSoon(c *ui.Context) {}
 
 // loading is the first frame, before the first snapshot. It shows nothing but the window, so the first
 // paint is under a second (UI guide section 10).

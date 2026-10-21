@@ -16,6 +16,8 @@ import (
 func main() {
 	fake := flag.Bool("fake", true, "run on the in-memory fakes of internal/fake")
 	firstRun := flag.Bool("first-run", false, "start with the onboarding flow")
+	page := flag.String("page", "search", "sidebar page to open: search, folders, models, activity or settings")
+	theme := flag.String("theme", "", "theme to apply at start: light, dark, or empty for the desktop's")
 	flag.Parse()
 	if !*fake {
 		log.Fatal("only -fake is wired until WP9")
@@ -23,11 +25,12 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	deps, err := fakeDeps(ctx, *firstRun)
+	deps, err := fakeDeps(ctx, *firstRun, *theme)
 	if err != nil {
 		log.Fatal(err)
 	}
 	app := lookui.New(deps)
+	app.ShowPage(*page)
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:     "Lookback",

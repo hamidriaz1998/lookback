@@ -18,7 +18,7 @@ import (
 
 // fakeDeps wires the UI to the fakes. The fixture's file paths do not exist on disk, so thumbnails come
 // from the real screenshots in ~/Pictures, chosen by a hash of the path.
-func fakeDeps(ctx context.Context, firstRun bool) (lookui.Deps, error) {
+func fakeDeps(ctx context.Context, firstRun bool, theme string) (lookui.Deps, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return lookui.Deps{}, err
@@ -35,6 +35,11 @@ func fakeDeps(ctx context.Context, firstRun bool) (lookui.Deps, error) {
 	store := fake.NewStore()
 	if !firstRun {
 		if err := store.SetSetting(ctx, "onboarded", "1"); err != nil {
+			return lookui.Deps{}, err
+		}
+	}
+	if theme != "" {
+		if err := store.SetSetting(ctx, "theme", theme); err != nil {
 			return lookui.Deps{}, err
 		}
 	}

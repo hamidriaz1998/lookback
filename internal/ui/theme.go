@@ -7,12 +7,13 @@ import (
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
-// themeState applies the theme chosen in Settings to the window, and reapplies it when a source changes
+// themeState applies the theme chosen in Settings to the window, and rebuilds it when a source changes
 // (an Omarchy theme switched live, UI guide section 8).
 type themeState struct {
 	sources []contract.ThemeSource
 	base    *ui.Theme // the desktop's default theme, copied on the first frame
-	applied string    // the setting last applied; "" is the desktop's default
+	applied string    // the setting the current theme was built from; "" is the desktop's default
+	cur     *ui.Theme // the theme of the applied setting
 	dirty   bool
 }
 
@@ -37,24 +38,27 @@ func (ts *themeState) start(ctx context.Context, dispatch func(func()), sources 
 	}
 }
 
-// apply sets the theme that id names. It runs each frame and does work only when the choice or a source changed.
+// apply sets the theme that id names for this frame. SetTheme covers one frame only, so it runs on every
+// frame; the theme is rebuilt only when the choice or a source changed.
 func (ts *themeState) apply(c *ui.Context, id string) {
 	if ts.base == nil {
 		t := *c.Theme()
 		ts.base = &t
 	}
-	if id == ts.applied && !ts.dirty {
-		return
+	if ts.cur == nil || id != ts.applied || ts.dirty {
+		ts.applied, ts.dirty = id, false
+		ts.cur = ts.build(id)
 	}
-	ts.applied, ts.dirty = id, false
-	for _, s := range ts.sources {
-		if s.ID() == id {
-			c.SetTheme(s.Theme(ts.base))
-			return
-		}
+	c.SetTheme(ts.cur)
+}
+
+// build returns the theme of source id, or a copy of the desktop's theme when id names none.
+func (ts *themeState) build(id string) *ui.Theme {
+	if s := ts.source(id); s != nil {
+		return s.Theme(ts.base)
 	}
 	t := *ts.base
-	c.SetTheme(&t)
+	return &t
 }
 
 // source returns the theme source that id names, or nil.
