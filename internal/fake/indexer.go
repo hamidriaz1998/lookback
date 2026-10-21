@@ -23,6 +23,8 @@ type job struct {
 	queue    []contract.FileRec
 	next     int     // index of the next file to complete
 	consumed float64 // tokens processed by this job
+	begun    *contract.FileRec // the file at index begunIdx as it was when it became the next file
+	begunIdx int
 }
 
 // Indexer is a contract.Indexer over a Store. It simulates the job: tokens per second vary around
@@ -200,12 +202,33 @@ func (x *Indexer) sessionLocked(gen int64) (contract.Session, error) {
 	return nil, contract.ErrUnknownGen
 }
 
-// commitDue completes every file whose tokens are processed: it embeds the file's items through the
-// session of its generation, then commits them with the file_index row. A file whose embedding or commit
-// fails stays queued for the next tick. A file that was deleted is skipped.
+// commitDue completes every file whose tokens are processed. Each file is taken as it is in the store when
+// it becomes the next one, and it is committed only if it has not changed since. A changed file is queued
+// again at the end, so its row always matches the latest stat. A file whose embedding or commit fails stays
+// next for the next tick, and a deleted file is skipped.
 func (x *Indexer) commitDue(j *job) {
-	for j.next < len(j.queue) && j.consumed >= float64(j.next+1)*tokensPerFile {
-		f := j.queue[j.next]
+	for j.next < len(j.queue) {
+		if j.begun == nil || j.begunIdx != j.next {
+			cur, ok := x.store.fileByID(j.queue[j.next].ID)
+			if !ok {
+				j.next++
+				continue
+			}
+			j.begun, j.begunIdx = &cur, j.next
+		}
+		if j.consumed < float64(j.next+1)*tokensPerFile {
+			return
+		}
+		f, ok := x.store.fileByID(j.queue[j.next].ID)
+		if !ok {
+			j.next++
+			continue
+		}
+		if f.Size != j.begun.Size || f.MTime != j.begun.MTime {
+			j.queue = append(j.queue, f)
+			j.next++
+			continue
+		}
 		gen := j.gen
 		if gen == 0 {
 			gen = x.store.activeGenID()
@@ -294,20 +317,24 @@ func (x *Indexer) pauseReason() contract.PauseReason {
 	return contract.PauseNone
 }
 
-// enqueueLocked appends files to the active queue unless they are already waiting in it.
+// enqueueLocked appends files to the active queue unless they are already waiting in it. The queue holds
+// file records only as the file's identity: commitDue reads the latest record when the file comes up.
 func (x *Indexer) enqueueLocked(files ...contract.FileRec) {
 	for _, f := range files {
-		waiting := false
-		for _, q := range x.active.queue[x.active.next:] {
-			if q.ID == f.ID {
-				waiting = true
-				break
-			}
-		}
-		if !waiting {
+		if x.waitingIndex(x.active, f.ID) < 0 {
 			x.active.queue = append(x.active.queue, f)
 		}
 	}
+}
+
+// waitingIndex returns the queue index of file id among the files a job has not completed, or -1.
+func (x *Indexer) waitingIndex(j *job, id int64) int {
+	for i := j.next; i < len(j.queue); i++ {
+		if j.queue[i].ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // checkLocked returns the error for a command that needs a started indexer: the context's error when ctx is

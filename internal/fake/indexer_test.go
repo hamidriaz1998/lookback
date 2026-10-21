@@ -174,3 +174,118 @@ func TestCommandsAfterStopChangeNothing(t *testing.T) {
 		t.Fatalf("RetryAll after stop changed the error rows: %d left", len(errs))
 	}
 }
+
+// idleLocked reports whether the active job has no file left to complete.
+func idle(x *Indexer) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.active.next >= len(x.active.queue)
+}
+
+// drain steps the job until its queue is empty, or fails the test.
+func drain(t *testing.T, x *Indexer) {
+	t.Helper()
+	for i := 0; i < 40000; i++ {
+		if idle(x) {
+			return
+		}
+		x.step()
+	}
+	t.Fatal("the job did not finish")
+}
+
+// startTestIndexer starts an indexer over a fresh fixture store and stops it when the test ends.
+func startTestIndexer(t *testing.T) (*Store, *Indexer) {
+	t.Helper()
+	s := NewStore()
+	x := newIndexer(s, NewRuntime(), time.Second)
+	life, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	if err := x.Start(life); err != nil {
+		t.Fatal(err)
+	}
+	return s, x
+}
+
+// A pending file edited before Rescan is indexed with its latest stat (review finding 9).
+func TestRescanIndexesLatestStat(t *testing.T) {
+	ctx := context.Background()
+	s, x := startTestIndexer(t)
+	edit := pendingFiles()[pendingPictures-1] // far down the queue, so it has not started
+	edit.Size += 17
+	edit.MTime += 1_000_000_000
+	if err := s.SaveFile(ctx, &edit); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.Rescan(ctx, edit.FolderID); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, x)
+	row, ok := s.fileIndexRow(edit.ID, 1)
+	if !ok || row.Size != edit.Size || row.MTime != edit.MTime {
+		t.Fatalf("row %+v does not match the file's latest stat %d/%d", row, edit.Size, edit.MTime)
+	}
+	if contract.NeedsWork(edit, &row) {
+		t.Fatal("the file still needs work after the job finished")
+	}
+}
+
+// A file edited while the job is running is committed with its new stat, not the stat it started with.
+func TestEditWhileRunningIsRequeued(t *testing.T) {
+	ctx := context.Background()
+	s, x := startTestIndexer(t)
+	cur := pendingFiles()[0]
+	x.step() // the file becomes the next file, and its stat is taken
+	edit := cur
+	edit.Size += 3
+	edit.MTime += 2_000_000_000
+	if err := s.SaveFile(ctx, &edit); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, x)
+	row, ok := s.fileIndexRow(edit.ID, 1)
+	if !ok || row.Size != edit.Size || row.MTime != edit.MTime {
+		t.Fatalf("row %+v kept the stat from before the edit", row)
+	}
+}
+
+// RetryAll clears the error row at once and re-indexes the file, which gets an error row again (review
+// finding 9).
+func TestRetryAllReindexesErrorRows(t *testing.T) {
+	ctx := context.Background()
+	s, x := startTestIndexer(t)
+	broken := indexedFiles()[imageCount]
+	if err := x.RetryAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.fileIndexRow(broken.ID, 1); ok {
+		t.Fatal("RetryAll left the error row in place")
+	}
+	drain(t, x)
+	row, ok := s.fileIndexRow(broken.ID, 1)
+	if !ok || row.Status != contract.StatusError {
+		t.Fatalf("after the retry the row is %+v, want the error again", row)
+	}
+	p, _ := x.step()
+	if p.Errors != 1 {
+		t.Fatalf("errors after the retry: %d, want 1", p.Errors)
+	}
+}
+
+// Retry clears a done file's row at once and indexes it again with the same stat.
+func TestRetryReindexesFile(t *testing.T) {
+	ctx := context.Background()
+	s, x := startTestIndexer(t)
+	f := indexedFiles()[0]
+	if err := x.Retry(ctx, []int64{f.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.fileIndexRow(f.ID, 1); ok {
+		t.Fatal("Retry left the row in place")
+	}
+	drain(t, x)
+	row, ok := s.fileIndexRow(f.ID, 1)
+	if !ok || row.Status != contract.StatusDone || row.Size != f.Size || row.MTime != f.MTime {
+		t.Fatalf("after Retry the row is %+v", row)
+	}
+}
