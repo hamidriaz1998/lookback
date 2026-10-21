@@ -3,6 +3,7 @@ package app
 import (
 	_ "embed"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -28,6 +29,26 @@ type Config struct {
 // DefaultConfig returns the SPEC section 14 defaults.
 func DefaultConfig() Config {
 	return Config{Hotkey: "Super+Shift+Space", PauseOnBattery: true}
+}
+
+var hotkeyState struct {
+	sync.Mutex
+	accelerator string
+	err         error
+}
+
+func setHotkeyStatus(acc string, err error) {
+	hotkeyState.Lock()
+	defer hotkeyState.Unlock()
+	hotkeyState.accelerator, hotkeyState.err = acc, err
+}
+
+// HotkeyStatus returns the accelerator the app tried to register and the registration error, nil when it
+// is active. Settings (WP6) reads it to show the bind tip when the portal shortcut is unavailable.
+func HotkeyStatus() (accelerator string, err error) {
+	hotkeyState.Lock()
+	defer hotkeyState.Unlock()
+	return hotkeyState.accelerator, hotkeyState.err
 }
 
 // application holds the state of the running app. Its window, tray and shortcut are used on the main
@@ -104,9 +125,11 @@ func (a *application) start() {
 		a.tray = tray
 	}
 
-	if err := mygo.GlobalShortcut.Register(a.cfg.Hotkey, a.toggle); err != nil {
-		log.Printf("hotkey %q: %v", a.cfg.Hotkey, err)
+	err = mygo.GlobalShortcut.Register(a.cfg.Hotkey, a.toggle)
+	if err != nil {
+		log.Printf("hotkey %q: %v", a.cfg.Hotkey, err) // once, at start; Settings shows the bind tip
 	}
+	setHotkeyStatus(a.cfg.Hotkey, err)
 
 	mygo.Power.OnSuspend(func() { a.pause.set(contract.PauseSuspend, true) })
 	mygo.Power.OnResume(func() {
