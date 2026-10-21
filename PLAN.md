@@ -227,8 +227,9 @@ them start after M0 merges.
 - **Owns:** `internal/hw`, `internal/runtime`, `internal/bench`, `tools/mkref`, `assets/sample`.
 - **Uses:** SPEC §5, §6 (step 1 and 2 logic), §8. WP1's `contract.Catalog` and `contract.Downloader`.
 - **Provides:** `contract.Detector` (`Detect`, `Probe` per backend); `contract.Lab` (`Run(combo, extra)`
-  returns a `RunID`, `Subscribe`, `Recommend`; runs are serialized, and each one embeds in a temporary
-  session and pauses the indexer with `PauseLab`); `contract.Runtime`, implemented by `runtime.Sidecar`,
+  returns a `RunID`, `Subscribe`, `Recommend`; runs form one FIFO queue, and each one starts its own temporary
+  llama-server with its combination's backend and precisions, separate from the runtime, and pauses the
+  indexer with `PauseLab`); `contract.Runtime`, implemented by `runtime.Sidecar`,
   which adds `Active`, `Status`, `Subscribe`, `Session`, `Use`, `RetryGPU` and `Stop`. `Session` embeds
   for one vector space; the sidecar keeps at most two spaces open (SPEC §8).
 - **Tasks:** Linux detection; `--list-devices` parsing; the CUDA driver-version rule

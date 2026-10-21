@@ -563,11 +563,13 @@ type LabResult struct {
 
 // Lab runs the test lab: it starts a combination, embeds the bundled sample and records the numbers.
 //
-// Runs are serialized: a run starts when the run before it has finished, and a run canceled while it
-// waits never starts. Each run embeds in its own temporary session, opened with Runtime.Session for the
-// vector space of its combination, and the indexer is paused with PauseLab while the run uses the
-// runtime. A run that cannot open its session fails with that error. Every step and result carries its
-// RunID. A run's ctx bounds that run: when it ends, the run emits a canceled step.
+// Runs form one FIFO queue: a run starts when every run before it has ended. A run canceled while it waits
+// leaves the queue and never starts, and the runs behind it keep their order. Each run starts its own
+// temporary llama-server with its combination's backend and precisions. That server is separate from the
+// runtime's sidecars, and it stops when the run ends. The indexer is paused with PauseLab from the first
+// run's start until the queue is empty. Search keeps working on the runtime's active session. Every step and
+// result carries its RunID. A run's ctx bounds that run: when it ends, the run emits a canceled step. When
+// the lab's lifetime ends, no run starts, every run emits its terminal step, and then the streams close.
 type Lab interface {
 	// Run queues a test of combination c. extra holds up to 10 user-picked files to embed as well. It returns
 	// the run's ID at once; progress arrives on Subscribe. It returns ErrUnknownCombo for a combination the

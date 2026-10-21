@@ -209,7 +209,9 @@ restart ([section 7](#7-downloads)).
 
 When a combination's parts are ready, the lab tests it:
 
-1. Start the sidecar with that combination.
+1. Start a temporary `llama-server` with that combination's backend and precisions. It is separate from
+   the runtime's sidecars and stops when the test ends. The indexer pauses while the lab runs; search
+   keeps working.
 2. Embed the bundled sample: 8 images of different sizes and 16 text chunks, in
    `assets/sample/` (self-made or CC0 content only).
 3. Optionally embed up to 10 files the user picks.

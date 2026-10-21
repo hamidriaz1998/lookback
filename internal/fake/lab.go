@@ -38,24 +38,39 @@ func labInstalled() []contract.Installed {
 // fp returns a pointer to v.
 func fp(v float64) *float64 { return &v }
 
-// Lab is a contract.Lab that replays the fixture results. A run emits one step every 200 ms. Runs
-// are serialized in the order they were started, and each run waits for the one before it.
+// Lab is a contract.Lab that replays the fixture results. It has no runtime: a run stands for its own
+// temporary sidecar, which the fake only counts (Lab.temp). Runs form one FIFO queue, and a run emits a
+// step every 200 ms.
 type Lab struct {
-	rt      contract.Runtime
 	ix      contract.Indexer
 	life    context.Context
 	streams *stream[contract.LabStep]
 
 	mu     sync.Mutex
 	nextID contract.RunID
-	last   chan struct{} // closed when the most recent run ends
+	queue  []*labRun // waiting runs, first to start first
+	active *labRun   // the run that holds the lab, or nil
+	closed bool      // the lifetime ended, so no run starts
+	temp   int       // temporary sidecars running
+	runs   sync.WaitGroup
 }
 
-// NewLab returns a Lab with the fixture results. A run opens its session on rt and pauses ix while it
-// runs. The lab's streams close, and its runs stop, when ctx ends.
-func NewLab(ctx context.Context, rt contract.Runtime, ix contract.Indexer) *Lab {
+// labRun is one queued or running test. A run is promoted once: it then holds the lab until it ends.
+type labRun struct {
+	id       contract.RunID
+	combo    contract.Combo
+	row      contract.LabResult
+	steps    []string
+	ctx      context.Context
+	cancel   context.CancelFunc
+	ready    chan struct{} // closed when the run is promoted
+	promoted bool          // guarded by Lab.mu
+}
+
+// NewLab returns a Lab with the fixture results. A run pauses ix with PauseLab while the queue is busy. When
+// ctx ends, every run is canceled, each emits its terminal step, and the lab's streams close.
+func NewLab(ctx context.Context, ix contract.Indexer) *Lab {
 	l := &Lab{
-		rt:   rt,
 		ix:   ix,
 		life: ctx,
 		streams: newStream(
@@ -64,25 +79,27 @@ func NewLab(ctx context.Context, rt contract.Runtime, ix contract.Indexer) *Lab 
 				return s.State == contract.LabDone || s.State == contract.LabFailed || s.State == contract.LabCanceled
 			},
 		),
-		last: closedChan(),
 	}
 	go func() {
 		<-ctx.Done()
-		l.streams.close()
+		l.shutdown()
 	}()
 	return l
 }
 
-// closedChan returns a channel that is already closed.
-func closedChan() chan struct{} {
-	ch := make(chan struct{})
-	close(ch)
-	return ch
-}
-
-// spaceOf returns the vector space of combination c.
-func spaceOf(c contract.Combo) contract.VectorSpace {
-	return contract.VectorSpace{TextQuant: c.TextQuant, EncQuant: c.EncQuant, ModelRev: modelRev}
+// shutdown stops the lab: no run starts, every run is canceled, and the streams close after the last terminal step.
+func (l *Lab) shutdown() {
+	l.mu.Lock()
+	l.closed = true
+	for _, r := range l.queue {
+		r.cancel()
+	}
+	if l.active != nil {
+		l.active.cancel()
+	}
+	l.mu.Unlock()
+	l.runs.Wait()
+	l.streams.close()
 }
 
 // Run queues a test of combination c. It fails at once for a combination without a fixture result, for
@@ -115,67 +132,119 @@ func (l *Lab) Run(ctx context.Context, c contract.Combo, extra []string) (contra
 		steps = append(steps, fmt.Sprintf("Embedding your file %d of %d", i+1, len(extra)))
 	}
 
+	rctx, cancel := context.WithCancel(ctx)
 	l.mu.Lock()
-	id := l.nextID
+	defer l.mu.Unlock()
+	if l.closed {
+		cancel()
+		return 0, contract.ErrStopped
+	}
+	r := &labRun{id: l.nextID, combo: c, row: *row, steps: steps, ctx: rctx, cancel: cancel, ready: make(chan struct{})}
 	l.nextID++
-	prev := l.last
-	done := make(chan struct{})
-	l.last = done
-	l.mu.Unlock()
-
-	go l.execute(ctx, id, c, *row, steps, prev, done)
-	return id, nil
+	l.runs.Add(1)
+	go l.runOne(r)
+	if l.active == nil {
+		l.ix.Pause(contract.PauseLab)
+		l.giveLocked(r)
+	} else {
+		l.queue = append(l.queue, r)
+	}
+	return r.id, nil
 }
 
-// execute runs one test once the run before it (prev) has ended. It emits the run's steps and ends with
-// exactly one terminal step: done, failed or canceled.
-func (l *Lab) execute(ctx context.Context, id contract.RunID, c contract.Combo, row contract.LabResult, steps []string, prev, done chan struct{}) {
-	defer close(done)
-	emit := func(s contract.LabStep) {
-		s.RunID, s.Combo = id, c
-		l.streams.publish(s)
-	}
-	cancel := func() { emit(contract.LabStep{State: contract.LabCanceled, Step: "Canceled"}) }
+// giveLocked promotes r: it holds the lab from now on. The caller holds l.mu.
+func (l *Lab) giveLocked(r *labRun) {
+	l.active = r
+	r.promoted = true
+	close(r.ready)
+}
 
+// releaseLocked passes the lab to the next queued run, or frees it and resumes the indexer when the queue is
+// empty. The caller holds l.mu.
+func (l *Lab) releaseLocked() {
+	if len(l.queue) == 0 {
+		l.active = nil
+		l.ix.Resume(contract.PauseLab)
+		return
+	}
+	next := l.queue[0]
+	l.queue = l.queue[1:]
+	l.giveLocked(next)
+}
+
+// dequeueLocked removes a queued run that never started. The caller holds l.mu.
+func (l *Lab) dequeueLocked(r *labRun) {
+	for i, q := range l.queue {
+		if q == r {
+			l.queue = append(l.queue[:i], l.queue[i+1:]...)
+			return
+		}
+	}
+}
+
+// runOne waits for its turn. A run canceled while it waits leaves the queue and emits canceled; the others keep
+// their order. A run that holds the lab executes, emits exactly one terminal step, and then passes the lab on.
+func (l *Lab) runOne(r *labRun) {
+	defer l.runs.Done()
+	defer r.cancel()
 	select {
-	case <-prev:
-	case <-ctx.Done():
-		cancel()
-		return
-	case <-l.life.Done():
-		cancel()
+	case <-r.ready:
+	case <-r.ctx.Done():
+	}
+	l.mu.Lock()
+	if !r.promoted {
+		l.dequeueLocked(r)
+		l.mu.Unlock()
+		l.emit(r, contract.LabStep{State: contract.LabCanceled, Step: "Canceled"})
 		return
 	}
+	l.mu.Unlock()
+	l.execute(r)
+	l.mu.Lock()
+	l.releaseLocked()
+	l.mu.Unlock()
+}
 
-	// The indexer waits while the run uses the runtime, and the session closes when the run ends.
-	l.ix.Pause(contract.PauseLab)
-	defer l.ix.Resume(contract.PauseLab)
-	sess, err := l.rt.Session(ctx, spaceOf(c))
-	if err != nil {
-		if ctx.Err() != nil {
-			cancel()
-			return
-		}
-		emit(contract.LabStep{State: contract.LabFailed, Err: err.Error()})
-		return
-	}
-	defer sess.Close()
+// execute runs the steps of r in its own temporary sidecar, which stops before the terminal step is published.
+func (l *Lab) execute(r *labRun) {
+	l.setTemp(1)
+	last := l.embed(r)
+	l.setTemp(-1)
+	l.emit(r, last)
+}
 
-	emit(contract.LabStep{State: contract.LabStarting, Step: "Starting " + c.ID()})
-	if !sleepOrEnd(ctx, l.life, 200*time.Millisecond) {
-		cancel()
-		return
+// embed emits the live steps of r and returns its terminal step: done, or canceled when r.ctx ends first.
+func (l *Lab) embed(r *labRun) contract.LabStep {
+	canceled := contract.LabStep{State: contract.LabCanceled, Step: "Canceled"}
+	if r.ctx.Err() != nil {
+		return canceled
 	}
-	for _, s := range steps {
-		emit(contract.LabStep{State: contract.LabEmbedding, Step: s})
-		if !sleepOrEnd(ctx, l.life, 200*time.Millisecond) {
-			cancel()
-			return
+	l.emit(r, contract.LabStep{State: contract.LabStarting, Step: "Starting " + r.combo.ID()})
+	if !sleepOrEnd(r.ctx, l.life, 200*time.Millisecond) {
+		return canceled
+	}
+	for _, s := range r.steps {
+		l.emit(r, contract.LabStep{State: contract.LabEmbedding, Step: s})
+		if !sleepOrEnd(r.ctx, l.life, 200*time.Millisecond) {
+			return canceled
 		}
 	}
-	result := row
-	result.RunID = id
-	emit(contract.LabStep{State: contract.LabDone, Step: "Done", Result: &result})
+	result := r.row
+	result.RunID = r.id
+	return contract.LabStep{State: contract.LabDone, Step: "Done", Result: &result}
+}
+
+// setTemp adds d temporary sidecars.
+func (l *Lab) setTemp(d int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.temp += d
+}
+
+// emit publishes a step of r.
+func (l *Lab) emit(r *labRun, s contract.LabStep) {
+	s.RunID, s.Combo = r.id, r.combo
+	l.streams.publish(s)
 }
 
 // sleepOrEnd sleeps for d and reports false when either context ends first.
