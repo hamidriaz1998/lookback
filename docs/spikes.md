@@ -73,16 +73,16 @@ Findings and limits:
 
 ## Spike 3: sidecar on Linux (Windows run moved to the Windows phase)
 
-**Status: Linux BF16 passed; Q8_0 open, owned by WP2; Windows moved to the Windows phase (SPEC.md).** The Linux run used the BF16 pair,
-which is the only pair on disk. The Q8_0 run and the Windows run are not done, so Spike 3 is not closed.
+**Status: Linux BF16 and Q8_0 passed; Windows moved to the Windows phase (SPEC.md).** Both Linux precision pairs
+were run with the CPU build. The Windows run remains open for that phase.
 
 - **Program:** `cmd/spike-sidecar/main.go`, with `process_unix.go` (process group, `SIGTERM` then `SIGKILL`)
   and `process_windows.go`. Run: `go run ./cmd/spike-sidecar -log <file>`.
 - **Command:** `llama-server` from `llama-b11755` (CPU build), with `-m embeddinggemma-2-BF16.gguf`,
   `--mmproj mmproj-embeddinggemma-2-BF16.gguf`, `--embeddings --pooling mean -c 8192 -t 8`,
   `--host 127.0.0.1 --port <free>`, `--api-key <32 random bytes, hex>`.
-- **Models:** the BF16 pair. The PLAN text says Q8_0, but the command given for this spike and the local
-  `models/` folder hold only BF16 files. Q8_0 has not been tested here.
+- **Models:** the BF16 pair for the original run. The follow-up Q8_0 run used only the already-present pair in
+  `/home/hamid/Desktop/AI/lookback-data/models/`; no model was downloaded. Both file hashes match SPEC §4.
 
 | Check | Result |
 |---|---|
@@ -91,6 +91,22 @@ which is the only pair on disk. The Q8_0 run and the Windows run are not done, s
 | Image, 47.6 KB PNG (`Screenshot_2026-07-18_17-50.png`) | 768 dims, norm 1.0000, `prompt_tokens` 147, 2.98 s |
 | Image, 1.59 MB PNG (`screenshot-2026-08-25_22-17-07.png`, largest in `~/Pictures`) | 768 dims, norm 1.0000, `prompt_tokens` 235, 5.11 s (sent at full size; no resize) |
 | Stop | SIGTERM to the process group; the server exited with status 0 in both runs |
+
+### Q8_0 follow-up (2026-10-21)
+
+**Result: passed.** Ran the CPU sidecar with the local `Q8_0.ready` model pair and bundled `img-01.png`:
+
+```text
+health: ok after 4.782s
+text: dims=768 norm=1.0000 prompt_tokens=10 wall=74ms
+image: img-01.png (6237 bytes) dims=768 norm=1.0000 prompt_tokens=134 wall=6.143s
+stop: llama-server exited after SIGTERM (<nil>)
+```
+
+Command: `go run ./cmd/spike-sidecar -server /home/hamid/Desktop/AI/embeddingGemma_test/llama-cpu/llama-b11755/llama-server -m /home/hamid/Desktop/AI/lookback-data/models/embeddinggemma-2-Q8_0.gguf -mmproj /home/hamid/Desktop/AI/lookback-data/models/mmproj-embeddinggemma-2-Q8_0.gguf -image assets/sample/images/img-01.png -log /tmp/wp2-q8-sidecar.log`.
+The model file SHA-256 values were `2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135` (text) and
+`c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f` (encoder). The server exited cleanly;
+the temporary log is at `/tmp/wp2-q8-sidecar.log`.
 
 Findings and limits:
 
