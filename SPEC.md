@@ -472,8 +472,8 @@ Turso adds a vector index.
   A file with an error row whose size and mtime did not change needs no work by itself, so Retry clears its
   row first. The indexer offers Retry, Retry all, Rescan (one folder) and Rebuild (a building generation for
   new precisions) as commands. They queue work and return.
-- **Pause**: the user Pause button, battery power (Q16, configurable), and system suspend
-  (`mygo.Power.OnSuspend` / `OnResume`). While indexing on AC power, hold `mygo.Power.KeepAwake`.
+- **Pause**: the user Pause button, battery power (Q16, configurable), system suspend
+  (`mygo.Power.OnSuspend` / `OnResume`), and a test lab run (reason `lab`, section 8). While indexing on AC power, hold `mygo.Power.KeepAwake`.
 
 ### Progress and ETA (Q27)
 
