@@ -240,6 +240,87 @@ func TestLeavingLabReleasesPause(t *testing.T) {
 	h.wait("the indexer to resume", func() bool { return h.app.progress.Paused == contract.PauseNone })
 }
 
+// heldLabHarness is a first run at step 2 whose downloads are held once the probes are done, so a test can check
+// a combination before its files verify. The lab rejects a combination whose files are not verified.
+func heldLabHarness(t *testing.T) (*harness, *countingLab, *instantDownloader) {
+	t.Helper()
+	var lab *countingLab
+	h, dl := newTestHarness(t, firstRun(t), nil, func(d *Deps) {
+		lab = &countingLab{Lab: d.Lab}
+		d.Lab = lab
+		idl := d.Downloader.(*instantDownloader)
+		cat, os := d.Catalog, d.OS
+		lab.ready = func(c contract.Combo) bool { return idl.verifiedCombo(cat, os, c) }
+	}, false)
+	waitDetection(h)
+	h.app.onb.step = 2
+	return h, lab, dl
+}
+
+// heldCombo is the combination the held-download tests check: its files are not verified until released.
+var heldCombo = contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantBF16, EncQuant: contract.QuantQ8_0}
+
+// settle pumps the app for a moment, so a run that should not start has time to.
+func settle(h *harness) {
+	for i := 0; i < 20; i++ {
+		h.pump(0)
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestHeldDownloadDelaysLabRun checks SPEC section 6: a checked combination is tested only once its files are
+// verified. No run starts while its files download, and exactly one starts when they verify.
+func TestHeldDownloadDelaysLabRun(t *testing.T) {
+	h, lab, dl := heldLabHarness(t)
+	dl.setHold(true)
+	h.app.setTest(heldCombo, true)
+	settle(h)
+	if n := lab.count(); n != 0 {
+		t.Fatalf("checking a combination started %d runs before its files verified, want none", n)
+	}
+	dl.release()
+	h.wait("the lab run to start", func() bool { return lab.count() >= 1 })
+	h.wait("the test to finish", func() bool {
+		s, ok := h.app.labRow(heldCombo)
+		return ok && s.State == contract.LabDone
+	})
+	settle(h)
+	if n := lab.count(); n != 1 {
+		t.Fatalf("the combination ran %d times, want exactly one", n)
+	}
+	if n := lab.rejections(); n != 0 {
+		t.Fatalf("the lab rejected %d runs whose files had verified", n)
+	}
+}
+
+// TestUncheckedBeforeVerificationNeverRuns checks that a combination unchecked while its files download is not
+// tested once they verify.
+func TestUncheckedBeforeVerificationNeverRuns(t *testing.T) {
+	h, lab, dl := heldLabHarness(t)
+	dl.setHold(true)
+	h.app.setTest(heldCombo, true)
+	h.app.setTest(heldCombo, false)
+	dl.release()
+	settle(h)
+	if n := lab.count(); n != 0 {
+		t.Fatalf("an unchecked combination started %d runs, want none", n)
+	}
+}
+
+// TestLeavingLabBeforeVerificationNeverRuns checks that a combination checked while its files download is not
+// tested once they verify, when the user has left the lab meanwhile.
+func TestLeavingLabBeforeVerificationNeverRuns(t *testing.T) {
+	h, lab, dl := heldLabHarness(t)
+	dl.setHold(true)
+	h.app.setTest(heldCombo, true)
+	h.app.leaveLab()
+	dl.release()
+	settle(h)
+	if n := lab.count(); n != 0 {
+		t.Fatalf("a combination left behind started %d runs, want none", n)
+	}
+}
+
 // TestModelsChoiceRebuildsIndex checks that a combination picked from Models goes through the precision switch:
 // the confirmation first, then a rebuild into a generation with that vector space, and the chosen backend.
 func TestModelsChoiceRebuildsIndex(t *testing.T) {

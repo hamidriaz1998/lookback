@@ -175,6 +175,7 @@ func (a *App) Start(ctx context.Context, dispatch func(func())) {
 	pump(ctx, dispatch, a.d.Downloader.Subscribe(ctx), func(p contract.DownloadProgress) {
 		a.downloads[p.Key] = p
 		a.probeWhenReady()
+		a.startReadyTests()
 	})
 	pump(ctx, dispatch, a.d.Lab.Subscribe(ctx), func(s contract.LabStep) {
 		if _, seen := a.labSteps[s.RunID]; !seen {

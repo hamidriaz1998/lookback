@@ -513,7 +513,12 @@ func (a *App) labTable(c *ui.Context, combos []contract.Combo) {
 					ui.Text(c, step.Step).SingleLine()
 				})
 			case has && step.State == contract.LabFailed:
-				ui.Badge(c, "Failed").Tooltip(step.Err)
+				ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Justify(ui.End).Children(func() {
+					ui.Badge(c, "Failed").Tooltip(step.Err)
+					if ui.Button(c, "Retry").Clicked() {
+						a.retryTest(cb)
+					}
+				})
 			case has && step.State == contract.LabDone && step.Result != nil:
 				ui.Text(c, count(int(step.Result.Bench.ImageMS+0.5))).FontFeatures("tnum")
 			default:
@@ -709,9 +714,9 @@ func pathLines(text string, n int) []string {
 	return out
 }
 
-// setTest checks or unchecks cb for testing. Checking queues its test run, and downloads its files. Unchecking
-// cancels the run when it has not finished. A canceled run leaves the lab's queue, so the indexer resumes once
-// the queue is empty (SPEC section 8). Opening the lab queues nothing.
+// setTest checks or unchecks cb for testing. Checking queues the files of cb. Its test run starts once they are
+// verified (startReadyTests). Unchecking cancels the run when it has not finished. A canceled run leaves the lab's
+// queue, so the indexer resumes once the queue is empty (SPEC section 8). Opening the lab queues nothing.
 func (a *App) setTest(cb contract.Combo, on bool) {
 	o := a.onb
 	id := cb.ID()
@@ -723,6 +728,36 @@ func (a *App) setTest(cb contract.Combo, on bool) {
 		}
 		return
 	}
+	a.ensureFiles(cb)
+	if a.comboReady(cb) {
+		a.startTest(cb)
+	}
+}
+
+// startReadyTests starts the test of each checked combination whose files are verified and whose test has not
+// started or ended. It runs on every download update, so a checked combination starts exactly once. A failed test
+// waits for its Retry button rather than starting again on its own.
+func (a *App) startReadyTests() {
+	o := a.onb
+	if o == nil {
+		return
+	}
+	for _, cb := range o.combos {
+		if !o.chosen[cb.ID()] || !a.comboReady(cb) {
+			continue
+		}
+		if step, ok := a.labRow(cb); ok && step.State == contract.LabFailed {
+			continue
+		}
+		a.startTest(cb)
+	}
+}
+
+// startTest starts the lab run of cb, unless one is open or cb has a finished test. The run is cancelable, and a
+// run that the lab refuses leaves the open runs, so the next download update may start it again.
+func (a *App) startTest(cb contract.Combo) {
+	o := a.onb
+	id := cb.ID()
 	if _, running := o.tests[id]; running {
 		return
 	}
@@ -731,18 +766,31 @@ func (a *App) setTest(cb contract.Combo, on bool) {
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	o.tests[id] = cancel
-	a.ensureFiles(cb)
 	extra := o.extra
 	lab := a.d.Lab
 	go func() {
 		if _, err := lab.Run(ctx, cb, extra); err != nil {
 			a.dispatch(func() {
-				if a.onb == o {
-					o.labErr = err.Error()
+				if a.onb != o {
+					return
+				}
+				o.labErr = err.Error()
+				// A run canceled by the user is no longer in the map, and its error is expected. Any other run that
+				// the lab refused is removed, so it can start again.
+				if ctx.Err() == nil {
+					cancel()
+					delete(o.tests, id)
 				}
 			})
 		}
 	}()
+}
+
+// retryTest starts the test of cb again after it failed. It is unchecked, then checked, so the run uses the files
+// on disk now.
+func (a *App) retryTest(cb contract.Combo) {
+	a.setTest(cb, false)
+	a.setTest(cb, true)
 }
 
 // restartTests cancels the open runs and queues the unfinished tests of the checked combinations again, so they
@@ -760,8 +808,9 @@ func (a *App) restartTests() {
 	}
 }
 
-// leaveLab cancels the test runs that are still open, and unchecks the combinations whose tests did not finish.
-// Opening the lab never reaches this, so a lab that is only looked at queues nothing.
+// leaveLab cancels the test runs that are still open, and unchecks the combinations whose tests did not finish,
+// including those still waiting for their files. Opening the lab never reaches this, so a lab that is only looked
+// at queues nothing.
 func (a *App) leaveLab() {
 	o := a.onb
 	if o == nil {
@@ -769,12 +818,10 @@ func (a *App) leaveLab() {
 	}
 	for _, cb := range o.combos {
 		id := cb.ID()
-		cancel, ok := o.tests[id]
-		if !ok {
-			continue
+		if cancel, ok := o.tests[id]; ok {
+			cancel()
+			delete(o.tests, id)
 		}
-		cancel()
-		delete(o.tests, id)
 		if step, ok := a.labRow(cb); !ok || step.State != contract.LabDone {
 			o.chosen[id] = false
 		}
