@@ -65,7 +65,7 @@ func (a *App) previewBody(c *ui.Context, h contract.Hit) {
 		})
 	default:
 		ui.Column(c).Fill().Center().Radius(8).Background(t.Surface).Children(func() {
-			ui.Image(c, bm).Fit(ui.Contain).Grow(1).Radius(8).Label(filepath.Base(h.Path))
+			ui.Image(c, bm).Fit(ui.Contain).Fill().Radius(8).Label(filepath.Base(h.Path))
 		})
 	}
 }

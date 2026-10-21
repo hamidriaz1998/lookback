@@ -261,7 +261,7 @@ func (a *App) labTable(c *ui.Context, combos []contract.Combo) {
 	o := a.onb
 	recommended := a.recommendedLabCombo()
 	cols := []ui.TableColumn{
-		{Title: "Combination", Width: 290}, {Title: "Image ms", Width: 170, Align: ui.End},
+		{Title: "Combination", Width: 290}, {Title: "Image ms", Width: 230, Align: ui.End},
 		{Title: "Tokens/s", Width: 100, Align: ui.End}, {Title: "RAM", Width: 90, Align: ui.End},
 		{Title: "VRAM", Width: 90, Align: ui.End}, {Title: "Quality", Width: 90, Align: ui.End},
 		{Title: "Download", Width: 110, Align: ui.End},

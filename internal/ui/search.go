@@ -242,6 +242,8 @@ func (a *App) resultsArea(c *ui.Context) {
 	items := a.items()
 	if len(items) == 0 {
 		switch {
+		case s.err != "":
+			// The error row above says what failed; "nothing matches" would be wrong.
 		case s.key() != "" && !s.searching:
 			a.emptyState(c, "Nothing matches “"+s.query+"”.", "Try fewer words, describe what's in the picture, or check the type filter.", false)
 		case a.hasProgress && a.progress.FilesDone == 0:
@@ -298,7 +300,7 @@ func (a *App) emptyState(c *ui.Context, title, body string, toFolders bool) {
 	t := c.Theme()
 	ui.Column(c).Grow(1).Center().Gap(t.Space(2)).Children(func() {
 		ui.Text(c, title).Bold().FontSize(t.Rem(1.15))
-		ui.Text(c, body).TextColor(t.TextMuted).MaxWidth(420).Lines(1, 4)
+		ui.Text(c, body).TextColor(t.TextMuted).MaxWidth(640).Lines(1, 4)
 		if toFolders && ui.PrimaryButton(c, "Add folder").Clicked() {
 			a.page = pageFolders
 		}
@@ -353,10 +355,10 @@ func (a *App) thumbnail(c *ui.Context, h contract.Hit, edge, decodeEdge float32)
 	ui.Box(c).Size(edge, edge).Radius(8).Background(t.Surface).Center().Children(func() {
 		bm, _, ok := a.thumbs.get(thumbKey{path: h.Path, edge: int(decodeEdge)})
 		if ok && bm != nil {
-			ui.Image(c, bm).Fit(ui.Contain).Grow(1).Radius(8)
+			ui.Image(c, bm).Fit(ui.Contain).Fill().Radius(8)
 			return
 		}
-		ui.Icon(c, fileIcon(h.Kind)).FontSize(t.Rem(2)).TextColor(t.TextMuted)
+		ui.Icon(c, fileIcon(h.Kind)).Size(t.Rem(2), t.Rem(2)).TextColor(t.TextMuted)
 	})
 }
 

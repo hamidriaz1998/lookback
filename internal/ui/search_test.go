@@ -2,6 +2,7 @@ package ui
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
@@ -56,6 +57,11 @@ func TestSearchErrorShowsRetry(t *testing.T) {
 	h.wait("error", func() bool { return h.app.search.err != "" })
 	h.wantText("Search failed")
 	h.wantText("Retry")
+	for _, txt := range h.tt.Texts() {
+		if strings.Contains(txt, "Nothing matches") {
+			t.Errorf("the error state also says %q", txt)
+		}
+	}
 }
 
 // TestSearchGridStaysBelowHeader checks the layout of the results: the grid, the preview and the header
