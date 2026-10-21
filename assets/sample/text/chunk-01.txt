@@ -1,0 +1,1 @@
+Backup plan for the home server. The nightly job copies the photo library to the external drive at 02:00 and keeps the last thirty snapshots. The weekly job sends a copy to the cloud bucket on Sunday. Check the log every Monday; a failed run shows up as a red line at the end of the summary.

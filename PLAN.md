@@ -246,6 +246,12 @@ them start after M0 merges.
   `cmd/spike-sidecar` does not yet do this).
 - **Also:** the Q8_0 sidecar run that spike 3 leaves open. The Windows job object belongs to the
   Windows phase.
+- **WP2 status (2026-10-21):** acceptance passed on the reference host. Vulkan listed the AMD Radeon RENOIR;
+  the Q8_0 lab measured 5306.2 ms/image on CPU and 1718.4 ms/image on Vulkan (quality 0.999710 and 0.999823),
+  recommending Vulkan. Two real Vulkan server kills restarted Vulkan once, then fell back to CPU, where a
+  768-dimensional embedding succeeded. Parser, precision, runtime startup/fallback and lab FIFO/cancel/shutdown
+  tests pass. The Q8_0 sidecar smoke run is recorded in `docs/spikes.md`. Windows job-object behavior remains in
+  the Windows phase.
 
 ### WP3: store
 
@@ -267,14 +273,17 @@ them start after M0 merges.
   emits byte-fallback tokens for WP4's cut-inside-a-character test.
 - **Provides:** one `contract.Extractor` per kind and a registry by extension; `chunk.Split` with
   token-exact windows (it takes a tokenizer function, so tests run without the sidecar).
-- **Tasks:** images (resize, re-encode, GIF first frame, header-only size read); text (encoding check,
-  binary skip, HTML); PDF via go-pdfium WASM (text per page, render low-text pages); DOCX, PPTX, XLSX,
-  ODT, ODP, ODS, RTF. Measure the 1600 px image cap against the sample (time and quality) and record
-  the numbers in the commit message.
-- **Acceptance:** fixture files for every type in `internal/extract/testdata` (self-made); tests check
-  the unit count, page numbers and text; a scanned-page fixture comes back as an image unit; the chunk
-  regression (SPEC section 9) checks coverage, valid UTF-8, termination, overlap of at least 64 tokens and
-  the 512-token cap, with byte offsets, on text that includes byte-fallback characters.
+- **Tasks (complete 2026-10-21):** images (resize, re-encode, GIF first frame, header-only size read); text
+  (encoding check, binary skip, HTML); PDF via go-pdfium WASM (text per page, render low-text pages); DOCX,
+  PPTX, XLSX, ODT, ODP, ODS, RTF. Measured the 1600 px image cap on four real screenshots (details in
+  `.review/wp4-report.md`): extraction took 138–177 ms; capped embeddings retained cosine similarity of
+  0.9420–0.9760. Full-size and capped median embedding times were 5.99–8.07 s.
+- **Acceptance (complete 2026-10-21):** self-made fixtures for every supported document kind are in
+  `internal/extract/testdata`; `TestImageUnits`, `TestTextUnits`, `TestOfficeUnits`, and `TestPDFUnits` verify
+  units, page numbers and text, including a scanned-page image unit. `TestSplitByteFallbackRegression` checks
+  byte coverage, valid UTF-8 boundaries, progress/termination, at least 64 overlapping tokens, and the
+  512-token prompt cap with byte offsets. Verified with `go test ./internal/extract -count=1`; measurement
+  commands and numbers are in `.review/wp4-report.md`.
 
 ### WP5: themes
 

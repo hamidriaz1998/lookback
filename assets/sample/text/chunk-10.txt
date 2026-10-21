@@ -1,0 +1,1 @@
+Bug report for the sync client. When a folder is renamed while the app is paused, the rename is lost on resume and the old name comes back. Steps: pause, rename the folder in the file manager, resume. Expected: the new name is kept. Logs attached from the crash at 14:02.
