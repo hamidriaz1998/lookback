@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -388,6 +389,18 @@ func TestShutdownClosesUnreadSubscription(t *testing.T) {
 		case <-deadline:
 			t.Fatal("unread subscription did not close after downloader shutdown")
 		}
+	}
+}
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestCopyClassifiesLocalWriteFailure(t *testing.T) {
+	d := &Downloader{}
+	_, err := d.copy(&file{}, failingWriter{err: syscall.ENOSPC}, strings.NewReader("data"), 0, func() {})
+	if !errors.Is(err, errLocalWrite) || !errors.Is(err, syscall.ENOSPC) || errors.Is(err, errTransient) {
+		t.Fatalf("copy error = %v, want a local non-transient write failure", err)
 	}
 }
 

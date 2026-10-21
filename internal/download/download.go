@@ -36,6 +36,7 @@ const (
 
 // errTransient marks a failure that the transfer retries with backoff.
 var errTransient = errors.New("transient network error")
+var errLocalWrite = errors.New("local download write failed")
 
 // Config says where downloads go and how the app learns about the network.
 type Config struct {
@@ -518,6 +519,9 @@ func (d *Downloader) attempt(ctx context.Context, f *file, part string) error {
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case copyErr != nil:
+		if errors.Is(copyErr, errLocalWrite) {
+			return copyErr
+		}
 		return fmt.Errorf("%w: %w", errTransient, copyErr)
 	case closeErr != nil:
 		return closeErr
@@ -550,7 +554,7 @@ func (d *Downloader) copy(f *file, w io.Writer, body io.Reader, start int64, tou
 		touch()
 		if nr > 0 {
 			if _, err := w.Write(buf[:nr]); err != nil {
-				return n, err
+				return n, fmt.Errorf("%w: %w", errLocalWrite, err)
 			}
 			n += int64(nr)
 			d.progress(f, start+n)
