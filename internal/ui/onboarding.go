@@ -13,48 +13,165 @@ import (
 // onboarding is the first-run flow (UI guide sections 3.1 to 3.3). It holds the detection results and the
 // test matrix's choices; the services hold everything else.
 type onboarding struct {
-	step       int // 1 hardware, 2 downloads and test lab, 3 folders
-	fromModels bool
-	detecting  bool
-	hw         contract.Hardware
-	hwErr      string
-	probes     map[contract.Backend]contract.BackendProbe
-	backends   []contract.Backend
-	started    bool // the test lab runs for the candidate combinations
-	chosen     map[string]bool
-	combos     []contract.Combo
-	table      ui.ListState
-	sel        int
-	extraOpen  bool
-	extraText  string
-	extra      []string
-	skipShow   bool
-	offline    bool
+	step          int // 1 hardware, 2 downloads and test lab, 3 folders
+	fromModels    bool
+	detecting     bool // the hardware or a backend probe is still pending
+	hwDone        bool // detection has returned
+	hw            contract.Hardware
+	hwErr         string
+	runtimes      []contract.Asset   // the runtime builds the probes need; a probe needs its build on disk
+	probeBackends []contract.Backend // the backends that are probed once runtimes are verified
+	probing       bool
+	probed        bool
+	probes        map[contract.Backend]contract.BackendProbe
+	backends      []contract.Backend
+	tests         map[string]context.CancelFunc // the test runs this lab holds, by combination ID
+	chosen        map[string]bool               // the combinations checked for testing
+	combos        []contract.Combo
+	labErr        string
+	table         ui.ListState
+	sel           int
+	extraOpen     bool
+	extraText     string
+	extra         []string
+	skipShow      bool
+	offline       bool
 }
 
 // startOnboarding creates the flow and detects the hardware in the background.
 func (a *App) startOnboarding() {
-	o := &onboarding{step: 1, detecting: true, probes: map[contract.Backend]contract.BackendProbe{}, chosen: map[string]bool{}, sel: -1}
+	o := &onboarding{step: 1, detecting: true, probes: map[contract.Backend]contract.BackendProbe{},
+		tests: map[string]context.CancelFunc{}, chosen: map[string]bool{}, sel: -1}
 	a.onb = o
 	ctx := a.ctx
 	go func() {
 		hw, err := a.d.Detector.Detect(ctx)
-		backends := a.d.Catalog.Backends(a.d.OS)
-		probes := map[contract.Backend]contract.BackendProbe{}
-		for _, b := range backends {
-			if p, err := a.d.Detector.Probe(ctx, b); err == nil {
-				probes[b] = p
-			} else {
-				probes[b] = contract.BackendProbe{Backend: b, Reason: err.Error()}
-			}
-		}
 		a.dispatch(func() {
-			o.detecting = false
-			o.hw = hw
+			if a.onb != o {
+				return
+			}
+			o.hw, o.hwDone = hw, true
 			if err != nil {
 				o.hwErr = err.Error()
 			}
-			o.probes, o.backends = probes, backends
+			a.queueRuntimes()
+		})
+	}()
+}
+
+// queueRuntimes queues the runtime builds that the probes need (SPEC section 6, step 1): the CPU and Vulkan
+// builds, and the CUDA builds when an NVIDIA GPU is present. A backend without its NVIDIA GPU gets its reason
+// at once. The probes run once these builds are verified (probeWhenReady).
+func (a *App) queueRuntimes() {
+	o := a.onb
+	for _, b := range a.d.Catalog.Backends(a.d.OS) {
+		o.backends = append(o.backends, b)
+		if isCUDA(b) && !hasNvidia(o.hw) {
+			o.probes[b] = contract.BackendProbe{Backend: b, Reason: "no NVIDIA GPU"}
+			continue
+		}
+		as, err := a.d.Catalog.Assets(a.d.OS, contract.Combo{Backend: b, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16})
+		if err != nil {
+			o.probes[b] = contract.BackendProbe{Backend: b, Reason: err.Error()}
+			continue
+		}
+		o.runtimes = append(o.runtimes, runtimeAssets(as)...)
+		o.probeBackends = append(o.probeBackends, b)
+	}
+	if len(o.runtimes) > 0 {
+		ctx, assets := a.ctx, o.runtimes
+		go func() {
+			if err := a.d.Downloader.Ensure(ctx, assets); err != nil {
+				a.dispatch(func() {
+					if a.onb == o {
+						o.labErr = err.Error()
+					}
+				})
+			}
+		}()
+	}
+	a.probeWhenReady()
+}
+
+// runtimeAssets returns the runtime archives among as.
+func runtimeAssets(as []contract.Asset) []contract.Asset {
+	var out []contract.Asset
+	for _, x := range as {
+		if x.Part == contract.PartRuntime {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// isCUDA reports whether b is a CUDA backend.
+func isCUDA(b contract.Backend) bool {
+	return b == contract.BackendCUDA12 || b == contract.BackendCUDA13
+}
+
+// hasNvidia reports whether the hardware has an NVIDIA GPU.
+func hasNvidia(hw contract.Hardware) bool {
+	for _, g := range hw.GPUs {
+		if g.Vendor == "nvidia" {
+			return true
+		}
+	}
+	return false
+}
+
+// verified reports whether the file of as is on disk and checked (FileDone), not merely queued.
+func (a *App) verified(as contract.Asset) bool {
+	d, ok := a.downloads[as.Key()]
+	return ok && d.State == contract.FileDone
+}
+
+// comboReady reports whether every file of cb is verified.
+func (a *App) comboReady(cb contract.Combo) bool {
+	assets, err := a.d.Catalog.Assets(a.d.OS, cb)
+	if err != nil {
+		return false
+	}
+	for _, as := range assets {
+		if !a.verified(as) {
+			return false
+		}
+	}
+	return true
+}
+
+// probeWhenReady starts the --list-devices probes once every runtime build they need is verified. Until then,
+// step 1 shows the downloads, with Retry for a failed one. A probe that runs later sees the builds on disk.
+func (a *App) probeWhenReady() {
+	o := a.onb
+	if o == nil || !o.hwDone || o.probing || o.probed {
+		return
+	}
+	for _, as := range o.runtimes {
+		if !a.verified(as) {
+			return
+		}
+	}
+	o.probing = true
+	ctx := a.ctx
+	backends := o.probeBackends
+	go func() {
+		probes := make(map[contract.Backend]contract.BackendProbe, len(backends))
+		for _, b := range backends {
+			p, err := a.d.Detector.Probe(ctx, b)
+			if err != nil {
+				p = contract.BackendProbe{Backend: b, Reason: err.Error()}
+			}
+			probes[b] = p
+		}
+		a.dispatch(func() {
+			if a.onb != o {
+				return
+			}
+			for b, p := range probes {
+				o.probes[b] = p
+			}
+			o.probing, o.probed, o.detecting = false, true, false
+			o.combos = a.candidateCombos()
 		})
 	}()
 }
@@ -95,7 +212,7 @@ func (a *App) stepHardware(c *ui.Context) {
 				ui.Text(c, value).FontFeatures("tnum").Grow(1)
 			})
 		}
-		if o.detecting {
+		if !o.hwDone {
 			ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
 				ui.Spinner(c)
 				ui.Text(c, "Checking your GPU…").TextColor(t.TextMuted)
@@ -114,6 +231,9 @@ func (a *App) stepHardware(c *ui.Context) {
 			row("GPU", fmt.Sprintf("%s · %s free", g.Name, size(g.VRAMFree)))
 		}
 	})
+	if o.detecting && o.hwDone {
+		a.backendStatus(c)
+	}
 	if !o.detecting {
 		ui.Column(c).Gap(t.Space(2)).Padding(t.Space(3)).Radius(8).Background(t.Surface).Children(func() {
 			ui.Text(c, "Recommended").Bold()
@@ -140,22 +260,113 @@ func (a *App) stepHardware(c *ui.Context) {
 		}
 		if ui.PrimaryButton(c, "Continue with recommended").Disabled(o.detecting).Clicked() {
 			if rec, ok := a.recommendedCombo(); ok {
-				a.useCombo(rec)
+				a.pickCombo(rec)
 				o.step = 3
 			}
 		}
 	})
 }
 
-// recommendedCombo is the fastest candidate backend with BF16 precisions. It returns false when none is a candidate.
+// backendStatus is what step 1 shows while the runtime builds download: a failed one with Retry, and offline.
+func (a *App) backendStatus(c *ui.Context) {
+	t := c.Theme()
+	o := a.onb
+	ui.Column(c).Gap(t.Space(2)).Children(func() {
+		ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
+			ui.Spinner(c)
+			ui.Text(c, "Downloading the runtime builds to test the backends…").TextColor(t.TextMuted)
+		})
+		for _, as := range o.runtimes {
+			d, ok := a.downloads[as.Key()]
+			if !ok {
+				continue
+			}
+			switch d.State {
+			case contract.FileFailed:
+				ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, as.Name+": download failed").TextColor(t.Danger).Grow(1)
+					if ui.Button(c, "Retry").Clicked() {
+						_ = a.d.Downloader.Retry(a.ctx, as.Key())
+					}
+				})
+			case contract.FileOffline:
+				ui.Text(c, "Offline. Downloads resume when you're back online.").TextColor(t.Warning)
+			}
+		}
+	})
+}
+
+// preferredBackends is the order a backend is chosen in when the lab has not measured any: the CUDA builds
+// first, then Vulkan, then the CPU.
+var preferredBackends = []contract.Backend{contract.BackendCUDA13, contract.BackendCUDA12, contract.BackendVulkan, contract.BackendCPU}
+
+// Memory thresholds for the recommended precision (SPEC section 5). A 16 GB machine reports a little under
+// 16 GiB of MemTotal, so the RAM threshold is 15 GiB.
+const (
+	bf16FreeVRAM = 4 << 30
+	bf16RAM      = 15 << 30
+)
+
+// recommendedCombo is the backend and precision for this computer (SPEC section 5). The backend is the fastest
+// candidate the lab has measured; before any measurement, preferredBackends decides. The precision follows the
+// memory of the backend (recommendedQuant). It returns false when no backend is a candidate.
 func (a *App) recommendedCombo() (contract.Combo, bool) {
 	o := a.onb
-	for _, b := range []contract.Backend{contract.BackendVulkan, contract.BackendCUDA13, contract.BackendCUDA12, contract.BackendCPU} {
-		if p, ok := o.probes[b]; ok && p.Candidate {
-			return contract.Combo{Backend: b, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}, true
+	if o == nil {
+		return contract.Combo{}, false
+	}
+	candidates := map[contract.Backend]bool{}
+	for b, p := range o.probes {
+		if p.Candidate {
+			candidates[b] = true
 		}
 	}
-	return contract.Combo{}, false
+	if len(candidates) == 0 {
+		return contract.Combo{}, false
+	}
+	backend, ok := a.measuredBackend(candidates)
+	for _, b := range append(append([]contract.Backend{}, preferredBackends...), o.backends...) {
+		if ok {
+			break
+		}
+		if candidates[b] {
+			backend, ok = b, true
+		}
+	}
+	q := recommendedQuant(backend, o.probes[backend], o.hw)
+	return contract.Combo{Backend: backend, TextQuant: q, EncQuant: q}, true
+}
+
+// measuredBackend returns the backend of the fastest completed lab result (quality 0.99 or more) among the
+// candidates, or false when none has been measured.
+func (a *App) measuredBackend(candidates map[contract.Backend]bool) (contract.Backend, bool) {
+	var results []contract.LabResult
+	for _, id := range a.labOrder {
+		if s := a.labSteps[id]; s.State == contract.LabDone && s.Result != nil && candidates[s.Combo.Backend] {
+			results = append(results, *s.Result)
+		}
+	}
+	best, ok := a.d.Lab.Recommend(results)
+	return best.Backend, ok
+}
+
+// recommendedQuant is BF16 for both parts when the backend's device has 4 GB or more free VRAM, or, for the
+// CPU, 15 GiB or more RAM. Otherwise it is Q8_0 for both.
+func recommendedQuant(b contract.Backend, p contract.BackendProbe, hw contract.Hardware) contract.Quant {
+	if b == contract.BackendCPU {
+		if hw.RAMTotal >= bf16RAM {
+			return contract.QuantBF16
+		}
+		return contract.QuantQ8_0
+	}
+	var free int64
+	for _, d := range p.Devices {
+		free = max(free, d.VRAMFree)
+	}
+	if free >= bf16FreeVRAM {
+		return contract.QuantBF16
+	}
+	return contract.QuantQ8_0
 }
 
 // candidateCombos lists the combinations of every candidate backend: BF16 or Q8_0 text by BF16 or Q8_0 encoders.
@@ -174,34 +385,13 @@ func (a *App) candidateCombos() []contract.Combo {
 	return out
 }
 
-// startLabRuns queues a test run for each candidate combination, once.
-func (a *App) startLabRuns() {
-	o := a.onb
-	if o.started {
-		return
-	}
-	o.started = true
-	o.combos = a.candidateCombos()
-	ctx := a.ctx
-	extra := o.extra
-	go func() {
-		for _, c := range o.combos {
-			if _, err := a.d.Lab.Run(ctx, c, extra); err != nil {
-				a.dispatch(func() { a.notice = err.Error() })
-			}
-		}
-	}()
-	for _, c := range o.combos {
-		o.chosen[c.ID()] = false
-	}
-}
-
-// labRow returns the latest lab step of combination c, when one exists.
+// labRow returns the latest lab step of combination c, when one exists: the run with the highest ID, since a
+// canceled run can arrive after the run that replaced it.
 func (a *App) labRow(c contract.Combo) (contract.LabStep, bool) {
 	var out contract.LabStep
 	found := false
 	for _, id := range a.labOrder {
-		if s := a.labSteps[id]; s.Combo.ID() == c.ID() {
+		if s := a.labSteps[id]; s.Combo.ID() == c.ID() && (!found || s.RunID > out.RunID) {
 			out, found = s, true
 		}
 	}
@@ -212,16 +402,18 @@ func (a *App) labRow(c contract.Combo) (contract.LabStep, bool) {
 func (a *App) stepLab(c *ui.Context) {
 	t := c.Theme()
 	o := a.onb
-	if len(o.probes) > 0 {
-		a.startLabRuns()
-	}
 	ui.Text(c, "Choose combinations to try").FontSize(t.Rem(1.15)).Bold()
-	ui.Text(c, "Each combination is tested on a short sample. Pick one to use; you can compare others later.").TextColor(t.TextMuted)
-	combos := o.combos
-	if len(combos) == 0 {
+	ui.Text(c, "Check a combination to test it on a short sample. Click a row to pick the one to use.").TextColor(t.TextMuted)
+	switch {
+	case o.detecting && o.hwDone:
+		ui.Text(c, "Checking the backends on this computer…").TextColor(t.TextMuted)
+	case len(o.combos) == 0:
 		ui.Text(c, "No backend is available, so there is nothing to test.").TextColor(t.TextMuted)
-	} else {
-		a.labTable(c, combos)
+	default:
+		a.labTable(c, o.combos)
+	}
+	if o.labErr != "" {
+		ui.Text(c, o.labErr).TextColor(t.Danger)
 	}
 	a.downloadsView(c)
 	ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
@@ -230,6 +422,7 @@ func (a *App) stepLab(c *ui.Context) {
 		}
 		ui.Spacer(c).Grow(1)
 		if ui.Button(c, "Back").Clicked() {
+			a.leaveLab()
 			if o.fromModels {
 				a.onb = nil
 				return
@@ -242,11 +435,7 @@ func (a *App) stepLab(c *ui.Context) {
 			label = "Use ★ " + comboLabel(*chosen)
 		}
 		if ui.PrimaryButton(c, label).Disabled(chosen == nil).Clicked() {
-			a.useCombo(*chosen)
-			o.step = 3
-			if o.fromModels {
-				a.onb = nil
-			}
+			a.useLab(*chosen)
 		}
 		if chosen == nil {
 			ui.Text(c, "Choose a combination to continue.").TextColor(t.TextMuted).SingleLine()
@@ -281,7 +470,7 @@ func (a *App) labTable(c *ui.Context, combos []contract.Combo) {
 				}
 				failed := has && step.State == contract.LabFailed
 				if ui.Checkbox(c, &chk, label).Disabled(failed).Changed() {
-					o.chosen[id] = chk
+					a.setTest(cb, chk)
 				}
 			})
 		case 1:
@@ -348,19 +537,18 @@ func (a *App) newBytes(cb contract.Combo) string {
 	return size(n)
 }
 
-// chosenCombo returns the combination the Use button names: the one picked in the matrix, else the first checked.
+// chosenCombo returns the row the user selected, unless its test failed. Nothing is selected at first, so
+// Use is off until the user clicks a row.
 func (a *App) chosenCombo() *contract.Combo {
 	o := a.onb
-	for _, cb := range o.combos {
-		if o.chosen[cb.ID()] {
-			if step, ok := a.labRow(cb); ok && step.State == contract.LabFailed {
-				continue
-			}
-			c := cb
-			return &c
-		}
+	if o.sel < 0 || o.sel >= len(o.combos) {
+		return nil
 	}
-	return nil
+	cb := o.combos[o.sel]
+	if step, ok := a.labRow(cb); ok && step.State == contract.LabFailed {
+		return nil
+	}
+	return &cb
 }
 
 // downloadsView lists the downloads of the checked combinations, with Pause and Resume per file.
@@ -471,9 +659,7 @@ func (a *App) extraDialog(c *ui.Context) {
 				if ui.PrimaryButton(c, "Use these files").Clicked() {
 					o.extra = pathLines(o.extraText, 10)
 					o.extraOpen = false
-					o.started = false
-					o.combos = nil
-					a.startLabRuns()
+					a.restartTests()
 				}
 			})
 		})
@@ -491,19 +677,131 @@ func pathLines(text string, n int) []string {
 	return out
 }
 
-// useCombo selects the backend and downloads the files of the combination.
-func (a *App) useCombo(cb contract.Combo) {
+// setTest checks or unchecks cb for testing. Checking queues its test run, and downloads its files. Unchecking
+// cancels the run when it has not finished. A canceled run leaves the lab's queue, so the indexer resumes once
+// the queue is empty (SPEC section 8). Opening the lab queues nothing.
+func (a *App) setTest(cb contract.Combo, on bool) {
+	o := a.onb
+	id := cb.ID()
+	o.chosen[id] = on
+	if !on {
+		if cancel, ok := o.tests[id]; ok {
+			cancel()
+			delete(o.tests, id)
+		}
+		return
+	}
+	if _, running := o.tests[id]; running {
+		return
+	}
+	if step, ok := a.labRow(cb); ok && step.State == contract.LabDone {
+		return
+	}
+	ctx, cancel := context.WithCancel(a.ctx)
+	o.tests[id] = cancel
+	a.ensureFiles(cb)
+	extra := o.extra
+	lab := a.d.Lab
+	go func() {
+		if _, err := lab.Run(ctx, cb, extra); err != nil {
+			a.dispatch(func() {
+				if a.onb == o {
+					o.labErr = err.Error()
+				}
+			})
+		}
+	}()
+}
+
+// restartTests cancels the open runs and queues the unfinished tests of the checked combinations again, so they
+// use the files the user just chose. Finished tests keep their results.
+func (a *App) restartTests() {
+	o := a.onb
+	for id, cancel := range o.tests {
+		cancel()
+		delete(o.tests, id)
+	}
+	for _, cb := range o.combos {
+		if o.chosen[cb.ID()] {
+			a.setTest(cb, true)
+		}
+	}
+}
+
+// leaveLab cancels the test runs that are still open, and unchecks the combinations whose tests did not finish.
+// Opening the lab never reaches this, so a lab that is only looked at queues nothing.
+func (a *App) leaveLab() {
+	o := a.onb
+	if o == nil {
+		return
+	}
+	for _, cb := range o.combos {
+		id := cb.ID()
+		cancel, ok := o.tests[id]
+		if !ok {
+			continue
+		}
+		cancel()
+		delete(o.tests, id)
+		if step, ok := a.labRow(cb); !ok || step.State != contract.LabDone {
+			o.chosen[id] = false
+		}
+	}
+}
+
+// useLab picks cb from the test lab. The lab's open runs end, and the files of cb are queued. First run goes on
+// to step 3, which builds the index once the files are verified. From Models, applyPick makes cb active then.
+func (a *App) useLab(cb contract.Combo) {
+	a.leaveLab()
+	a.pickCombo(cb)
+	if a.onb.fromModels {
+		a.onb = nil
+	} else {
+		a.onb.step = 3
+	}
+}
+
+// pickCombo records cb as the combination to use, and queues its files. On first run it is saved as the choice
+// (the "onboard_combo" setting), so the step can be restored. The switch to cb happens once its files are
+// verified: the first run builds the index in finishOnboarding, and Models asks through makeActive.
+func (a *App) pickCombo(cb contract.Combo) {
+	if a.onb != nil && !a.onb.fromModels {
+		a.setting("onboard_combo", cb.ID())
+	}
+	a.picked = &cb
+	a.ensureFiles(cb)
+}
+
+// ensureFiles queues the files of cb that are not verified yet. Asking again changes nothing (SPEC section 7).
+func (a *App) ensureFiles(cb contract.Combo) {
 	assets, err := a.d.Catalog.Assets(a.d.OS, cb)
 	if err != nil {
 		a.notice = err.Error()
 		return
 	}
-	a.run(func(ctx context.Context) error {
-		if err := a.d.Downloader.Ensure(ctx, assets); err != nil {
-			return err
-		}
-		return a.d.Runtime.Use(ctx, cb.Backend)
-	})
+	a.run(func(ctx context.Context) error { return a.d.Downloader.Ensure(ctx, assets) })
+}
+
+// applyPick makes the picked combination active once its files are verified, as Models' Use does: a precision
+// change asks first. It runs each frame, and does nothing during onboarding.
+func (a *App) applyPick() {
+	if a.onb != nil || a.picked == nil || !a.comboReady(*a.picked) {
+		return
+	}
+	cb := *a.picked
+	a.picked = nil
+	a.makeActive(cb)
+}
+
+// inActiveSpace reports whether the active generation has the precisions of cb.
+func (a *App) inActiveSpace(cb contract.Combo) bool {
+	g := a.activeGen()
+	return g != nil && g.Space.TextQuant == cb.TextQuant && g.Space.EncQuant == cb.EncQuant
+}
+
+// pickReady reports whether a picked combination has all its files verified, so indexing can start.
+func (a *App) pickReady() bool {
+	return a.picked != nil && a.comboReady(*a.picked)
 }
 
 // stepFolders is onboarding step 3: the folders to index, then Start indexing (UI guide section 3.3).
@@ -556,7 +854,10 @@ func (a *App) stepFolders(c *ui.Context) {
 		if ui.Button(c, "Back").Clicked() {
 			o.step = 2
 		}
-		if ui.PrimaryButton(c, "Start indexing").Disabled(len(a.data.folders) == 0).Clicked() {
+		if a.picked != nil && !a.pickReady() {
+			ui.Text(c, "Waiting for the files of "+comboLabel(*a.picked)+" to download.").TextColor(t.TextMuted).SingleLine()
+		}
+		if ui.PrimaryButton(c, "Start indexing").Disabled(len(a.data.folders) == 0 || !a.pickReady()).Clicked() {
 			a.finishOnboarding()
 		}
 	})
@@ -590,13 +891,27 @@ func (a *App) skippedLine(c *ui.Context) {
 	}
 }
 
-// finishOnboarding marks the first run done, scans the folders and returns to the Search page.
+// finishOnboarding marks the first run done. The chosen combination becomes the index: when the active
+// generation has other precisions (or there is none), a rebuild creates the generation for it, and the runtime
+// switches to its backend. Then the folders are scanned, and the Search page opens.
 func (a *App) finishOnboarding() {
 	folders := a.data.folders
-	a.onb = nil
+	picked := a.picked
+	rebuild := picked != nil && !a.inActiveSpace(*picked)
+	a.onb, a.picked = nil, nil
 	a.search.ranKey = ""
 	a.setting("onboarded", "1")
 	a.run(func(ctx context.Context) error {
+		if picked != nil {
+			if rebuild {
+				if _, err := a.d.Indexer.Rebuild(ctx, picked.TextQuant, picked.EncQuant); err != nil {
+					return err
+				}
+			}
+			if err := a.d.Runtime.Use(ctx, picked.Backend); err != nil {
+				return err
+			}
+		}
 		for _, fv := range folders {
 			if err := a.d.Indexer.Rescan(ctx, fv.folder.ID); err != nil {
 				return err

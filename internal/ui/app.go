@@ -86,6 +86,7 @@ type App struct {
 	models   modelsState
 	settings settingsState
 	onb      *onboarding
+	picked   *contract.Combo // the combination the user chose, waiting for its files (onboarding.go)
 	theme    themeState
 	notice   string // the last failed command, shown on the page it came from
 }
@@ -133,7 +134,10 @@ func (a *App) Start(ctx context.Context, dispatch func(func())) {
 		a.rebuild = &p
 	})
 	pump(ctx, dispatch, a.d.Runtime.Subscribe(ctx), func(s contract.RuntimeStatus) { a.runtime = s })
-	pump(ctx, dispatch, a.d.Downloader.Subscribe(ctx), func(p contract.DownloadProgress) { a.downloads[p.Key] = p })
+	pump(ctx, dispatch, a.d.Downloader.Subscribe(ctx), func(p contract.DownloadProgress) {
+		a.downloads[p.Key] = p
+		a.probeWhenReady()
+	})
 	pump(ctx, dispatch, a.d.Lab.Subscribe(ctx), func(s contract.LabStep) {
 		if _, seen := a.labSteps[s.RunID]; !seen {
 			a.labOrder = append(a.labOrder, s.RunID)
@@ -193,6 +197,7 @@ func (a *App) View(c *ui.Context) {
 		a.loading(c)
 		return
 	}
+	a.applyPick()
 	if a.onb == nil && !a.data.onboarded() && a.page != pageSettings {
 		a.startOnboarding()
 	}

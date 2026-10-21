@@ -130,15 +130,29 @@ func (a *App) comboActions(c *ui.Context, in contract.Installed) {
 	})
 }
 
-// makeActive switches the backend at once; a change of precisions asks first, then rebuilds the index.
+// makeActive switches the backend at once. A change of precisions asks first, then rebuilds the index. With no
+// index yet there is nothing to keep, so the first index is built at once.
 func (a *App) makeActive(combo contract.Combo) {
-	g := a.activeGen()
-	if g != nil && (g.Space.TextQuant != combo.TextQuant || g.Space.EncQuant != combo.EncQuant) {
+	switch g := a.activeGen(); {
+	case g == nil:
+		a.rebuildTo(combo)
+	case !a.inActiveSpace(combo):
 		cb := combo
 		a.models.switchTo, a.models.switchOpen = &cb, true
-		return
+	default:
+		a.run(func(ctx context.Context) error { return a.d.Runtime.Use(ctx, combo.Backend) })
 	}
-	a.run(func(ctx context.Context) error { return a.d.Runtime.Use(ctx, combo.Backend) })
+}
+
+// rebuildTo builds the index for the precisions of combo in a new generation, which activates when complete,
+// and switches the runtime to its backend. The active generation keeps serving until then.
+func (a *App) rebuildTo(combo contract.Combo) {
+	a.run(func(ctx context.Context) error {
+		if _, err := a.d.Indexer.Rebuild(ctx, combo.TextQuant, combo.EncQuant); err != nil {
+			return err
+		}
+		return a.d.Runtime.Use(ctx, combo.Backend)
+	})
 }
 
 // switchDialog asks before a precision change rebuilds the index in the background (UI guide section 3.7).
@@ -155,12 +169,7 @@ func (a *App) switchDialog(c *ui.Context) {
 	}
 	if i == 1 {
 		m.switchTo = nil
-		a.run(func(ctx context.Context) error {
-			if _, err := a.d.Indexer.Rebuild(ctx, combo.TextQuant, combo.EncQuant); err != nil {
-				return err
-			}
-			return a.d.Runtime.Use(ctx, combo.Backend)
-		})
+		a.rebuildTo(combo)
 	}
 }
 

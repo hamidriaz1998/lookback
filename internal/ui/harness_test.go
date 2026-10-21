@@ -48,6 +48,13 @@ func newHarness(t *testing.T, setup func(*fake.Store) contract.Store) *harness {
 // when dark is set.
 func newHarnessWith(t *testing.T, setup func(*fake.Store) contract.Store, themes func(context.Context) []contract.ThemeSource, dark bool) *harness {
 	t.Helper()
+	return newHarnessTweak(t, setup, themes, dark, nil)
+}
+
+// newHarnessTweak is newHarnessWith with tweak applied to the services before the App is built, so a test can
+// replace one of them with a double.
+func newHarnessTweak(t *testing.T, setup func(*fake.Store) contract.Store, themes func(context.Context) []contract.ThemeSource, dark bool, tweak func(*Deps)) *harness {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	base := fake.NewStore()
@@ -74,7 +81,7 @@ func newHarnessWith(t *testing.T, setup func(*fake.Store) contract.Store, themes
 		t.Fatal(err)
 	}
 	h := &harness{t: t, queue: make(chan func(), 256), store: store}
-	h.app = New(Deps{
+	deps := Deps{
 		Store:      store,
 		Indexer:    ix,
 		Runtime:    rt,
@@ -86,7 +93,11 @@ func newHarnessWith(t *testing.T, setup func(*fake.Store) contract.Store, themes
 		Media:      solidMedia{},
 		DataDir:    t.TempDir(),
 		OS:         "linux",
-	})
+	}
+	if tweak != nil {
+		tweak(&deps)
+	}
+	h.app = New(deps)
 	h.app.Start(ctx, func(f func()) { h.queue <- f })
 	h.tt = ui.NewTester(h.app.View, 1280, 800)
 	if dark {
