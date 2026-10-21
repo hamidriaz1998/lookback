@@ -3,14 +3,45 @@ package ui
 import (
 	"context"
 	"image"
-	"runtime"
 	"sync"
 
 	"github.com/egoist/mygo/ui"
 )
 
-// thumbCacheMax is how many bitmaps the view keeps. The least recently drawn go first.
-const thumbCacheMax = 400
+// The bitmaps the view keeps, by bytes. Grid tiles and previews have separate budgets, so a run of previews
+// cannot push the visible tiles out. The least recently drawn entries go first.
+const (
+	tileBudget    = 64 << 20 // bytes of grid tile bitmaps
+	previewBudget = 96 << 20 // bytes of preview bitmaps
+	entryOverhead = 1 << 10  // charged for an entry without a bitmap, such as a failed decode
+	// decodeWorkers bounds the decodes at once. Each full-size decode holds its pixels in memory, so more
+	// workers multiply the peak.
+	decodeWorkers = 2
+)
+
+// cacheClass names the budget an entry is charged to.
+type cacheClass bool
+
+const (
+	classPreview cacheClass = false
+	classTile    cacheClass = true
+)
+
+// classOf returns the budget of a key: tiles decode at tileEdgeMax or less.
+func classOf(key thumbKey) cacheClass {
+	if key.edge <= tileEdgeMax {
+		return classTile
+	}
+	return classPreview
+}
+
+// budgetOf returns the byte budget of a class.
+func budgetOf(c cacheClass) int64 {
+	if c == classTile {
+		return tileBudget
+	}
+	return previewBudget
+}
 
 // thumbKey identifies one decoded picture: a file at one size.
 type thumbKey struct {
@@ -21,9 +52,11 @@ type thumbKey struct {
 // thumbEntry is a decoded picture, ready to draw. A file the media cannot decode keeps err, so the view
 // does not ask for it again.
 type thumbEntry struct {
-	bm   *ui.Bitmap
-	err  error
-	used uint64
+	bm    *ui.Bitmap
+	err   error
+	used  uint64
+	class cacheClass
+	bytes int64
 }
 
 // thumbs decodes pictures on a worker pool and keeps the bitmaps for the view. The view calls get on the
@@ -41,6 +74,7 @@ type thumbs struct {
 	dispatch func(func())
 	cache    map[thumbKey]*thumbEntry
 	pending  map[thumbKey]bool
+	bytes    map[cacheClass]int64 // bytes charged to each class
 	tick     uint64
 }
 
@@ -49,6 +83,7 @@ func newThumbs(media Media) *thumbs {
 		media:   media,
 		cache:   map[thumbKey]*thumbEntry{},
 		pending: map[thumbKey]bool{},
+		bytes:   map[cacheClass]int64{},
 	}
 	t.cond = sync.NewCond(&t.mu)
 	return t
@@ -63,7 +98,7 @@ func (t *thumbs) start(ctx context.Context, dispatch func(func())) {
 		t.mu.Unlock()
 		t.cond.Broadcast()
 	})
-	for i := 0; i < max(2, runtime.NumCPU()/2); i++ {
+	for i := 0; i < decodeWorkers; i++ {
 		go t.worker(ctx)
 	}
 }
@@ -110,22 +145,29 @@ func (t *thumbs) worker(ctx context.Context) {
 }
 
 // finish runs on the main thread. It makes the bitmap, stores it, and drops the least recently used
-// entries past the cap.
+// entries of its class past the class budget.
 func (t *thumbs) finish(key thumbKey, img image.Image, err error) {
 	delete(t.pending, key)
-	e := &thumbEntry{used: t.tick, err: err}
+	e := &thumbEntry{used: t.tick, err: err, class: classOf(key), bytes: entryOverhead}
 	if err == nil {
 		e.bm = ui.NewBitmap(img)
+		b := img.Bounds()
+		e.bytes = int64(b.Dx()) * int64(b.Dy()) * 4
+	}
+	if old, ok := t.cache[key]; ok {
+		t.bytes[old.class] -= old.bytes
 	}
 	t.cache[key] = e
-	for len(t.cache) > thumbCacheMax {
+	t.bytes[e.class] += e.bytes
+	for t.bytes[e.class] > budgetOf(e.class) {
 		var oldest thumbKey
 		oldestUse := ^uint64(0)
 		for k, v := range t.cache {
-			if v.used < oldestUse {
+			if v.class == e.class && v.used < oldestUse {
 				oldest, oldestUse = k, v.used
 			}
 		}
+		t.bytes[e.class] -= t.cache[oldest].bytes
 		delete(t.cache, oldest)
 	}
 }
