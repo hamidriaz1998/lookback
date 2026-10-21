@@ -257,7 +257,7 @@ func (a *App) resultsArea(c *ui.Context) {
 	if s.selected < 0 {
 		s.selected = 0 // the first result is the preview until the user moves
 	}
-	ui.Row(c).Grow(1).Fill().Children(func() {
+	ui.Row(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
 		body := func() { a.grid(c, items) }
 		wide, _ := c.Size()
 		bodyW := wide - a.sidebarWidth()

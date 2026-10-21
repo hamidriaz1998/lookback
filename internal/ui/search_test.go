@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
@@ -55,4 +56,37 @@ func TestSearchErrorShowsRetry(t *testing.T) {
 	h.wait("error", func() bool { return h.app.search.err != "" })
 	h.wantText("Search failed")
 	h.wantText("Retry")
+}
+
+// TestSearchGridStaysBelowHeader checks the layout of the results: the grid, the preview and the header
+// (query field, filter row, result count) never overlap. A grid that draws over the header fails here.
+func TestSearchGridStaysBelowHeader(t *testing.T) {
+	h := newHarness(t, nil)
+	h.tt.SetSize(1896, 1025)
+	h.wait("snapshot", func() bool { return h.app.data.ready })
+	h.app.search.query = "hotspot error dialog"
+	h.app.search.submit = true
+	h.wait("results", func() bool { return len(h.app.search.hits) > 0 && !h.app.search.searching })
+	h.pump(0)
+
+	field, ok := h.tt.Find("Search your files")
+	if !ok {
+		t.Fatal("the search field is not on screen")
+	}
+	filter, ok := h.tt.Find("Documents")
+	if !ok {
+		t.Fatal("the filter row is not on screen")
+	}
+	headerBottom := max(field.Y+field.H, filter.Y+filter.H)
+	name := filepath.Base(h.app.search.hits[0].Path)
+	tile, ok := h.tt.Find(name)
+	if !ok {
+		t.Fatalf("the first result %q is not on screen", name)
+	}
+	if tile.Y < headerBottom {
+		t.Errorf("the grid draws at y=%.0f, above the header that ends at y=%.0f", tile.Y, headerBottom)
+	}
+	if tile.Y+tile.H > 1025 {
+		t.Errorf("the first result row ends below the window: y=%.0f h=%.0f", tile.Y, tile.H)
+	}
 }
