@@ -25,7 +25,12 @@ same change.
 
 ### v1 scope
 
-- Platforms: Linux x64 and Windows x64 (Q1).
+- Platform: **Linux x64** (Q1, revised 2026-10-21). Windows x64 follows in the
+  [Windows phase](#windows-phase), after the Linux build is tested on the reference machine.
+- Portability rule for v1: OS-specific code lives only in `_linux.go` files. Each has a `_windows.go`
+  twin that is a minimal stub returning `errors.ErrUnsupported`, so the tree compiles. No half-written
+  Windows logic. `GOOS=windows CGO_ENABLED=0 go build ./...` stays a CI gate, to keep Linux-only
+  assumptions out of shared code. Windows details below are marked "Windows phase" and are not v1 work.
 - Content: images and text documents (Q4, Q14). See [section 9](#9-extraction-and-chunking).
 
 ### Non-goals for v1
@@ -96,7 +101,7 @@ Rules:
 
 ### Data locations
 
-| | Linux | Windows |
+| | Linux | Windows (Windows phase) |
 |---|---|---|
 | Data root | `$XDG_DATA_HOME/lookback` (default `~/.local/share/lookback`) | `%LOCALAPPDATA%\Lookback` |
 | Contents | `lookback.db`, `runtimes/<tag>-<backend>/`, `models/<revision>/`, `thumbs/`, `logs/`, `downloads/` | same |
@@ -132,10 +137,10 @@ needs `b11452` or later. Assets from `https://github.com/ggml-org/llama.cpp/rele
 | Linux | Vulkan | `llama-b11755-bin-ubuntu-vulkan-x64.tar.gz` | 34 MB |
 | Linux | CUDA 12.8 | `llama-b11755-bin-ubuntu-cuda-12.8-x64.tar.gz` + `cudart-llama-b11755-bin-ubuntu-cuda-12.8-x64.tar.gz` | 177 + 594 MB |
 | Linux | CUDA 13.4 | `llama-b11755-bin-ubuntu-cuda-13.4-x64.tar.gz` + `cudart-llama-b11755-bin-ubuntu-cuda-13.4-x64.tar.gz` | 158 + 440 MB |
-| Windows | CPU | `llama-b11755-bin-win-cpu-x64.zip` | 23 MB |
-| Windows | Vulkan | `llama-b11755-bin-win-vulkan-x64.zip` | 36 MB |
-| Windows | CUDA 12.4 | `llama-b11755-bin-win-cuda-12.4-x64.zip` + `cudart-llama-bin-win-cuda-12.4-x64.zip` | 271 + 391 MB |
-| Windows | CUDA 13.4 | `llama-b11755-bin-win-cuda-13.4-x64.zip` + `cudart-llama-bin-win-cuda-13.4-x64.zip` | 159 + 423 MB |
+| Windows (Windows phase) | CPU | `llama-b11755-bin-win-cpu-x64.zip` | 23 MB |
+| Windows (Windows phase) | Vulkan | `llama-b11755-bin-win-vulkan-x64.zip` | 36 MB |
+| Windows (Windows phase) | CUDA 12.4 | `llama-b11755-bin-win-cuda-12.4-x64.zip` + `cudart-llama-bin-win-cuda-12.4-x64.zip` | 271 + 391 MB |
+| Windows (Windows phase) | CUDA 13.4 | `llama-b11755-bin-win-cuda-13.4-x64.zip` + `cudart-llama-bin-win-cuda-13.4-x64.zip` | 159 + 423 MB |
 
 The Windows `cudart` asset names have no tag. Record the SHA-256 of every asset in the manifest when
 pinning (compute it from the downloaded release asset). ROCm is not offered: Vulkan covers AMD with a
@@ -148,7 +153,7 @@ llama.cpp picks at run time.
 
 `internal/hw` produces a `Hardware` value: CPU model and thread count, total RAM, and a list of GPUs.
 
-| What | Linux | Windows |
+| What | Linux | Windows (Windows phase) |
 |---|---|---|
 | CPU | `/proc/cpuinfo` | `GetLogicalProcessorInformationEx`, registry `ProcessorNameString` |
 | RAM | `/proc/meminfo` `MemTotal`, `MemAvailable` | `GlobalMemoryStatusEx` |
@@ -269,7 +274,8 @@ llama-server -m <text.gguf> --mmproj <mmproj.gguf> --embeddings --pooling mean
   because only the precision defines the vector space.
 - Stop the process when the app quits, including on a crash path. On Linux, start it in its own process
   group and set `Pdeathsig` (SIGKILL), so it dies with the app even after `kill -9`; keep the forking thread
-  alive with `runtime.LockOSThread`, because `Pdeathsig` follows that thread. On Windows, a job object.
+  alive with `runtime.LockOSThread`, because `Pdeathsig` follows that thread. Windows phase: a job object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
 
 ### Embedder API
 
@@ -472,7 +478,7 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 - Startup rescan: walk each folder and compare size and mtime with `files`; queue the differences.
 - Global hotkey (Q30): Super+Shift+Space by default, configurable, through MyGo's global shortcuts.
 - Single instance: `lookback --toggle` shows or hides the running window and exits. Use MyGo's
-  single-instance support if it has one; otherwise a Unix socket (Linux) or named pipe (Windows) in the
+  single-instance support if it has one; otherwise a Unix socket in the
   data folder. On Hyprland, where global shortcuts may not reach apps, the user binds:
   `bind = SUPER SHIFT, SPACE, exec, lookback --toggle`.
 
@@ -579,7 +585,7 @@ change only the parent folder, so:
 
 ## 17. Packaging and updates
 
-- Linux: a `.deb` and a Linux install script (MyGo distribution). Windows: an installer.
+- Linux: a `.deb` and a Linux install script (MyGo distribution). Windows phase: an installer.
 - App updates: MyGo's signed auto-updates (Q20).
 - Each app release pins one llama.cpp tag and one model revision with checksums. When an update
   changes a pin, the new files download in the background. The index is rebuilt only if the model
@@ -611,12 +617,13 @@ Budgets:
 
 | Milestone | Content |
 |---|---|
-| M0 | Module, shared types, interfaces and fakes; 3 spikes (tursogo vectors in Go, MyGo image grid, sidecar on Linux and Windows) |
+| M0 | Module, shared types, interfaces and fakes; 3 spikes (tursogo vectors in Go, MyGo image grid, sidecar on Linux) |
 | M1 | Catalog, downloads, hardware detection, runtime, test lab, onboarding |
 | M2 | Image and text indexing, search UI, themes |
 | M3 | PDF and Office |
 | M4 | Tray, watcher, startup rescan, battery and suspend, hotkey, `--toggle` |
-| M5 | Packaging and auto-update |
+| M5 | Linux packaging and auto-update |
+| W | Windows phase (after the Linux build is tested): see below |
 
 PLAN.md maps these milestones to work packages.
 
@@ -638,23 +645,38 @@ PLAN.md maps these milestones to work packages.
 11. Switching precision builds a new index while search keeps working on the old one.
 12. Every screen passes the UI_GUIDE.md definition of done.
 
+## Windows phase
+
+Starts after the Linux build is tested on the reference machine, on a Windows boot of the same
+laptop. It replaces the `_windows.go` stubs; nothing in the shared code should need to change. Scope:
+
+- Catalog: the Windows rows of section 4, with SHA-256 pins (the `cudart` asset names have no tag).
+- Hardware detection: the Windows column of section 5 (DXGI, `GlobalMemoryStatusEx`).
+- Sidecar: job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the spike 3 run on Windows with Q8_0.
+- Test lab: peak memory from `PeakWorkingSetSize`.
+- Exclusions: the hidden file attribute.
+- Single instance: a named pipe in the data folder.
+- Data root: `%LOCALAPPDATA%\Lookback`.
+- Packaging: a Windows installer; check SmartScreen and antivirus against tursogo's extracted DLL.
+- CI: add `windows-latest` to the test matrix.
+
 ## 21. Risks
 
 | Risk | Mitigation |
 |---|---|
 | ~~tursogo vector functions unverified~~ **Resolved 2026-10-21:** spike 1 passed in Go (results match brute force; 226 ms at 100k) | `spikes/tursogo` stays as a regression test |
-| tursogo's extracted native DLL may be blocked by SmartScreen or antivirus on Windows | Run on real Windows in M0 spike 3 / WP10; the cache folder is set to the app's data folder |
+| (Windows phase) tursogo's extracted native DLL may be blocked by SmartScreen or antivirus | Check on real Windows in the Windows phase; the cache folder is set to the app's data folder |
 | MyGo is pre-1.0; APIs may change | Pin its version in `go.mod`; spike 2 checks the image grid early |
 | CUDA runtime downloads are large (400–600 MB) | Show sizes before download; CUDA is offered only when an NVIDIA GPU is found |
 | go-pdfium in WASM may be slow on large PDFs | Measure in WP4; process pages lazily, one at a time |
-| Vulkan driver differences on Windows | The self-test and the CPU fallback catch broken paths |
+| (Windows phase) Vulkan driver differences on Windows | The self-test and the CPU fallback catch broken paths |
 | Large images cost many tokens (24 s on the CPU) | The 1600 px cap, measured in WP4 |
 
 ## Appendix: decision log
 
 | ID | Topic | Decision |
 |---|---|---|
-| Q1 | Platforms | Linux + Windows x64; macOS later |
+| Q1 | Platforms | Linux x64 for v1 (revised 2026-10-21); Windows x64 in the Windows phase; macOS later |
 | Q2 | Runtime | llama-server sidecar, official llama.cpp build per backend |
 | Q3 | UI | MyGo native UI with built-in components only; Lucide SVG icons |
 | Q4 | Text scope | Plain text, code, PDF and Office |
@@ -673,7 +695,7 @@ PLAN.md maps these milestones to work packages.
 | Q17 | Vectors | 768-d float32 |
 | Q18 | Ranking | Cosine + filename boost |
 | Q19 | Results | One mixed list + type chips; Open, Show in folder, Find similar, Copy path |
-| Q20 | Updates | Pins per release; MyGo signed auto-update; .deb, install script, Windows installer |
+| Q20 | Updates | Pins per release; MyGo signed auto-update; .deb and install script (Windows installer in the Windows phase) |
 | Q21 | Name | Lookback |
 | Q22 | First run | 3-step onboarding; search works during indexing |
 | Q23 | Failure | Restart once, then CPU fallback with a notice |

@@ -23,15 +23,21 @@ implementations into the UI. WP10 ships it.
 ## Rules for every agent
 
 1. **Stay inside your owned paths.** If you need a change elsewhere, open an issue or ask the M0 owner.
-2. **Interfaces are frozen after M0.** Change one only through a small PR to `internal/contract`,
-   approved by the M0 owner, which updates the fakes in the same PR.
-3. **Tests:** `go vet ./...` and `go test ./...` pass before every PR. Each package ships at least one
+2. **Interfaces are frozen after M0.** Change one only through a small commit to `internal/contract`,
+   approved by the M0 owner, which updates the fakes in the same commit.
+3. **Tests:** `go vet ./...` and `go test ./...` pass before every push. Each package ships at least one
    test that fails if its main logic breaks. No test framework beyond the stdlib `testing` package.
 4. **Dependencies** only through `go get`. Never vendor or symlink by hand.
 5. **No placeholders** in merged code: no TODO stubs on the main path, no fake numbers in the UI.
-6. **Pull requests:** use the `pr-body` skill for the title and body. UI PRs attach screenshots (at
-   least one dark and one light theme), as the repository's PR rules describe; never commit them.
-7. **Keep SPEC.md true.** If you find the spec wrong, fix the spec in the same PR and say so in the PR body.
+6. **Commits and pushes:** work on your own branch in your own worktree. Make a series of small,
+   focused commits with clear messages, and push after each (`git push -u origin <branch>` the first
+   time). Never push to `main` and never force-push. The orchestrator merges after an adversarial
+   review. UI work saves screenshots (at least one dark and one light theme) to
+   `/home/hamid/Desktop/AI/lookback/.review/screens/<branch>/`; never commit them.
+7. **Keep SPEC.md true.** If you find the spec wrong, fix the spec in the same commit and say so in its message.
+8. **Linux only for v1.** OS-specific code goes in `_linux.go` files; each gets a `_windows.go` twin that is
+   a minimal stub returning `errors.ErrUnsupported`. Don't write Windows logic now (see SPEC.md "Windows
+   phase"). `GOOS=windows CGO_ENABLED=0 go build ./...` must still pass.
 
 ## Repository
 
@@ -160,12 +166,12 @@ type ThemeSource interface {
    `Window.Update`). **Status:** decode passed; frame rate open, owned by WP6 (measure with MyGo
    Inspector). Recorded in `docs/spikes.md`.
 6. **Spike 3, sidecar (blocks WP2):** start `llama-server` from the CPU build with the Q8_0 model,
-   wait for `/health`, embed one text and one image, and stop it. Run it on Linux, and on Windows
-   through GitHub Actions. **Status:** Linux BF16 passed; Windows and Q8_0 open, owned by WP2. Recorded
+   wait for `/health`, embed one text and one image, and stop it. Run it on Linux. **Status:** Linux BF16 passed; Q8_0 open, owned by WP2; the Windows run moved to
+   the Windows phase. Recorded
    in `docs/spikes.md`.
 7. A CI workflow: vet, test, and the "no hex colors outside `internal/theme`" grep from UI_GUIDE §5.
 
-**Done when:** the module builds on Linux and Windows; `go test ./...` passes; the three spike
+**Done when:** the module builds on Linux and cross-builds for Windows; `go test ./...` passes; the three spike
 reports are in `docs/spikes.md`. Spikes 2 and 3 have open gates, recorded there and owned by WP6 and
 WP2, so M0 closes with them open.
 
@@ -202,17 +208,17 @@ them start after M0 merges.
 - **Provides:** `contract.Detector` (`Detect`, `Probe` per backend); `contract.Lab` (`Run(combo, extra)`,
   `Progress`, `Recommend`); `contract.Runtime`, implemented by `runtime.Sidecar`, which embeds
   `contract.Embedder` and adds `Active`, `Status`, `Changes`, `Use`, `RetryGPU` and `Stop`.
-- **Tasks:** Linux and Windows detection; `--list-devices` parsing; the CUDA driver-version rule
+- **Tasks:** Linux detection; `--list-devices` parsing; the CUDA driver-version rule
   (verify and record the minimum driver versions); sidecar flags, free port, API key, health, logs,
-  process-group/job-object cleanup; the sample set (8 images, 16 chunks); BF16 reference vectors via
+  process-group cleanup; the sample set (8 images, 16 chunks); BF16 reference vectors via
   `tools/mkref`; peak RAM and VRAM measurement.
 - **Acceptance:** on the reference laptop, detection lists the Radeon iGPU through Vulkan; the bench
   ranks Vulkan above CPU; killing the server twice switches to the CPU and the embedder keeps working;
   parsing tests for `--list-devices` output. Startup wait uses one context with a 120 s deadline,
   canceled on child exit, with short per-attempt timeouts and a retry on port collision (review r1 #12;
   `cmd/spike-sidecar` does not yet do this).
-- **Also:** the Windows job object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and the Windows and Q8_0
-  sidecar runs that spike 3 leaves open.
+- **Also:** the Q8_0 sidecar run that spike 3 leaves open. The Windows job object belongs to the
+  Windows phase.
 
 ### WP3: store
 
@@ -236,7 +242,7 @@ them start after M0 merges.
 - **Tasks:** images (resize, re-encode, GIF first frame, header-only size read); text (encoding check,
   binary skip, HTML); PDF via go-pdfium WASM (text per page, render low-text pages); DOCX, PPTX, XLSX,
   ODT, ODP, ODS, RTF. Measure the 1600 px image cap against the sample (time and quality) and record
-  the numbers in the PR.
+  the numbers in the commit message.
 - **Acceptance:** fixture files for every type in `internal/extract/testdata` (self-made); tests check
   the unit count, page numbers and text; a scanned-page fixture comes back as an image unit; a chunking
   test checks the 512/64 windows and the byte offsets.
@@ -263,7 +269,7 @@ them start after M0 merges.
 - **Tasks:** build screen by screen against the fakes. Each screen meets the UI_GUIDE definition of
   done before the next one starts. Order: Search + preview, Activity, Onboarding 1–3, Folders, Models &
   Hardware, Settings.
-- **Acceptance:** the UI_GUIDE §11 checklist per screen, with MyGo UI tests and screenshots in the PR.
+- **Acceptance:** the UI_GUIDE §11 checklist per screen, with MyGo UI tests and screenshots saved as rule 6 describes.
   The 1,000-thumbnail grid holds 60 fps while scrolling, measured with MyGo Inspector on the reference
   laptop (review r1 #14; spike 2 stays open until this is recorded in `docs/spikes.md`).
 
@@ -273,7 +279,7 @@ them start after M0 merges.
 - **Uses:** SPEC §13, §16. MyGo tray, global shortcuts, `Power` and single-instance support.
 - **Provides:** the tray menu; the global hotkey; `lookback --toggle` over the single-instance channel;
   battery, suspend and resume events forwarded as pause reasons; close-to-tray.
-- **Acceptance:** `lookback --toggle` shows and hides a running instance on Linux and Windows; a test of
+- **Acceptance:** `lookback --toggle` shows and hides a running instance on Linux; a test of
   the pause-reason logic (user, battery and suspend combine correctly); the Hyprland bind works on the
   reference machine.
 
@@ -302,12 +308,18 @@ them start after M0 merges.
 ### WP10: packaging and updates
 
 - **Starts after:** WP9.
-- **Tasks:** MyGo distribution for the `.deb`, the Linux install script and the Windows installer;
+- **Tasks:** MyGo distribution for the `.deb` and the Linux install script;
   signed auto-updates; a release workflow that also runs `tools/mkref` and embeds the reference vectors.
 - **Acceptance:** install from each package on a clean machine (or VM) and complete onboarding.
+
+## Windows phase
+
+After the Linux build is tested, continue on a Windows boot of the same laptop: clone the repo,
+then replace the `_windows.go` stubs with the items in SPEC.md "Windows phase". Plan it then, with
+the same review loop.
 
 ## Suggested agent prompts
 
 Start each worker with: "You implement `<WP>` of Lookback. Read SPEC.md, UI_GUIDE.md and PLAN.md in
 `~/Desktop/AI/lookback`. Follow the rules in PLAN.md. Work only in your owned paths. Finish with the
-acceptance checks passing and a PR."
+acceptance checks passing and every commit pushed to your branch."

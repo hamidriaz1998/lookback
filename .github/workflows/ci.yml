@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest] # windows-latest returns in the Windows phase (SPEC.md)
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

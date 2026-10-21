@@ -71,9 +71,9 @@ Findings and limits:
 - MyGo's docs say to make bitmaps once and not inside the view. The spike follows that: the view only
   reads the `*ui.Bitmap` slice.
 
-## Spike 3: sidecar on Linux and Windows
+## Spike 3: sidecar on Linux (Windows run moved to the Windows phase)
 
-**Status: Linux BF16 passed; Windows and Q8_0 open, owned by WP2.** The Linux run used the BF16 pair,
+**Status: Linux BF16 passed; Q8_0 open, owned by WP2; Windows moved to the Windows phase (SPEC.md).** The Linux run used the BF16 pair,
 which is the only pair on disk. The Q8_0 run and the Windows run through Actions are not done. CI does not
 run the sidecar, so Spike 3 is not closed.
 
