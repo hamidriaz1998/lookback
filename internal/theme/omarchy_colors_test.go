@@ -70,6 +70,19 @@ func TestWarningFollowsMode(t *testing.T) {
 	}
 }
 
+func TestMissingModeUsesRelativeLuminanceForWarning(t *testing.T) {
+	kv := map[string]string{
+		"background": "#a0a0a0", "yellow": "#459451", "bright_yellow": "#E5C736",
+	}
+	got := omarchyTheme(ui.LightTheme(), kv)
+	if !got.Dark {
+		t.Fatal("#a0a0a0 has relative luminance below 0.5; want dark mode")
+	}
+	if got.Warning != mustHex("#E5C736") {
+		t.Errorf("Warning = %v, want bright_yellow", got.Warning)
+	}
+}
+
 // The first step of the guard on the reference machine: #53685B mixed 35% toward #C1C497 is
 // about #7a8870 (SPEC section 15).
 func TestMutedGuardFirstStepExample(t *testing.T) {

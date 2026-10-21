@@ -69,7 +69,7 @@ func omarchyTheme(base *ui.Theme, kv map[string]string) *ui.Theme {
 		return def
 	}
 	bg := col("background", base.Background)
-	dark := brightness(bg) < 0.5
+	dark := relativeLuminance(bg) < 0.5
 	if m, ok := kv["mode"]; ok {
 		dark = m == "dark"
 	}

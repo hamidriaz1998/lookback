@@ -54,9 +54,3 @@ func contrast(a, b ui.Color) float64 {
 	}
 	return (la + 0.05) / (lb + 0.05)
 }
-
-// brightness is the gray level of a color, from 0 (black) to 1 (white), as Rec. 709 luma of its
-// sRGB values.
-func brightness(c ui.Color) float64 {
-	return (0.2126*float64(c.R) + 0.7152*float64(c.G) + 0.0722*float64(c.B)) / 255
-}
