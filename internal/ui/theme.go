@@ -11,7 +11,7 @@ import (
 // (an Omarchy theme switched live, UI guide section 8).
 type themeState struct {
 	sources []contract.ThemeSource
-	base    *ui.Theme // the desktop's default theme, copied on the first frame
+	base    *ui.Theme // the desktop's default theme as of the last frame
 	applied string    // the setting the current theme was built from; "" is the desktop's default
 	cur     *ui.Theme // the theme of the applied setting
 	dirty   bool
@@ -38,13 +38,15 @@ func (ts *themeState) start(ctx context.Context, dispatch func(func()), sources 
 	}
 }
 
-// apply sets the theme that id names for this frame. SetTheme covers one frame only, so it runs on every
-// frame; the theme is rebuilt only when the choice or a source changed.
+// apply sets the theme that id names for this frame. SetTheme covers one frame only, so the desktop's default
+// is read on every frame. The theme is rebuilt when the choice, a source or the desktop's light or dark
+// appearance changed.
 func (ts *themeState) apply(c *ui.Context, id string) {
-	if ts.base == nil {
-		t := *c.Theme()
-		ts.base = &t
+	base := *c.Theme()
+	if ts.base == nil || base.Dark != ts.base.Dark {
+		ts.dirty = true
 	}
+	ts.base = &base
 	if ts.cur == nil || id != ts.applied || ts.dirty {
 		ts.applied, ts.dirty = id, false
 		ts.cur = ts.build(id)
