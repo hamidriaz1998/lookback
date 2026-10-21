@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
+	"github.com/hamidriaz1998/lookback/internal/fake"
+	lrt "github.com/hamidriaz1998/lookback/internal/runtime"
 )
 
 // TestOpenServicesWiresRealDeps builds the real services on an empty data folder. Nothing is downloaded and no
@@ -54,5 +57,45 @@ func TestOpenServicesWiresRealDeps(t *testing.T) {
 	}
 	if fs, _ := d.Store.ListFolders(ctx); len(fs) != 0 {
 		t.Fatalf("folders after delete = %v, want none", fs)
+	}
+}
+
+// TestFirstRunStartsWithChosenSpace checks that a clean first run does not start the indexer until the chosen
+// combination is saved and installed, and that the first generation takes that combination's space.
+func TestFirstRunStartsWithChosenSpace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("opens the store and the indexer")
+	}
+	old := newRuntime
+	newRuntime = func(cfg lrt.Config) contract.Runtime { return fake.NewRuntime(cfg.Life) }
+	defer func() { newRuntime = old }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc, err := OpenServices(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenServices: %v", err)
+	}
+	defer svc.Close()
+
+	gens, err := svc.Deps.Store.ListGenerations(ctx)
+	if err != nil || len(gens) != 0 {
+		t.Fatalf("clean first run: generations = %v, %v; want none before the choice", gens, err)
+	}
+	q8 := contract.Combo{Backend: contract.BackendCPU, TextQuant: contract.QuantQ8_0, EncQuant: contract.QuantQ8_0}
+	if err := svc.Deps.Store.SetSetting(ctx, "onboard_combo", q8.ID()); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	if err := svc.Deps.Store.SaveCombo(ctx, contract.Installed{Combo: q8, InstalledAt: time.Now()}); err != nil {
+		t.Fatalf("SaveCombo: %v", err)
+	}
+	svc.startIndexer() // the install event (recordInstalls) runs this too
+
+	gens, err = svc.Deps.Store.ListGenerations(ctx)
+	if err != nil || len(gens) != 1 {
+		t.Fatalf("after install: generations = %v, %v; want one building generation", gens, err)
+	}
+	if sp := gens[0].Space; sp.TextQuant != contract.QuantQ8_0 || sp.EncQuant != contract.QuantQ8_0 {
+		t.Fatalf("first generation space = %+v, want Q8_0/Q8_0", sp)
 	}
 }

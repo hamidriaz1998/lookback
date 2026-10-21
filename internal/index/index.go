@@ -21,7 +21,8 @@ type Indexer struct {
 	rt      contract.Runtime
 	initial contract.VectorSpace // the space of the first generation, when the store has none
 
-	scanMu sync.Mutex // one folder scan at a time (watchers and the startup rescan both scan)
+	scanMu sync.Mutex     // one folder scan at a time (watchers and the startup rescan both scan)
+	wg     sync.WaitGroup // the worker, progress ticker and startup rescan; Wait joins them
 
 	mu          sync.Mutex
 	started     bool
@@ -158,10 +159,25 @@ func (x *Indexer) Start(ctx context.Context) error {
 	x.mu.Unlock()
 	ok = true
 
-	go x.work(ctx)
-	go x.tick(ctx)
-	go x.startup(ctx)
+	x.wg.Add(3)
+	go func() { defer x.wg.Done(); x.work(ctx) }()
+	go func() { defer x.wg.Done(); x.tick(ctx) }()
+	go func() { defer x.wg.Done(); x.startup(ctx) }()
 	return nil
+}
+
+// SetInitial sets the vector space of the first generation. Call it before Start, once the first run's choice
+// is known; Start uses it only when the store has no generation.
+func (x *Indexer) SetInitial(sp contract.VectorSpace) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.initial = sp
+}
+
+// Wait returns once the worker, the progress ticker and the startup rescan have ended. They end when the
+// lifetime passed to Start ends. It returns at once when Start was never called.
+func (x *Indexer) Wait() {
+	x.wg.Wait()
 }
 
 // queueNeedingWorkLocked queues every file that needs work in the active and the rebuild job.
