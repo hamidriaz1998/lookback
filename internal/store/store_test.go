@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -238,4 +239,99 @@ func TestStoreSearch100k(t *testing.T) {
 		t.Fatalf("similar: %d rows, err %v", len(sim), err)
 	}
 	t.Logf("Store.Similar: %d files in %s", len(sim), time.Since(start).Round(time.Millisecond))
+}
+
+// TestIDsAreNotReused checks that a deleted row's file or item ID is never handed out again (migration 2).
+// A job that still holds an old ID must find nothing, not a new object with the same number.
+func TestIDsAreNotReused(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	must(t, err)
+	defer s.Close()
+	fo := addFolder(t, s, "/suite/reuse")
+
+	t.Run("deleted highest file during an outstanding commit", func(t *testing.T) {
+		a := addFile(t, s, fo.ID, "reuse-a.png", contract.KindImage, 1)
+		b := addFile(t, s, fo.ID, "reuse-b.png", contract.KindImage, 2)
+		g := newGen(t, s)
+		commitOne(t, s, g.ID, a, 1)
+		// The indexing job for b holds b's row: it has stat'd b and is about to commit.
+		held := contract.FileIndex{FileID: b.ID, Gen: g.ID, Size: b.Size, MTime: b.MTime, Status: contract.StatusDone}
+		must(t, s.DeleteFile(ctx, b.ID))
+		c := addFile(t, s, fo.ID, "reuse-c.png", contract.KindImage, 3)
+		if c.ID == b.ID {
+			t.Fatalf("new file reused deleted file ID %d", b.ID)
+		}
+		if err := s.CommitFile(ctx, held, []contract.Item{{Gen: g.ID, FileID: b.ID, Modality: "image", Start: -1, End: -1, Vector: vecFor(9)}}); !errors.Is(err, contract.ErrUnknownFile) {
+			t.Fatalf("outstanding commit for the deleted file: %v, want ErrUnknownFile", err)
+		}
+		if rows, _ := s.ListFileIndex(ctx, g.ID); len(rows) != 1 || rows[0].FileID != a.ID {
+			t.Fatalf("the outstanding commit wrote rows: %+v", rows)
+		}
+	})
+
+	t.Run("replacing the highest item", func(t *testing.T) {
+		f := addFile(t, s, fo.ID, "reuse-d.png", contract.KindImage, 4)
+		g := newGen(t, s)
+		commitOne(t, s, g.ID, f, 4)
+		old := itemIDs(t, s, g.ID)[f.ID]
+		commitOne(t, s, g.ID, f, 5) // replaces the file's items
+		if fresh := itemIDs(t, s, g.ID)[f.ID]; fresh == old {
+			t.Fatalf("replacement item reused ID %d", old)
+		}
+	})
+
+	t.Run("no item ID recycled across generations", func(t *testing.T) {
+		// The seed is the highest item ever allocated. Its generation is deleted (not active, so allowed), then
+		// another generation indexes the file: it must not get the seed's ID.
+		f := addFile(t, s, fo.ID, "reuse-e.png", contract.KindImage, 5)
+		g1 := newGen(t, s)
+		commitOne(t, s, g1.ID, f, 5)
+		seed := itemIDs(t, s, g1.ID)[f.ID]
+		must(t, s.DeleteItems(ctx, g1.ID))
+		g2 := newGen(t, s)
+		commitOne(t, s, g2.ID, f, 6)
+		if fresh := itemIDs(t, s, g2.ID)[f.ID]; fresh == seed {
+			t.Fatalf("a new item reused the deleted generation's ID %d", seed)
+		}
+		if _, err := s.Similar(ctx, g2.ID, seed, nil, 10); !errors.Is(err, contract.ErrStaleItem) {
+			t.Fatalf("a deleted item's ID in another generation: %v, want ErrStaleItem", err)
+		}
+	})
+}
+
+// TestMigrationKeepsIDs checks that a database written by migration 1 keeps its IDs, and that its sequences
+// continue above them after migration 2 runs.
+func TestMigrationKeepsIDs(t *testing.T) {
+	root := t.TempDir()
+	db, err := sql.Open("turso", filepath.Join(root, dbFile))
+	must(t, err)
+	db.SetMaxOpenConns(1)
+	_, err = db.Exec(migrations[0])
+	must(t, err)
+	_, err = db.Exec(`PRAGMA user_version = 1`)
+	must(t, err)
+	_, err = db.Exec(`INSERT INTO folders (id, path, added_at) VALUES (7, '/old', 1);
+		INSERT INTO files (id, folder_id, path, kind, size, mtime) VALUES (9, 7, '/old/a.png', 'image', 1, 1);
+		INSERT INTO generations (id, text_quant, enc_quant, model_rev, state, created_at) VALUES (3, 'bf16', 'q8_0', 'r', 'building', 1);
+		INSERT INTO items (id, gen, file_id, modality, embedding) VALUES (11, 3, 9, 'image', vector32('[1,0]'))`)
+	must(t, err)
+	must(t, db.Close())
+
+	s, err := Open(root)
+	must(t, err)
+	defer s.Close()
+	f := contract.FileRec{FolderID: 7, Path: "/old/b.png", Kind: contract.KindImage, Size: 1, MTime: 1}
+	must(t, s.SaveFile(context.Background(), &f))
+	if f.ID != 10 {
+		t.Fatalf("new file got ID %d after migration, want 10", f.ID)
+	}
+	folders, _ := s.ListFolders(context.Background())
+	if len(folders) != 1 || folders[0].ID != 7 {
+		t.Fatalf("folder ID changed: %+v", folders)
+	}
+	gens, _ := s.ListGenerations(context.Background())
+	if len(gens) != 1 || gens[0].ID != 3 {
+		t.Fatalf("generation ID changed: %+v", gens)
+	}
 }
