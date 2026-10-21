@@ -82,7 +82,7 @@ type FileRec struct {
 type Unit struct {
     FileID     int64
     Unit       int          // page, slide or sheet; 0 for whole files
-    Start, End int          // character range; -1 for images
+    Start, End int          // byte range in the text; -1 for images
     Text       string       // chunk text without the prompt prefix (text units)
     Image      []byte       // PNG or JPEG bytes (image units)
     Snippet    string
@@ -219,7 +219,7 @@ them start after M0 merges.
   the numbers in the PR.
 - **Acceptance:** fixture files for every type in `internal/extract/testdata` (self-made); tests check
   the unit count, page numbers and text; a scanned-page fixture comes back as an image unit; a chunking
-  test checks the 512/64 windows and the character offsets.
+  test checks the 512/64 windows and the byte offsets.
 
 ### WP5: themes
 

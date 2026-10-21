@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ const (
 )
 
 func main() {
+	runtime.LockOSThread() // Pdeathsig follows the forking thread; keep it alive until the process exits
 	var (
 		server  = flag.String("server", defaultServer, "path to llama-server")
 		model   = flag.String("m", filepath.Join(defaultModels, "embeddinggemma-2-BF16.gguf"), "text model (GGUF)")

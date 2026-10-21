@@ -67,3 +67,43 @@ func TestIndexerProgressMoves(t *testing.T) {
 		t.Fatalf("tokens/s took %d distinct values, want it to vary", len(rates))
 	}
 }
+
+// The job's totals must agree with the store, and the file it reports as current must not be indexed yet.
+func TestIndexerAgreesWithStore(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore()
+	x := newIndexer(time.Millisecond)
+	p, _ := x.step()
+
+	all := 0
+	for _, fp := range p.PerFolder {
+		files, err := s.ListFiles(ctx, fp.FolderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fp.FilesTotal != len(files) {
+			t.Fatalf("folder %s: job total %d, store has %d files", fp.Path, fp.FilesTotal, len(files))
+		}
+		all += len(files)
+	}
+	if p.FilesTotal != all {
+		t.Fatalf("job total %d, store has %d files", p.FilesTotal, all)
+	}
+
+	indexed, err := s.ListFileIndex(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int64]bool{}
+	for _, r := range indexed {
+		seen[r.FileID] = true
+	}
+	for _, f := range pendingFiles() {
+		if p.Current == f.Path && seen[f.ID] {
+			t.Fatalf("current file %s is already indexed", f.Path)
+		}
+	}
+	if p.Current == "" {
+		t.Fatal("no current file while the job runs")
+	}
+}

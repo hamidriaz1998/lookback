@@ -81,7 +81,7 @@ type FileRec struct {
 type Unit struct {
 	FileID     int64
 	Unit       int    // page, slide or sheet; 0 for whole files
-	Start, End int    // character range in runes; -1 for images
+	Start, End int    // byte range in the text; -1 for images
 	Text       string // chunk text without the prompt prefix (text units)
 	Image      []byte // PNG or JPEG bytes (image units)
 	Snippet    string
@@ -92,7 +92,7 @@ type Unit struct {
 type Item struct {
 	ID, Gen, FileID int64
 	Unit            int
-	Start, End      int       // character range in runes; -1 for images
+	Start, End      int       // byte range in the text; -1 for images
 	Modality        string    // "text" or "image"
 	Snippet         string    // the first 300 characters, whitespace collapsed
 	Vector          []float32 // 768 values, L2-normalized
@@ -103,6 +103,7 @@ type Hit struct {
 	ItemID, FileID int64
 	Path           string
 	Kind           Kind
+	Modality       string // "text" or "image"; PDF pages rendered as images have Kind pdf and Modality image
 	Unit           int
 	Snippet        string
 	Score          float64
@@ -138,8 +139,9 @@ type Progress struct {
 	Paused                    PauseReason
 }
 
-// Token is one token of a text, from Embedder.Tokenize. Start and End give the
-// character range of the token in the text, in runes.
+// Token is one token of a text, from Embedder.Tokenize. Start and End are the byte range of the
+// token in the text, so text[Start:End] is its source. A token can cover part of a UTF-8 character:
+// byte-fallback tokens do, and Piece then holds the raw bytes (see docs/spikes.md, spike 3).
 type Token struct {
 	ID         int32
 	Piece      string
@@ -152,7 +154,7 @@ type Embedder interface {
 	EmbedTexts(ctx context.Context, prompts []string) (vecs [][]float32, tokens int, err error)
 	// EmbedImage embeds one PNG or JPEG image.
 	EmbedImage(ctx context.Context, img []byte, mime string) (vec []float32, tokens int, err error)
-	// Tokenize splits text into tokens with their character ranges, for chunk windows.
+	// Tokenize splits text into tokens with their byte ranges, for chunk windows.
 	Tokenize(ctx context.Context, text string) ([]Token, error)
 }
 

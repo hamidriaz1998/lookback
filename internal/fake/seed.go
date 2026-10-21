@@ -6,6 +6,8 @@ import (
 	"math"
 	"math/rand"
 	"time"
+
+	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
 // Dataset sizes and paths shared by the fakes. The numbers match the UI guide's screens.
@@ -16,6 +18,36 @@ const (
 	brokenPDF      = "/home/demo/Documents/report-old.pdf"
 	dim            = 768
 )
+
+// Pending work: files the scan found and the indexer has not reached yet. At about 2,100 tokens
+// each, the 100 files hold about 210,000 tokens, which is 37 minutes at 96 tokens per second.
+const (
+	pendingPictures  = 60
+	pendingDocuments = 40
+	tokensPerFile    = 2100.0
+	indexedDocuments = 1 // the broken PDF, which is indexed with an error
+)
+
+// pendingFiles returns the files still to index, in queue order: screenshots first, then notes.
+func pendingFiles() []contract.FileRec {
+	out := make([]contract.FileRec, 0, pendingPictures+pendingDocuments)
+	id := int64(imageCount + 2) // the broken PDF has ID imageCount+1
+	for i := 0; i < pendingPictures; i++ {
+		out = append(out, contract.FileRec{
+			ID: id, FolderID: 1, Path: picturesFolder + "/" + screenshotName(imageCount+i), Kind: contract.KindImage,
+			Size: 200_000 + int64(i*4241)%700_000, MTime: screenshotMTime(imageCount + i),
+		})
+		id++
+	}
+	for i := 0; i < pendingDocuments; i++ {
+		out = append(out, contract.FileRec{
+			ID: id, FolderID: 2, Path: fmt.Sprintf("%s/meeting-notes-%02d.md", documentFolder, i+1), Kind: contract.KindText,
+			Size: 2_000 + int64(i*613)%30_000, MTime: screenshotMTime(imageCount + pendingPictures + i),
+		})
+		id++
+	}
+	return out
+}
 
 // screenshotName returns the name of the i-th screenshot, in the style of the desktop's screenshot tool.
 func screenshotName(i int) string {

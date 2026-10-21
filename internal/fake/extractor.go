@@ -8,7 +8,6 @@ import (
 	"image/color"
 	"image/png"
 	"path/filepath"
-	"unicode/utf8"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
@@ -36,7 +35,7 @@ func (e *Extractor) Extract(ctx context.Context, f contract.FileRec, emit func(c
 		return emit(contract.Unit{FileID: f.ID, Start: -1, End: -1, Image: img, EstTokens: 1500})
 	default:
 		text := "Extracted text of " + filepath.Base(f.Path) + "."
-		return emit(contract.Unit{FileID: f.ID, Text: text, Start: 0, End: utf8.RuneCountInString(text), Snippet: text, EstTokens: len(text) / 4})
+		return emit(contract.Unit{FileID: f.ID, Text: text, Start: 0, End: len(text), Snippet: text, EstTokens: len(text) / 4})
 	}
 }
 

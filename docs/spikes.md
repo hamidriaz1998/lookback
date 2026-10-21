@@ -104,3 +104,16 @@ Findings and limits:
   the colour check, and the Windows cross-build. It has not run: this session has no GitHub runner. The
   workflow does not start `llama-server`, so the Windows sidecar path is still unverified.
 - Failure-path tests (kill twice, CPU fallback) belong to WP2, not this spike.
+
+### Follow-up checks (run before the contract froze)
+
+- **Tokenizer offsets.** `/tokenize` with `with_pieces: true` on `naïve 日本語 🙂 ꙮ𓀀` returns byte-fallback
+  pieces as byte arrays: `ꙮ` (3 bytes) comes back as three one-byte tokens `[234]`, `[153]`, `[174]`, and
+  `𓀀` (4 bytes) as four. A token boundary can fall inside a character, so a rune range cannot describe
+  every token. **Decision:** `Token`, `Unit` and `Item` offsets are byte offsets into the UTF-8 text, and
+  `Token.Piece` holds the raw bytes. SPEC sections 9 and 10 say so.
+- **Crash path.** With only `Setpgid`, `kill -9` on the app left `llama-server` running, re-parented to
+  init. The sidecar now sets `Pdeathsig: SIGKILL` and locks the main thread. After `kill -9` the
+  server is gone, and a normal run still stops it with SIGTERM. SPEC section 8 says so.
+- **WP2 note:** `Pdeathsig` is Linux only. The Windows path needs a job object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; it is not written yet.

@@ -74,6 +74,12 @@ func NewStore() *Store {
 	}
 	s.nextFile++
 
+	// Pending files: found by the scan, not yet indexed. The indexer works through them.
+	for _, f := range pendingFiles() {
+		s.files[f.ID] = f
+		s.nextFile = f.ID + 1
+	}
+
 	s.combos[contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantBF16, EncQuant: contract.QuantQ8_0}.ID()] = contract.Installed{
 		Combo:       contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantBF16, EncQuant: contract.QuantQ8_0},
 		InstalledAt: added.Add(2 * time.Hour),
@@ -403,7 +409,7 @@ func (s *Store) rankLocked(gen int64, query []float32, excludeFile int64, kinds 
 		}
 		best[it.FileID] = contract.Hit{
 			ItemID: it.ID, FileID: it.FileID, Path: f.Path, Kind: f.Kind,
-			Unit: it.Unit, Snippet: it.Snippet, Score: sim,
+			Modality: it.Modality, Unit: it.Unit, Snippet: it.Snippet, Score: sim,
 		}
 	}
 	out := make([]contract.Hit, 0, len(best))

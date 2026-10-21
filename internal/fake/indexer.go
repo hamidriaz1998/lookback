@@ -10,52 +10,42 @@ import (
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
-// Fixture job: 3,100 files, of which 1,240 are done. The remaining work is 1,860 files of
-// about 1,000 tokens each, so the ETA starts near 5 hours and counts down while the job runs.
 const (
-	totalFiles     = 3100
-	startFilesDone = 1240
-	picturesStart  = 1180
-	picturesTotal  = 2116
-	documentsDone  = 60
-	documentsTotal = 984
-	tokensPerFile  = 1000.0
+	meanTokensRate = 96.0 // tokens per second, the long-run mean; the ETA divides by it
 	estimatingFor  = 30 * time.Second
-	meanTokensRate = 96.0
 )
 
-// Indexer is a contract.Indexer that runs a simulated job. Progress moves on a timer: the
-// tokens per second vary around 96, the ETA counts down steadily, and the current file changes.
-// The job pauses while any pause reason is set, and never finishes within a UI session.
+// Indexer is a contract.Indexer that simulates the job over pendingFiles. Progress moves on a
+// timer: tokens per second vary around 96, the ETA counts down steadily, and Current is the next
+// file in the queue. The job pauses while any pause reason is set and stops when the queue is empty.
 type Indexer struct {
 	mu       sync.Mutex
 	interval time.Duration
 	ch       chan contract.Progress
 	started  bool
 	reasons  map[contract.PauseReason]bool
+	pending  []contract.FileRec
 
-	elapsed   time.Duration
-	tick      int
-	rate      float64 // tokens per second this tick, which varies
-	remaining float64 // tokens left
-	done      float64 // files done, fractional
+	elapsed  time.Duration
+	tick     int
+	rate     float64 // tokens per second this tick, which varies
+	consumed float64 // tokens processed so far
 }
 
-// NewIndexer returns an Indexer that publishes progress every 250 ms, the SPEC §11 maximum rate.
+// NewIndexer returns an Indexer that publishes progress every 250 ms, the SPEC section 11 maximum rate.
 func NewIndexer() *Indexer { return newIndexer(250 * time.Millisecond) }
 
 // newIndexer returns an Indexer that ticks every interval.
 func newIndexer(interval time.Duration) *Indexer {
 	return &Indexer{
-		interval:  interval,
-		ch:        make(chan contract.Progress, 1),
-		reasons:   map[contract.PauseReason]bool{},
-		remaining: float64(totalFiles-startFilesDone) * tokensPerFile,
-		done:      startFilesDone,
+		interval: interval,
+		ch:       make(chan contract.Progress, 1),
+		reasons:  map[contract.PauseReason]bool{},
+		pending:  pendingFiles(),
 	}
 }
 
-// Start begins the job in a goroutine. It stops, and closes Progress, when ctx ends.
+// Start begins the job in a goroutine. It stops, and closes Progress, when ctx ends or the queue empties.
 func (x *Indexer) Start(ctx context.Context) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -101,43 +91,52 @@ func (x *Indexer) step() (contract.Progress, bool) {
 	if paused {
 		x.rate = 0
 	} else {
-		x.remaining -= x.rate * dt
-		x.done += x.rate * dt / tokensPerFile
+		x.consumed += x.rate * dt
 		x.elapsed += x.interval
 	}
 	x.tick++
 
-	finished := x.remaining <= 0
+	total := float64(len(x.pending)) * tokensPerFile
+	finished := x.consumed >= total
 	if finished {
-		x.remaining = 0
-		x.done = totalFiles
+		x.consumed = total
+		x.rate = 0
 	}
 	return x.snapshot(finished), finished
 }
 
 // snapshot builds the Progress for the current state. The caller holds x.mu.
 func (x *Indexer) snapshot(finished bool) contract.Progress {
-	done := int(x.done)
-	extra := done - startFilesDone
-	picturesDone := picturesStart + extra
-	if picturesDone > picturesTotal {
-		picturesDone = picturesTotal
+	processed := int(x.consumed / tokensPerFile)
+	if processed > len(x.pending) {
+		processed = len(x.pending)
 	}
+	// The store holds the indexed files already; these counts add the queue to them.
+	picturesDone, picturesTotal := imageCount, imageCount+pendingPictures
+	documentsDone, documentsTotal := indexedDocuments, indexedDocuments+pendingDocuments
+	for _, f := range x.pending[:processed] {
+		if f.FolderID == 1 {
+			picturesDone++
+		} else {
+			documentsDone++
+		}
+	}
+
 	eta := time.Duration(-1)
 	// The ETA divides by the long-run mean, not the tick's rate, so it counts down steadily.
 	if x.elapsed >= estimatingFor {
-		eta = time.Duration(x.remaining / meanTokensRate * float64(time.Second))
-	}
-	if finished {
-		eta = 0
+		remaining := float64(len(x.pending))*tokensPerFile - x.consumed
+		eta = time.Duration(remaining / meanTokensRate * float64(time.Second))
 	}
 	current := ""
-	if !finished {
-		current = picturesFolder + "/" + screenshotName(done%imageCount)
+	if finished {
+		eta = 0
+	} else {
+		current = x.pending[processed].Path
 	}
 	return contract.Progress{
-		FilesDone:    done,
-		FilesTotal:   totalFiles,
+		FilesDone:    picturesDone + documentsDone,
+		FilesTotal:   picturesTotal + documentsTotal,
 		FilesPerSec:  x.rate / tokensPerFile,
 		TokensPerSec: x.rate,
 		ETA:          eta,
@@ -146,7 +145,7 @@ func (x *Indexer) snapshot(finished bool) contract.Progress {
 			{FolderID: 1, Path: picturesFolder, FilesDone: picturesDone, FilesTotal: picturesTotal},
 			{FolderID: 2, Path: documentFolder, FilesDone: documentsDone, FilesTotal: documentsTotal},
 		},
-		Errors: 1,
+		Errors: indexedDocuments,
 		Paused: x.pauseReason(),
 	}
 }
