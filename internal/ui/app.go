@@ -80,9 +80,10 @@ type App struct {
 	reloading  bool
 	reloadWant bool
 
-	search searchState
-	theme  themeState
-	notice string // the last failed command, shown on the page it came from
+	search  searchState
+	folders foldersState
+	theme   themeState
+	notice  string // the last failed command, shown on the page it came from
 }
 
 // New returns the App for d. Call Start once the window exists, then use View as the window's content.
@@ -193,6 +194,8 @@ func (a *App) View(c *ui.Context) {
 				a.searchPage(c)
 			case pageActivity:
 				a.activityPage(c)
+			case pageFolders:
+				a.foldersPage(c)
 			default:
 				a.comingSoon(c)
 			}

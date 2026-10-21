@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"image"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +46,15 @@ func newHarness(t *testing.T, setup func(*fake.Store) contract.Store) *harness {
 	if setup != nil {
 		store = setup(base)
 	}
+	// As the entry point does: the first folder is the real ~/Pictures, so its status is real.
+	if home, err := os.UserHomeDir(); err == nil {
+		if folders, _ := store.ListFolders(ctx); len(folders) > 0 {
+			f := contract.Folder{ID: 1, Path: filepath.Join(home, "Pictures")}
+			if err := store.SaveFolder(ctx, &f); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	rt := fake.NewRuntime(ctx)
 	ix := fake.NewIndexer(base, rt)
 	if err := ix.Start(ctx); err != nil {
@@ -58,7 +69,7 @@ func newHarness(t *testing.T, setup func(*fake.Store) contract.Store) *harness {
 		Downloader: fake.NewDownloader(ctx),
 		Detector:   fake.NewDetector(),
 		Catalog:    fake.NewCatalog(),
-		Themes:     []contract.ThemeSource{fake.NewThemeSource("light", "Light")},
+		Themes:     []contract.ThemeSource{fixedTheme("light", false), fixedTheme("dark", true)},
 		Media:      solidMedia{},
 		OS:         "linux",
 	})
@@ -131,3 +142,21 @@ var errTestSearch = testError("the index is unreadable")
 type testError string
 
 func (e testError) Error() string { return string(e) }
+
+// fixedTheme is a contract.ThemeSource with the built-in light or dark palette.
+type fixedTheme2 struct {
+	id   string
+	dark bool
+}
+
+func fixedTheme(id string, dark bool) contract.ThemeSource { return fixedTheme2{id, dark} }
+
+func (f fixedTheme2) ID() string   { return f.id }
+func (f fixedTheme2) Name() string { return f.id }
+func (f fixedTheme2) Theme(*ui.Theme) *ui.Theme {
+	if f.dark {
+		return ui.DarkTheme()
+	}
+	return ui.LightTheme()
+}
+func (f fixedTheme2) Changed() <-chan struct{} { return nil }

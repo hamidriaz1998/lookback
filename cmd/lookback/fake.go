@@ -43,6 +43,11 @@ func fakeDeps(ctx context.Context, firstRun bool, theme string) (lookui.Deps, er
 			return lookui.Deps{}, err
 		}
 	}
+	// The fixture's first folder is the real ~/Pictures, so its status is real. The second one stays missing.
+	pics := &contract.Folder{ID: 1, Path: filepath.Join(home, "Pictures")}
+	if err := store.SaveFolder(ctx, pics); err != nil {
+		return lookui.Deps{}, err
+	}
 	rt := fake.NewRuntime(ctx)
 	ix := fake.NewIndexer(store, rt)
 	if err := ix.Start(ctx); err != nil {
