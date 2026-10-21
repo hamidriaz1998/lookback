@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,8 +73,8 @@ func TestXLSXOversizedSharedStringsFail(t *testing.T) {
 	}
 	big := bytes.Repeat([]byte(" "), maxEntryBytes+1)
 	_, units, err := extractOfficeBytes(t, ".xlsx", officeZip(xlsxParts(`<c r="A1" t="s"><v>0</v></c>`, big)))
-	if err == nil || len(units) != 0 {
-		t.Fatalf("oversized shared table: units %+v, err %v; want an error and no units", units, err)
+	if !errors.Is(err, errPartTooLarge) || len(units) != 0 {
+		t.Fatalf("oversized shared table: units %+v, err %v; want errPartTooLarge and no units", units, err)
 	}
 }
 
@@ -81,7 +82,7 @@ func TestOOXMLRelationshipTargetsStayInPackage(t *testing.T) {
 	for _, target := range []string{"../../outside.xml", "https://example.invalid/slide.xml"} {
 		t.Run(target, func(t *testing.T) {
 			parts := map[string][]byte{
-				"ppt/presentation.xml":            []byte(`<p:presentation xmlns:r="r"><p:sldIdLst><p:sldId r:id="r1"/></p:sldIdLst></p:presentation>`),
+				"ppt/presentation.xml":            []byte(`<p:presentation xmlns:r="` + relNS + `"><p:sldIdLst><p:sldId r:id="r1"/></p:sldIdLst></p:presentation>`),
 				"ppt/_rels/presentation.xml.rels": []byte(`<Relationships><Relationship Id="r1" Target="` + target + `"/></Relationships>`),
 			}
 			_, _, err := extractOfficeBytes(t, ".pptx", officeZip(parts))
@@ -125,10 +126,15 @@ func TestPDFInFlightCallIsInterruptedOnCancellation(t *testing.T) {
 }
 
 func xlsxParts(cell string, shared []byte) map[string][]byte {
+	return xlsxSheetParts(`<worksheet><sheetData><row r="1">`+cell+`</row></sheetData></worksheet>`, shared)
+}
+
+// xlsxSheetParts returns a one-sheet workbook whose worksheet part is sheet verbatim.
+func xlsxSheetParts(sheet string, shared []byte) map[string][]byte {
 	parts := map[string][]byte{
-		"xl/workbook.xml":            []byte(`<workbook xmlns:r="r"><sheets><sheet name="Sheet" r:id="r1"/></sheets></workbook>`),
+		"xl/workbook.xml":            []byte(`<workbook xmlns:r="` + relNS + `"><sheets><sheet name="Sheet" r:id="r1"/></sheets></workbook>`),
 		"xl/_rels/workbook.xml.rels": []byte(`<Relationships><Relationship Id="r1" Target="worksheets/custom.xml"/></Relationships>`),
-		"xl/worksheets/custom.xml":   []byte(`<worksheet><sheetData><row r="1">` + cell + `</row></sheetData></worksheet>`),
+		"xl/worksheets/custom.xml":   []byte(sheet),
 	}
 	if len(shared) != 0 {
 		parts["xl/sharedStrings.xml"] = shared
@@ -172,4 +178,57 @@ func extractOfficeBytes(t *testing.T, ext string, archive []byte) (string, []uni
 type unitResult struct {
 	Unit int
 	Text string
+}
+
+// TestOfficeMalformedStructureIsRejected covers R2 finding 1: well-formed XML whose row, cell or string-item
+// nesting is impossible. Each input must return an extraction error; none may panic.
+func TestOfficeMalformedStructureIsRejected(t *testing.T) {
+	sst := func(body string) []byte { return []byte(`<sst>` + body + `</sst>`) }
+	tests := []struct {
+		name   string
+		sheet  string
+		shared []byte
+	}{
+		{name: "cell outside any row", sheet: `<c r="A1"><v>x</v></c>`},
+		{name: "cell without reference outside any row", sheet: `<c><v>x</v></c>`},
+		{name: "row nested in row", sheet: `<row r="1"><row r="2"><c r="A1"><v>x</v></c></row></row>`},
+		{name: "cell nested in cell", sheet: `<row r="1"><c r="A1"><c r="B1"><v>x</v></c></c></row>`},
+		{name: "shared string item nested in item", sheet: `<row r="1"><c r="A1" t="s"><v>0</v></c></row>`,
+			shared: sst(`<si><si><t>x</t></si></si>`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("malformed structure panicked: %v", r)
+				}
+			}()
+			parts := xlsxSheetParts(`<worksheet><sheetData>`+tt.sheet+`</sheetData></worksheet>`, tt.shared)
+			_, units, err := extractOfficeBytes(t, ".xlsx", officeZip(parts))
+			if err == nil {
+				t.Fatalf("malformed structure accepted: units %+v", units)
+			}
+		})
+	}
+}
+
+// TestPPTXSlideManifestWithNumericIDs covers R2 finding 2: an ordinary slide list carries a numeric id
+// attribute next to the namespaced r:id, in either attribute order. Both must resolve to the relationship.
+func TestPPTXSlideManifestWithNumericIDs(t *testing.T) {
+	const pns = "http://schemas.openxmlformats.org/presentationml/2006/main"
+	parts := map[string][]byte{
+		"ppt/presentation.xml": []byte(`<p:presentation xmlns:p="` + pns + `" xmlns:r="` + relNS + `"><p:sldIdLst>` +
+			`<p:sldId id="256" r:id="rId2"/><p:sldId r:id="rId1" id="257"/></p:sldIdLst></p:presentation>`),
+		"ppt/_rels/presentation.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rId1" Target="slides/cover.xml"/><Relationship Id="rId2" Target="slides/roadmap.xml"/></Relationships>`),
+		"ppt/slides/cover.xml":   []byte(slideXML("Cover")),
+		"ppt/slides/roadmap.xml": []byte(slideXML("Roadmap")),
+	}
+	_, units, err := extractOfficeBytes(t, ".pptx", officeZip(parts))
+	if err != nil {
+		t.Fatalf("ordinary slide manifest rejected: %v", err)
+	}
+	if len(units) != 2 || strings.TrimSpace(units[0].Text) != "Roadmap" || strings.TrimSpace(units[1].Text) != "Cover" {
+		t.Fatalf("slides: got %+v, want Roadmap then Cover", units)
+	}
 }

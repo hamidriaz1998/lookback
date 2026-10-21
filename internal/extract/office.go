@@ -33,7 +33,10 @@ const (
 	maxSpreadsheetText    = 64 << 20
 )
 
-var errMissingPart = errors.New("missing Office part")
+var (
+	errMissingPart  = errors.New("missing Office part")
+	errPartTooLarge = errors.New("office part is over the size limit")
+)
 
 // Office extracts the text of DOCX, PPTX, XLSX, ODT, ODP, ODS and RTF files. A DOCX, ODT or RTF file is one unit;
 // a PPTX slide, an ODP page, an XLSX sheet or an ODS sheet is one unit numbered from 1. Units with no text emit
@@ -161,7 +164,7 @@ func zipPart(ctx context.Context, zr *zip.ReadCloser, name string) ([]byte, erro
 			return nil, closeErr
 		}
 		if len(data) > maxEntryBytes {
-			return nil, fmt.Errorf("%s: part is over %d bytes", name, maxEntryBytes)
+			return nil, fmt.Errorf("%s: %w (%d bytes)", name, errPartTooLarge, maxEntryBytes)
 		}
 		return data, nil
 	}
@@ -193,6 +196,13 @@ func zipNames(zr *zip.ReadCloser, prefix, suffix string) []string {
 	return names
 }
 
+// relationshipNamespaces are the namespaces of r:id on a presentation or workbook item: the ECMA-376 transitional
+// and the ISO strict OOXML relationships namespaces.
+var relationshipNamespaces = map[string]bool{
+	"http://schemas.openxmlformats.org/officeDocument/2006/relationships": true,
+	"http://purl.oclc.org/ooxml/officeDocument/relationships":             true,
+}
+
 type packageRelationship struct {
 	ID         string `xml:"Id,attr"`
 	Target     string `xml:"Target,attr"`
@@ -222,9 +232,10 @@ func orderedRelationshipParts(ctx context.Context, zr *zip.ReadCloser, manifest,
 		if !ok || start.Name.Local != itemName {
 			continue
 		}
+		// The item's own numeric id (unqualified) sits beside its r:id; only the relationship ID counts.
 		id := ""
 		for _, attr := range start.Attr {
-			if attr.Name.Local == "id" {
+			if attr.Name.Local == "id" && relationshipNamespaces[attr.Name.Space] {
 				id = attr.Value
 				break
 			}
@@ -382,6 +393,9 @@ func sharedStrings(ctx context.Context, data []byte) ([]string, error) {
 		case xml.StartElement:
 			switch t.Name.Local {
 			case "si":
+				if cur != nil {
+					return nil, errors.New("shared string item nested in another item")
+				}
 				cur = &strings.Builder{}
 			case "t":
 				inText = true
@@ -389,6 +403,9 @@ func sharedStrings(ctx context.Context, data []byte) ([]string, error) {
 		case xml.EndElement:
 			switch t.Name.Local {
 			case "si":
+				if cur == nil {
+					return nil, errors.New("shared string item end without start")
+				}
 				out = append(out, cur.String())
 				cur = nil
 			case "t":
@@ -432,6 +449,9 @@ func sheetRowsLimit(ctx context.Context, data []byte, shared []string, budget in
 		case xml.StartElement:
 			switch t.Name.Local {
 			case "row":
+				if row != nil {
+					return "", errors.New("spreadsheet row nested in another row")
+				}
 				row, maxCol, nextCol, rowBytes = map[int]string{}, -1, 0, 0
 				rowNumber++
 				for _, a := range t.Attr {
@@ -444,6 +464,12 @@ func sheetRowsLimit(ctx context.Context, data []byte, shared []string, budget in
 					}
 				}
 			case "c":
+				if row == nil {
+					return "", errors.New("spreadsheet cell outside a row")
+				}
+				if inCell {
+					return "", errors.New("spreadsheet cell nested in another cell")
+				}
 				inCell = true
 				cellRef, cellType = "", ""
 				for _, a := range t.Attr {
@@ -503,16 +529,18 @@ func sheetRowsLimit(ctx context.Context, data []byte, shared []string, budget in
 				row[col] = val
 				nextCol = max(nextCol, col+1)
 			case "row":
-				if maxCol >= 0 {
-					lineBytes := rowBytes + maxCol*3
+				rowCells, rowMax, rowSize := row, maxCol, rowBytes
+				row = nil
+				if rowMax >= 0 {
+					lineBytes := rowSize + rowMax*3
 					if len(lines) > 0 {
 						lineBytes++
 					}
 					if lineBytes > budget-totalBytes {
 						return "", fmt.Errorf("spreadsheet text exceeds %d bytes", budget)
 					}
-					cells := make([]string, maxCol+1)
-					for c, v := range row {
+					cells := make([]string, rowMax+1)
+					for c, v := range rowCells {
 						cells[c] = v
 					}
 					line := strings.Join(cells, " | ")

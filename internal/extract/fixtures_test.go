@@ -22,6 +22,9 @@ import (
 	"unicode/utf16"
 )
 
+// relNS is the OOXML relationships namespace on r:id attributes in presentation and workbook parts.
+const relNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
 //go:embed testdata/sample.webp
 var sampleWebP []byte
 
@@ -47,13 +50,14 @@ func TestWriteFixtures(t *testing.T) {
 </w:body></w:document>`,
 	}))
 	add("sample.pptx", zipBytes(map[string]string{
-		"ppt/presentation.xml":            `<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId r:id="rId2"/><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>`,
+		"ppt/presentation.xml": `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="` + relNS + `">` +
+			`<p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId1"/></p:sldIdLst></p:presentation>`,
 		"ppt/_rels/presentation.xml.rels": `<Relationships><Relationship Id="rId1" Target="slides/cover.xml"/><Relationship Id="rId2" Target="slides/roadmap.xml"/></Relationships>`,
 		"ppt/slides/cover.xml":            slideXML("Title slide", "Launch date"),
 		"ppt/slides/roadmap.xml":          slideXML("Roadmap", "Ship the indexer"),
 	}))
 	add("sample.xlsx", zipBytes(map[string]string{
-		"xl/workbook.xml":            `<workbook xmlns:r="r"><sheets><sheet name="Summary" r:id="rId2"/><sheet name="Data" r:id="rId1"/></sheets></workbook>`,
+		"xl/workbook.xml":            `<workbook xmlns:r="` + relNS + `"><sheets><sheet name="Summary" r:id="rId2"/><sheet name="Data" r:id="rId1"/></sheets></workbook>`,
 		"xl/_rels/workbook.xml.rels": `<Relationships><Relationship Id="rId1" Target="worksheets/main-grid.xml"/><Relationship Id="rId2" Target="worksheets/summary.xml"/></Relationships>`,
 		"xl/sharedStrings.xml":       `<?xml version="1.0"?><sst><si><t>Name</t></si><si><t>Amount</t></si><si><t>Rent</t></si></sst>`,
 		"xl/worksheets/main-grid.xml": `<?xml version="1.0"?><worksheet><sheetData>
