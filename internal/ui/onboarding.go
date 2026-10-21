@@ -489,7 +489,7 @@ func (a *App) labTable(c *ui.Context, combos []contract.Combo) {
 			}
 		case 2, 3, 4, 5:
 			if has && step.State == contract.LabDone && step.Result != nil {
-				cell := ui.Text(c, benchCell(&step.Result.Bench, col-1)).FontFeatures("tnum").SingleLine()
+				cell := ui.Text(c, benchCell(&step.Result.Bench, col)).FontFeatures("tnum").SingleLine()
 				if col == 5 && step.Result.Bench.Quality == nil {
 					cell.Tooltip("BF16 encoders are needed to compare quality on your own files.")
 				}

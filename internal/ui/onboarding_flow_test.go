@@ -282,3 +282,34 @@ func TestFirstRunChoiceSetsVectorSpace(t *testing.T) {
 	h.wait("a generation in the chosen space", func() bool { return hasGen(t, h.store, contract.QuantQ8_0, contract.QuantBF16) })
 	h.wait("the runtime on the chosen backend", func() bool { return h.app.d.Runtime.Backend() == contract.BackendVulkan })
 }
+
+// TestLabRowShowsEachMetricUnderItsHeading checks that a finished test row draws every metric in its own column:
+// image ms, tokens/s, RAM, VRAM and quality, in that order, with the real quality value.
+func TestLabRowShowsEachMetricUnderItsHeading(t *testing.T) {
+	h, _ := newFirstRunHarness(t, nil, nil)
+	waitDetection(h)
+	h.app.onb.step = 2
+	h.pump(0)
+	cb := h.app.onb.combos[0]
+	res := contract.LabResult{RunID: 1, Combo: cb, Bench: contract.BenchResult{
+		ImageMS: 1111, TextTokensPerSec: 2222, PeakRAM: 3 << 30, VRAM: 4 << 30, Quality: ptr(0.995),
+	}}
+	h.app.labOrder = append(h.app.labOrder, 1)
+	h.app.labSteps[1] = contract.LabStep{RunID: 1, Combo: cb, State: contract.LabDone, Result: &res}
+	h.pump(0)
+	want := []string{count(1111), count(2222), size(3 << 30), size(4 << 30), "0.995"}
+	texts := h.tt.Texts()
+	for i := 0; i+len(want) <= len(texts); i++ {
+		match := true
+		for j, w := range want {
+			if texts[i+j] != w {
+				match = false
+				break
+			}
+		}
+		if match {
+			return
+		}
+	}
+	t.Fatalf("the row does not show %q in its columns in order; texts: %q", want, texts)
+}
