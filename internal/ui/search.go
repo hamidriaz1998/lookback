@@ -11,14 +11,13 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/hamidriaz1998/lookback/internal/contract"
+	"github.com/hamidriaz1998/lookback/internal/search"
 )
 
 const (
 	searchDebounce = 250 * time.Millisecond // a query runs this long after the last keystroke (UI guide section 7)
 	spinnerDelay   = 150 * time.Millisecond // the query's spinner shows only after this long
-	searchLimit    = 300                    // hits per query; the grid shows them all
-	queryPrefix    = "task: search result | query: "
-	previewMinWide = 960 // below this window width, the preview opens as an overlay (UI guide section 2)
+	previewMinWide = 960                    // below this window width, the preview opens as an overlay (UI guide section 2)
 	previewMin     = 240
 	previewDefault = 360
 )
@@ -434,11 +433,10 @@ func (a *App) startSearch(c *ui.Context) {
 	s.seq++
 	seq := s.seq
 	s.searching, s.startedAt, s.err = true, c.Now(), ""
-	gen := a.data.active
 	q, kinds, sd := s.query, s.kinds(), s.seed
 	go func() {
 		t0 := time.Now()
-		hits, err := a.runQuery(ctx, gen, q, kinds, sd)
+		hits, err := a.runQuery(ctx, q, kinds, sd)
 		elapsed := time.Since(t0)
 		a.dispatch(func() {
 			if seq != s.seq {
@@ -461,32 +459,54 @@ func (a *App) startSearch(c *ui.Context) {
 	}()
 }
 
-// runQuery embeds the query and searches the generation, or finds the files similar to the seed. It runs off
-// the main thread. A session waits for the sidecar to be ready, so a query that starts during a restart runs
-// once the model is up.
-func (a *App) runQuery(ctx context.Context, gen *contract.Generation, q string, kinds []contract.Kind, sd *seed) ([]contract.Hit, error) {
-	if gen == nil {
-		return nil, nil
-	}
+// runQuery embeds the query and ranks the active generation through the search service (SPEC section 10), or
+// finds the files similar to the seed. It runs off the main thread. The service retries a query whose generation
+// changed while it ran, so this call runs it again; a query with no active generation has no results.
+func (a *App) runQuery(ctx context.Context, q string, kinds []contract.Kind, sd *seed) ([]contract.Hit, error) {
 	if sd != nil {
-		return a.d.Store.Similar(ctx, gen.ID, sd.itemID, kinds, searchLimit)
+		res, err := a.searcher.Similar(ctx, sd.itemID, kinds)
+		return toHits(res), err
 	}
-	sess, err := a.d.Runtime.Session(ctx, gen.Space)
-	if err != nil {
-		return nil, err
-	}
-	defer sess.Close()
-	vecs, _, err := sess.EmbedTexts(ctx, []string{queryPrefix + q})
-	if errors.Is(err, contract.ErrRestarting) {
-		if err := sess.Ready(ctx); err != nil {
+	for {
+		gen, err := activeGeneration(ctx, a.d.Store)
+		if err != nil || gen == nil {
 			return nil, err
 		}
-		vecs, _, err = sess.EmbedTexts(ctx, []string{queryPrefix + q})
+		sess, err := a.d.Runtime.Session(ctx, gen.Space)
+		if err != nil {
+			return nil, err
+		}
+		res, err := a.searcher.Run(ctx, sess, q, kinds)
+		sess.Close()
+		if errors.Is(err, search.ErrGenerationChanged) {
+			continue
+		}
+		return toHits(res), err
 	}
+}
+
+// activeGeneration returns the active generation, or nil when there is none.
+func activeGeneration(ctx context.Context, st contract.Store) (*contract.Generation, error) {
+	gens, err := st.ListGenerations(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return a.d.Store.Search(ctx, gen.ID, vecs[0], kinds, searchLimit)
+	for i := range gens {
+		if gens[i].State == contract.GenActive {
+			return &gens[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// toHits converts search results to the hits the screens show.
+func toHits(res []search.Result) []contract.Hit {
+	out := make([]contract.Hit, len(res))
+	for i, r := range res {
+		out[i] = contract.Hit{ItemID: r.ItemID, FileID: r.FileID, Path: r.Path, Kind: r.Kind, Modality: r.Modality,
+			Unit: r.Unit, Snippet: r.Snippet, Score: r.Score}
+	}
+	return out
 }
 
 // findSimilar replaces the query with a chip for h, and searches from its vector (UI guide section 3.4).

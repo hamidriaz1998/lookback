@@ -14,6 +14,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/hamidriaz1998/lookback/internal/contract"
+	"github.com/hamidriaz1998/lookback/internal/search"
 )
 
 // Deps are the services the screens use. Store, Indexer, Runtime, Lab, Downloader, Detector and Catalog are
@@ -62,6 +63,7 @@ type App struct {
 	ctx      context.Context
 	dispatch func(func())
 	thumbs   *thumbs
+	searcher *search.Searcher
 
 	page        page
 	sidebarOpen bool
@@ -103,6 +105,7 @@ func New(d Deps) *App {
 		sidebarOpen: true,
 		thumbSize:   160,
 		thumbs:      newThumbs(d.Media),
+		searcher:    search.New(d.Store),
 		downloads:   map[string]contract.DownloadProgress{},
 		labSteps:    map[contract.RunID]contract.LabStep{},
 		search:      newSearchState(),

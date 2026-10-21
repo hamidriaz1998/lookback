@@ -68,3 +68,38 @@ func TestClearingQueryDropsItsSearch(t *testing.T) {
 		})
 	}
 }
+
+// stubSearch returns hits from Search, whatever the query, so a test controls the store's order and scores.
+type stubSearch struct {
+	contract.Store
+	hits []contract.Hit
+}
+
+func (s stubSearch) Search(context.Context, int64, []float32, []contract.Kind, int) ([]contract.Hit, error) {
+	return append([]contract.Hit(nil), s.hits...), nil
+}
+
+// TestSearchAppliesFilenameBoostAndPageLimit checks that a query goes through the search service: a file whose
+// name holds a query word is boosted past a slightly closer unrelated file, and at most 60 results show.
+func TestSearchAppliesFilenameBoostAndPageLimit(t *testing.T) {
+	var hits []contract.Hit
+	hits = append(hits,
+		contract.Hit{FileID: 1, ItemID: 1, Path: "/pics/other/unrelated.png", Kind: contract.KindImage, Modality: "image", Score: 0.82},
+		contract.Hit{FileID: 2, ItemID: 2, Path: "/pics/receipt.png", Kind: contract.KindImage, Modality: "image", Score: 0.80},
+	)
+	for i := 0; i < 80; i++ {
+		hits = append(hits, contract.Hit{FileID: int64(100 + i), ItemID: int64(100 + i),
+			Path: "/pics/img.png", Kind: contract.KindImage, Modality: "image", Score: 0.5 - float64(i)/1000})
+	}
+	h := newHarness(t, func(s *fake.Store) contract.Store { return stubSearch{Store: s, hits: hits} })
+	h.wait("snapshot", func() bool { return h.app.data.ready })
+	h.app.search.query = "receipt"
+	h.app.search.submit = true
+	h.wait("results", func() bool { return len(h.app.search.hits) > 0 && !h.app.search.searching })
+	if got := h.app.search.hits[0].Path; got != "/pics/receipt.png" {
+		t.Errorf("first result is %q; the filename boost should put receipt.png first", got)
+	}
+	if n := len(h.app.search.hits); n != 60 {
+		t.Errorf("%d results, want the top 60", n)
+	}
+}
