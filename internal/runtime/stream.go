@@ -8,8 +8,8 @@ import (
 // Stream fans one service's updates out to its subscribers (contract: Streams). Each subscriber has its own
 // channel. It starts with the current snapshot, one value per key, and then gets every later update in order.
 // A reader that falls behind gets the newest value per key: an unread update is replaced by a newer one with
-// the same key. A terminal value is never replaced or dropped. A subscriber's channel closes when its ctx ends
-// or the stream closes, after the values queued before that.
+// the same key. A terminal value is not replaced while the stream and subscriber are live. Cancellation or stream
+// shutdown may drop queued values so the subscriber's channel and pump can close promptly.
 type Stream[T any] struct {
 	mu       sync.Mutex
 	key      func(T) string
@@ -17,6 +17,7 @@ type Stream[T any] struct {
 	keys     []string
 	snap     map[string]T
 	subs     map[*subscriber[T]]struct{}
+	done     chan struct{}
 	closed   bool
 }
 
@@ -32,7 +33,7 @@ type entry[T any] struct {
 
 // NewStream returns a stream that keys each value with key and treats values that terminal reports as terminal.
 func NewStream[T any](key func(T) string, terminal func(T) bool) *Stream[T] {
-	return &Stream[T]{key: key, terminal: terminal, snap: map[string]T{}, subs: map[*subscriber[T]]struct{}{}}
+	return &Stream[T]{key: key, terminal: terminal, snap: map[string]T{}, subs: map[*subscriber[T]]struct{}{}, done: make(chan struct{})}
 }
 
 // Publish sends v to every subscriber. It does nothing after Close.
@@ -72,23 +73,13 @@ func (s *Stream[T]) Subscribe(ctx context.Context) <-chan T {
 	ch := make(chan T)
 	sub := &subscriber[T]{wake: make(chan struct{}, 1)}
 	s.mu.Lock()
-	for _, k := range s.keys {
-		sub.queue = append(sub.queue, entry[T]{key: k, v: s.snap[k]})
-	}
 	if s.closed {
 		s.mu.Unlock()
-		// Deliver the snapshot, then close.
-		go func() {
-			defer close(ch)
-			for _, e := range sub.queue {
-				select {
-				case ch <- e.v:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+		close(ch)
 		return ch
+	}
+	for _, k := range s.keys {
+		sub.queue = append(sub.queue, entry[T]{key: k, v: s.snap[k]})
 	}
 	s.subs[sub] = struct{}{}
 	s.mu.Unlock()
@@ -116,6 +107,8 @@ func (s *Stream[T]) pump(ctx context.Context, sub *subscriber[T], ch chan T) {
 				continue
 			case <-ctx.Done():
 				return
+			case <-s.done:
+				return
 			}
 		}
 		e := sub.queue[0]
@@ -125,11 +118,13 @@ func (s *Stream[T]) pump(ctx context.Context, sub *subscriber[T], ch chan T) {
 		case ch <- e.v:
 		case <-ctx.Done():
 			return
+		case <-s.done:
+			return
 		}
 	}
 }
 
-// Close ends the stream. Subscribers drain their queues and then their channels close.
+// Close ends the stream and interrupts pumps even when their subscribers are not reading.
 func (s *Stream[T]) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,10 +132,5 @@ func (s *Stream[T]) Close() {
 		return
 	}
 	s.closed = true
-	for sub := range s.subs {
-		select {
-		case sub.wake <- struct{}{}:
-		default:
-		}
-	}
+	close(s.done)
 }

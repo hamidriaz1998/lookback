@@ -198,37 +198,47 @@ waitCanceled:
 	}
 }
 
-func TestLifetimeEndCancelsActiveAndQueuedRuns(t *testing.T) {
+func TestLifetimeEndStopsActiveAndQueuedRuns(t *testing.T) {
 	ix := &recordingIndexer{}
 	life, end := context.WithCancel(context.Background())
 	g := &gatedFiles{gateCombo: combo(contract.QuantBF16), resolves: make(map[string]int), entered: make(chan struct{}), gate: make(chan struct{})}
 	l := New(life, ix, nil, g.resolve, t.TempDir()+"/log", 1)
 	ch := l.Subscribe(context.Background())
-	a, _ := l.Run(context.Background(), combo(contract.QuantBF16), nil)
-	b, _ := l.Run(context.Background(), combo(contract.QuantQ8_0), nil)
+	if _, err := l.Run(context.Background(), combo(contract.QuantBF16), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), combo(contract.QuantQ8_0), nil); err != nil {
+		t.Fatal(err)
+	}
 	<-g.entered
 	end()
 	close(g.gate)
-	got := map[contract.RunID]contract.LabState{}
-	deadline := time.After(60 * time.Second)
-	for len(got) < 2 {
-		select {
-		case s, ok := <-ch:
-			if !ok {
-				t.Fatalf("stream closed with terminal steps %v", got)
+	select {
+	case _, ok := <-ch:
+		if ok {
+			for range ch {
 			}
-			if s.State == contract.LabCanceled || s.State == contract.LabFailed || s.State == contract.LabDone {
-				got[s.RunID] = s.State
-			}
-		case <-deadline:
-			t.Fatalf("timed out; terminal steps %v", got)
 		}
-	}
-	if got[a] != contract.LabCanceled || got[b] != contract.LabCanceled {
-		t.Fatalf("terminal states %v, want canceled for both runs (%d, %d)", got, a, b)
+	case <-time.After(time.Second):
+		t.Fatal("lab stream did not close after lifetime end")
 	}
 	if _, err := l.Run(context.Background(), combo(contract.QuantBF16), nil); !errors.Is(err, contract.ErrStopped) {
 		t.Fatalf("Run after lifetime end: %v", err)
+	}
+}
+
+func TestLifetimeEndClosesUnreadSubscription(t *testing.T) {
+	life, end := context.WithCancel(context.Background())
+	l := New(life, &recordingIndexer{}, nil, failingFiles, t.TempDir()+"/log", 1)
+	ch := l.Subscribe(context.Background())
+	end()
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("unread subscription received a value after shutdown")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unread subscription stayed open after lab shutdown")
 	}
 }
 
