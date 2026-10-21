@@ -22,10 +22,18 @@ import (
 // Limits from SPEC section 6.
 const (
 	maxExtra       = 10
-	textBatch      = 8    // chunks per request (SPEC section 9)
-	qualityBar     = 0.99 // Recommend needs at least this quality
-	extraTextBytes = 8192 // bytes read from a user-picked text file
+	textBatch      = 8        // chunks per request (SPEC section 9)
+	qualityBar     = 0.99     // Recommend needs at least this quality
+	extraTextBytes = 8192     // bytes read from a user-picked text file
+	maxPickBytes   = 50 << 20 // largest user-picked file, the index's own limit (SPEC section 9)
 )
+
+// embedder is the part of the sidecar that a run uses. *runtime.Server has these methods.
+type embedder interface {
+	EmbedTexts(ctx context.Context, prompts []string) ([][]float32, int, error)
+	EmbedImage(ctx context.Context, img []byte, mime string) ([]float32, int, error)
+	Tokenize(ctx context.Context, text string) ([]contract.Token, error)
+}
 
 // Prompt returns the document prompt of a chunk: "title: <file name> | text: <chunk>" (SPEC section 9).
 func Prompt(name, text string) string {
@@ -95,6 +103,11 @@ func (l *Lab) Run(ctx context.Context, c contract.Combo, extra []string) (contra
 	}
 	if len(extra) > maxExtra {
 		return 0, fmt.Errorf("bench: at most %d extra files", maxExtra)
+	}
+	for _, p := range extra {
+		if _, err := checkPick(p); err != nil {
+			return 0, err
+		}
 	}
 	if _, err := l.files(c); err != nil {
 		return 0, err
@@ -212,7 +225,7 @@ func (l *Lab) execute(r *run) contract.LabStep {
 }
 
 // measure embeds the sample and the user's files, and returns the numbers of the test table.
-func (l *Lab) measure(r *run, srv *runtime.Server) (contract.BenchResult, error) {
+func (l *Lab) measure(r *run, srv embedder) (contract.BenchResult, error) {
 	var res contract.BenchResult
 	images, err := assets.Images()
 	if err != nil {
@@ -275,8 +288,27 @@ func (l *Lab) measure(r *run, srv *runtime.Server) (contract.BenchResult, error)
 	return res, nil
 }
 
+// checkPick returns the info of a user-picked file. It must be a regular file of at most maxPickBytes. Stat does
+// not open the file, so a FIFO, a device or a socket is refused without blocking.
+func checkPick(p string) (os.FileInfo, error) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", filepath.Base(p))
+	}
+	if fi.Size() > maxPickBytes {
+		return nil, fmt.Errorf("%s: %d bytes, over the %d-byte limit", filepath.Base(p), fi.Size(), int64(maxPickBytes))
+	}
+	return fi, nil
+}
+
 // embedUserFile embeds one picked file, for its timing only: images as images, anything else as its first bytes.
-func embedUserFile(ctx context.Context, srv *runtime.Server, p string) error {
+func embedUserFile(ctx context.Context, srv embedder, p string) error {
+	if _, err := checkPick(p); err != nil {
+		return err
+	}
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return err
