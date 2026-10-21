@@ -107,10 +107,13 @@ func (s *system) Name() string { return "System" }
 func (s *system) Changed() <-chan struct{} { return s.changed }
 
 func (s *system) Theme(base *ui.Theme) *ui.Theme {
-	return systemTheme(base, desktopAccent())
+	return systemTheme(base, DesktopAccent())
 }
 
-func desktopAccent() ui.Color {
+// DesktopAccent reads the desktop's accent color, or the zero color where it has none. It is a variable
+// so that UI tests can stand in for the desktop: MyGo reads preferences only on the main thread of a
+// running app.
+var DesktopAccent = func() ui.Color {
 	p := mygo.Theme.Preferences().Accent
 	if p.A == 0 {
 		return ui.Color{}

@@ -11,10 +11,12 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +30,16 @@ const (
 	thumbEdge  = 320  // longest edge of a decoded thumbnail, in pixels
 	tileWidth  = 180  // minimum tile width in DIPs
 	tileHeight = 150  // tile height in DIPs
+	winWidth   = 1100 // window width in DIPs, as main opens it
+	pad        = 12   // the view's padding on each side, in DIPs
 )
+
+// gridColumns is how many columns MyGo's GridView lays out in width DIPs: as many items at least minWidth
+// wide, gap apart, as fit (ui.GridView computes floor((width+gap)/(minWidth+gap)), at least one). The grid
+// does not expose its column count, so autoscroll computes it from the window width each frame.
+func gridColumns(width, minWidth, gap float32) int {
+	return max(1, int(math.Floor(float64((width+gap)/(minWidth+gap)))))
+}
 
 // decoded is one thumbnail, ready to become a bitmap on the main thread.
 type decoded struct {
@@ -45,6 +56,11 @@ type app struct {
 	start  time.Time
 	first  time.Duration // time from start to the first bitmap in the grid
 	done   time.Duration // time from start to the last bitmap in the grid
+
+	win  *mygo.Window  // the window, for its size when autoscroll computes the columns
+	auto time.Duration // LOOKBACK_AUTOSCROLL: how long to scroll the grid, 0 for none
+	row  int           // the grid row autoscroll shows first
+	dir  int           // autoscroll direction: 1 down, -1 up
 }
 
 // view builds the window from the state, once per frame.
@@ -61,7 +77,26 @@ func (a *app) view(c *ui.Context) {
 				ui.Text(c, a.names[i]).SingleLine()
 			})
 		}).Grow(1)
+		if a.auto > 0 && a.loaded == thumbCount {
+			a.autoscroll(c)
+		}
 	})
+}
+
+// autoscroll steps the grid one row a frame, reversing at the first and last row, and asks for the
+// next frame, so the window redraws at display rate until the timer in load ends the run. One row
+// a frame is a harsher case than wheel scrolling. The step is the grid's real column count at the
+// window's current width, so each step moves exactly one row.
+func (a *app) autoscroll(c *ui.Context) {
+	width, _ := a.win.ContentSize()
+	cols := gridColumns(float32(width)-2*pad, tileWidth, c.Theme().Space(2))
+	rows := (thumbCount + cols - 1) / cols
+	if next := a.row + a.dir; next < 0 || next >= rows {
+		a.dir = -a.dir
+	}
+	a.row += a.dir
+	a.grid.ScrollTo(a.row*cols, ui.Start)
+	c.AnimationFrame()
 }
 
 // screenshots returns the PNG files in dir whose names start with "screenshot", sorted.
@@ -173,6 +208,12 @@ func (a *app) load(win *mygo.Window, paths []string) {
 				a.done = time.Since(a.start)
 				log.Printf("decoded %d thumbnails with %d workers: first bitmap %s, all %s",
 					thumbCount, runtime.NumCPU(), a.first.Round(time.Millisecond), a.done.Round(time.Millisecond))
+				if a.auto > 0 {
+					time.AfterFunc(a.auto, func() {
+						fmt.Println("autoscroll done")
+						os.Exit(0)
+					})
+				}
 			}
 		})
 	}
@@ -192,7 +233,14 @@ func main() {
 	}
 	log.Printf("%d source screenshots", len(paths))
 
-	a := &app{names: make([]string, thumbCount), thumbs: make([]*ui.Bitmap, thumbCount)}
+	a := &app{names: make([]string, thumbCount), thumbs: make([]*ui.Bitmap, thumbCount), dir: 1}
+	if v := os.Getenv("LOOKBACK_AUTOSCROLL"); v != "" {
+		secs, err := strconv.ParseFloat(v, 64)
+		if err != nil || secs <= 0 {
+			log.Fatalf("LOOKBACK_AUTOSCROLL: want seconds above 0, got %q", v)
+		}
+		a.auto = time.Duration(secs * float64(time.Second))
+	}
 	for i := range a.names {
 		a.names[i] = filepath.Base(paths[i%len(paths)])
 	}
@@ -203,6 +251,7 @@ func main() {
 			Height:  760,
 			Content: ui.View(a.view),
 		})
+		a.win = win
 		a.start = time.Now()
 		go a.load(win, paths)
 	})

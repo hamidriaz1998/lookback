@@ -78,3 +78,12 @@ See `.review/wp4-r3.md`.
 | R1-#1 (high, fixed): `.deb` lacked the tray library | done | `mygo.json` now declares `libayatana-appindicator3-1`. Still to add: a packaging check that fails if a rebuild drops it, and a prerequisite check/message in `scripts/install.sh` for the tarball/source paths. |
 | R1-#2 (medium): accepted installation paths produce a broken desktop command | WP10 | Quote or reject install prefixes with spaces/special characters in the desktop entry `Exec` line; test with such a prefix. See `.review/wp10-r1.md`. |
 | R1-#3 (medium): source installer registers the launcher outside the configured XDG data dir | WP10 | Honor `XDG_DATA_HOME` for the desktop entry and icon; test with it set. |
+
+## From WP6 review round 2 (final round under the 2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| R2-#2 (medium): completing onboarding can reopen it, or persist completion before initialization succeeds | WP6 | Keep an explicit finishing state; stop stale snapshots from reopening onboarding; save completion only after initialization succeeds; test gated load and init-failure restart. See `.review/wp6-r2.md`. |
+| R2-#3 (medium): adding the default thumbnail directory discards an injected page renderer | WP6 | In `New`, set `fm.CacheDir` and assign `d.Media = fm` so `Pages` survives; test a renderer passed through `New` with CacheDir omitted. See `.review/wp6-r2.md`. |
+| RAM recommendation threshold implemented as 15 GiB MemTotal for SPEC's 16 GB; confirm | user | Confirm the 15 GiB MemTotal threshold for SPEC section 5's 16 GB CPU rule. |
+| 60 fps gate with the production grid and thumbnail cache while indexing is still open (docs/spikes.md) | WP9 | Measure the production grid and thumbnail cache at 60 fps during indexing, then close the gate in docs/spikes.md. |

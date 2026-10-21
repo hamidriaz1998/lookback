@@ -69,7 +69,7 @@ func (s *omarchy) Theme(base *ui.Theme) *ui.Theme {
 	s.mu.Lock()
 	kv := s.kv
 	s.mu.Unlock()
-	return omarchyTheme(systemTheme(base, desktopAccent()), kv)
+	return omarchyTheme(systemTheme(base, DesktopAccent()), kv)
 }
 
 // readOmarchy reads and parses the colors.toml that current/theme holds. A symlink or a real
