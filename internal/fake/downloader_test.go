@@ -203,3 +203,30 @@ func TestPauseSurvivesConnectionChanges(t *testing.T) {
 		t.Fatal("an explicit resume did not move the bytes")
 	}
 }
+
+// Two descriptors with one new key in the same batch conflict in either order, and the batch queues nothing
+// (review finding 8). Identical duplicates in one batch are not a conflict.
+func TestSameBatchConflictQueuesNothing(t *testing.T) {
+	bg := context.Background()
+	base := bf16Text(t)
+	base.SHA256 = strings.Repeat("9a", 32)
+	other := base
+	other.URL = base.URL + "?other"
+	d := newDownloader()
+	before := len(d.order)
+	for _, batch := range [][]contract.Asset{{base, other}, {other, base}} {
+		if err := d.Ensure(bg, batch); !errors.Is(err, contract.ErrConflict) {
+			t.Fatalf("Ensure(%v): %v, want ErrConflict", batch, err)
+		}
+		d.mu.Lock()
+		_, queued := d.files[base.Key()]
+		n := len(d.order)
+		d.mu.Unlock()
+		if queued || n != before {
+			t.Fatalf("a refused batch queued %d assets", n-before)
+		}
+	}
+	if err := d.Ensure(bg, []contract.Asset{base, base}); err != nil {
+		t.Fatalf("identical duplicates: %v", err)
+	}
+}

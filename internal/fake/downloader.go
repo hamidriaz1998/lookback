@@ -40,7 +40,7 @@ type Downloader struct {
 	order   []string
 	streams *stream[contract.DownloadProgress]
 	paused  bool // PauseAll is in effect: files ensured or retried now start paused
-	off    bool // the connection is down
+	off     bool // the connection is down
 }
 
 // NewDownloader returns the fixture downloader. It stops when ctx ends.
@@ -54,7 +54,9 @@ func NewDownloader(ctx context.Context) *Downloader {
 func newDownloader() *Downloader {
 	d := &Downloader{files: map[string]*download{}, streams: newStream(
 		func(p contract.DownloadProgress) string { return p.Key },
-		func(p contract.DownloadProgress) bool { return p.State == contract.FileDone || p.State == contract.FileFailed },
+		func(p contract.DownloadProgress) bool {
+			return p.State == contract.FileDone || p.State == contract.FileFailed
+		},
 	)}
 	now := time.Now()
 	for _, a := range mustAssets(contract.Combo{Backend: contract.BackendVulkan, TextQuant: contract.QuantBF16, EncQuant: contract.QuantBF16}) {
@@ -168,16 +170,22 @@ func (d *Downloader) publishLocked(df *download) {
 	})
 }
 
-// Ensure queues the assets that are not verified on disk. It checks every asset before it queues any, so a
-// conflict queues nothing. A tracked key with the same descriptor is left as it is. A new file starts
-// paused while PauseAll is in effect.
+// Ensure queues the assets that are not verified on disk. It checks the whole batch before it queues any, so a
+// conflict queues nothing: a key tracked with another descriptor, or two descriptors with one key in the batch
+// (in either order). A tracked key with the same descriptor is left as it is. A new file starts paused while
+// PauseAll is in effect.
 func (d *Downloader) Ensure(ctx context.Context, assets []contract.Asset) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	batch := map[string]contract.Asset{}
 	for _, a := range assets {
+		if prev, ok := batch[a.Key()]; ok && prev != a {
+			return contract.ErrConflict
+		}
+		batch[a.Key()] = a
 		if df, ok := d.files[a.Key()]; ok && df.asset != a {
 			return contract.ErrConflict
 		}
