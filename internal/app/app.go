@@ -28,7 +28,7 @@ type Config struct {
 
 // DefaultConfig returns the SPEC section 14 defaults.
 func DefaultConfig() Config {
-	return Config{Hotkey: "Super+Shift+Space", PauseOnBattery: true}
+	return Config{Hotkey: "Super+.", PauseOnBattery: true}
 }
 
 var hotkeyState struct {

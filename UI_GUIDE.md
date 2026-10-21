@@ -303,7 +303,7 @@ Embed these Lucide SVGs in `internal/ui/icons/` with the Lucide license file: `s
 | Ctrl+, | Settings |
 | Ctrl+1 … Ctrl+5 | Sidebar pages |
 | Esc | Clear the query → close the preview → hide the window to the tray, in that order |
-| Super+Shift+Space (global, configurable) | Show or hide Lookback |
+| Super+. (global, configurable) | Show or hide Lookback |
 
 The focus order follows the visual order. The grid is one tab stop; arrows move within it.
 
