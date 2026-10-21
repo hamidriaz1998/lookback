@@ -8,6 +8,8 @@ Everything runs on your computer. Lookback downloads an embedding model that fit
 indexes the folders that you choose, and keeps the index current as files change. It has no account,
 no cloud, and no telemetry.
 
+![Lookback search results for "error dialog about the hotspot": the matching error screenshot is first, followed by a troubleshooting note](docs/images/search.png)
+
 > **Status:** early release (0.1.0). Lookback runs on **Linux x64** only. Windows support comes next;
 > macOS is planned later.
 
@@ -61,8 +63,40 @@ GPUs with a recent driver.
 
 ## Install
 
-Build and install Lookback for your user. You need [Go](https://go.dev/dl/) 1.27.1 or later. You do
-not need root access.
+Each [release](https://github.com/hamidriaz1998/lookback/releases) has a tarball that works on any
+Linux x64 distribution, an `install.sh` script, and a `.deb` package for Debian and Ubuntu.
+
+### Arch Linux and other distributions
+
+1. Install the libraries. On Arch Linux:
+
+   ```sh
+   sudo pacman -S --needed gtk3 libayatana-appindicator
+   ```
+
+2. Download the tarball and the install script from the latest release, then run the script. You do
+   not need root access.
+
+   ```sh
+   gh release download --repo hamidriaz1998/lookback --pattern '*.tar.gz' --pattern install.sh
+   sh install.sh lookback-*-linux-amd64.tar.gz
+   ```
+
+The script installs Lookback in `~/.local/lookback.app`, adds the `lookback` command to `~/.local/bin`,
+and adds Lookback to the applications menu. To remove Lookback, run `sh install.sh --uninstall`.
+Uninstalling keeps your settings and index.
+
+### Debian and Ubuntu
+
+Download the `.deb` package from the latest release, then install it:
+
+```sh
+sudo apt install ./lookback_*_amd64.deb
+```
+
+### Build from source
+
+You need [Go](https://go.dev/dl/) 1.27.1 or later.
 
 ```sh
 git clone https://github.com/hamidriaz1998/lookback.git
@@ -72,15 +106,17 @@ scripts/install.sh
 
 The script builds Lookback and installs the binary, a desktop entry, and the icon under `~/.local`.
 To install somewhere else, add `--prefix DIR`. To remove Lookback, run
-`scripts/install.sh --uninstall`. Uninstalling keeps your settings and index.
+`scripts/install.sh --uninstall`.
 
-To build packages instead, use the [MyGo](https://github.com/egoist/mygo) CLI:
+To build the release packages, use the [MyGo](https://github.com/egoist/mygo) CLI at the version
+that `go.mod` pins:
 
 ```sh
-mygo build -platform linux/amd64
+go build -o mygo github.com/egoist/mygo/cmd/mygo
+./mygo build -platform linux/amd64
 ```
 
-This command writes a `.deb` package and a tarball to `dist/`.
+This command writes the tarball, `install.sh`, and the `.deb` package to `dist/linux-amd64/`.
 
 ## Get started
 
@@ -171,3 +207,8 @@ The project does not use cgo. These documents describe the design:
 - [UI_GUIDE.md](UI_GUIDE.md): the interface guidelines
 - [docs/acceptance.md](docs/acceptance.md): acceptance test results
 - [docs/followups.md](docs/followups.md): known issues and planned work
+
+## License
+
+Lookback is released under the [MIT License](LICENSE). The bundled
+[Lucide](https://lucide.dev) icons use the [ISC License](internal/ui/icons/LICENSE.lucide).
