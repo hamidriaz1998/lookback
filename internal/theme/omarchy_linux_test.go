@@ -127,3 +127,22 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// A malformed file keeps the last good palette: the reload fails and nothing is emitted.
+func TestFailedReloadKeepsLastGoodPalette(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(dir, "theme"), 0o755))
+	must(t, os.WriteFile(filepath.Join(dir, "theme", "colors.toml"), palette("#aaaaaa"), 0o644))
+	s := newOmarchy(ctx, dir)
+	before := emitsOf(s)
+	must(t, os.WriteFile(filepath.Join(dir, "theme", "colors.toml"), []byte("accent = \"#ff0000\" BROKEN\n"), 0o644))
+	s.reload(ctx, time.Millisecond)
+	if got := accentOf(t, s); got != "#aaaaaa" {
+		t.Errorf("accent after failed reload = %q, want the last good #aaaaaa", got)
+	}
+	if got := emitsOf(s) - before; got != 0 {
+		t.Errorf("emits after failed reload = %d, want 0", got)
+	}
+}

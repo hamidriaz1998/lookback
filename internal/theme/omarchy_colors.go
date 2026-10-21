@@ -39,6 +39,10 @@ func parseColors(data []byte) (map[string]string, error) {
 			return nil, fmt.Errorf("colors.toml line %d: unclosed string", n)
 		}
 		kv[key] = string(val[1 : 1+end])
+		// After the closing quote only whitespace and an optional # comment may follow.
+		if rest := bytes.TrimSpace(val[1+end+1:]); len(rest) > 0 && rest[0] != '#' {
+			return nil, fmt.Errorf("colors.toml line %d: text after the value of %s", n, key)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err

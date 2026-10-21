@@ -20,6 +20,20 @@ func TestParseColorsRejectsBadInput(t *testing.T) {
 	}
 }
 
+// Text after the closing quote other than a # comment is an error, so the file is retried and
+// the last good palette stays (SPEC section 15).
+func TestParseColorsRejectsTrailingTokens(t *testing.T) {
+	for name, src := range map[string]string{
+		"bare word":   `accent = "#ff0000" BROKEN`,
+		"second key":  `accent = "#ff0000" background = "#111111"`,
+		"quote after": `accent = "#ff0000"x"`,
+	} {
+		if _, err := parseColors([]byte(src)); err == nil {
+			t.Errorf("%s: no error for %q", name, src)
+		}
+	}
+}
+
 func TestParseColorsAcceptsCommentsAndTrailingText(t *testing.T) {
 	kv, err := parseColors([]byte("# c\n\nmode = \"dark\" # note\nforeground = \"#AABBCC\"\n"))
 	if err != nil {

@@ -105,6 +105,19 @@ func retryRead(ctx context.Context, read func() (map[string]string, error), wait
 	}
 }
 
+// reload reads colors.toml, retrying while a swap is under way. When every read fails, the last
+// good palette stays in place.
+func (s *omarchy) reload(ctx context.Context, wait time.Duration) {
+	kv, err := retryRead(ctx, func() (map[string]string, error) { return readOmarchy(s.dir) }, wait, omarchyRetries)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("theme: colors.toml not read, keeping the current colors: %v", err)
+		}
+		return
+	}
+	s.set(kv)
+}
+
 // set stores kv and emits a change when it differs from the stored one.
 func (s *omarchy) set(kv map[string]string) {
 	s.mu.Lock()
@@ -182,14 +195,7 @@ func (s *omarchy) watch(ctx context.Context) {
 			if needArm() {
 				arm()
 			}
-			kv, err := retryRead(ctx, func() (map[string]string, error) { return readOmarchy(s.dir) }, omarchyRetryWait, omarchyRetries)
-			if err != nil {
-				if ctx.Err() == nil {
-					log.Printf("theme: colors.toml not read, keeping the current colors: %v", err)
-				}
-				continue
-			}
-			s.set(kv)
+			s.reload(ctx, omarchyRetryWait)
 		}
 	}
 }
