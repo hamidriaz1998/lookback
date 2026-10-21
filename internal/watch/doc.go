@@ -1,3 +1,3 @@
-// Package watch runs one recursive folder watcher per folder, with events debounced for 1 s, and the
-// startup rescan that compares size and mtime with the files table (SPEC sections 11 and 13).
+// Package watch reports changes under a folder tree. On Linux it uses inotify and watches every
+// directory under the root (SPEC section 13, Q5). Other systems get a stub that returns errors.ErrUnsupported.
 package watch
