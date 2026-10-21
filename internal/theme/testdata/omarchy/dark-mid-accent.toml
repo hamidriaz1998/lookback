@@ -1,0 +1,15 @@
+# Hand-made fixture: a dark palette whose accent is mid-gray, so the accent text choice matters.
+mode = "dark"
+
+accent = "#7f7f7f"
+muted = "#8a8a8a"
+
+background = "#111111"
+lighter_background = "#2a2a2a"
+
+foreground = "#eeeeee"
+bright_foreground = "#fafafa"
+red = "#ff4444"
+bright_yellow = "#ffd700"
+yellow = "#cccc00"
+green = "#44ff44"
