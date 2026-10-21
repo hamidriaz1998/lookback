@@ -35,7 +35,7 @@ func lockedPause(x *Indexer) contract.PauseReason {
 func TestLabRunsAreSerializedByID(t *testing.T) {
 	ctx := context.Background()
 	rt := NewRuntime()
-	ix := NewIndexer(NewStore())
+	ix := NewIndexer(NewStore(), rt)
 	l := NewLab(ctx, rt, ix)
 	events := l.Subscribe(ctx)
 
@@ -99,7 +99,7 @@ func TestLabRunsAreSerializedByID(t *testing.T) {
 func TestLabCancelEmitsTerminalStep(t *testing.T) {
 	ctx := context.Background()
 	rt := NewRuntime()
-	ix := NewIndexer(NewStore())
+	ix := NewIndexer(NewStore(), rt)
 	l := NewLab(ctx, rt, ix)
 	events := l.Subscribe(ctx)
 

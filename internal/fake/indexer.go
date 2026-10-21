@@ -29,9 +29,14 @@ type job struct {
 // 96, and each completed file commits its items and file_index row to the store, so Search and the
 // progress counts see the same state. The active job and an optional rebuild share the rate: each
 // gets half while both have work. The job pauses while any reason is set.
+//
+// Each completed file is embedded through a Session for the vector space of its generation. A
+// commit that finds its session not ready (a restart is running) waits for the next tick.
 type Indexer struct {
 	mu       sync.Mutex
 	store    *Store
+	rt       contract.Runtime
+	life     context.Context // the lifetime Start was given
 	interval time.Duration
 	streams  *stream[contract.Progress] // the active job
 	rstreams *stream[contract.Progress] // the rebuild
@@ -40,18 +45,25 @@ type Indexer struct {
 	active   *job
 	rebuild  *job
 
+	activeSess  contract.Session // the session of the active generation
+	rebuildSess contract.Session // the session of the building generation, during a rebuild
+
 	elapsed time.Duration
 	tick    int
 	rate    float64 // tokens per second this tick, which varies
 }
 
-// NewIndexer returns an Indexer over store that publishes every 250 ms, the SPEC section 11 maximum rate.
-func NewIndexer(store *Store) *Indexer { return newIndexer(store, 250*time.Millisecond) }
+// NewIndexer returns an Indexer over store that embeds through rt and publishes every 250 ms, the SPEC
+// section 11 maximum rate.
+func NewIndexer(store *Store, rt contract.Runtime) *Indexer {
+	return newIndexer(store, rt, 250*time.Millisecond)
+}
 
 // newIndexer returns an Indexer that ticks every interval.
-func newIndexer(store *Store, interval time.Duration) *Indexer {
+func newIndexer(store *Store, rt contract.Runtime, interval time.Duration) *Indexer {
 	return &Indexer{
 		store:    store,
+		rt:       rt,
 		interval: interval,
 		streams: newStream(
 			func(p contract.Progress) string { return fmt.Sprint(p.Gen) },
@@ -61,20 +73,33 @@ func newIndexer(store *Store, interval time.Duration) *Indexer {
 			func(p contract.Progress) string { return fmt.Sprint(p.Gen) },
 			func(p contract.Progress) bool { return p.FilesDone == p.FilesTotal },
 		),
-		reasons:  map[contract.PauseReason]bool{},
+		reasons: map[contract.PauseReason]bool{},
 	}
 }
 
-// Start begins the job in the background. It may be called once; the job stops, and both progress
-// channels close, when ctx ends.
+// Start begins the job in the background. It may be called once, and it opens the session of the active
+// generation. The job stops, and both streams close, when ctx ends.
 func (x *Indexer) Start(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.started {
 		return errors.New("fake indexer: Start may be called once")
 	}
+	gen, ok := x.store.generation(x.store.activeGenID())
+	if !ok {
+		return contract.ErrUnknownGen
+	}
+	sess, err := x.rt.Session(ctx, gen.Space)
+	if err != nil {
+		return err
+	}
 	x.started = true
-	x.active = &job{queue: x.store.needingWork(x.store.activeGenID())}
+	x.life = ctx
+	x.activeSess = sess
+	x.active = &job{queue: x.store.needingWork(gen.ID)}
 	go x.run(ctx)
 	return nil
 }
@@ -83,6 +108,7 @@ func (x *Indexer) Start(ctx context.Context) error {
 func (x *Indexer) run(ctx context.Context) {
 	defer x.streams.close()
 	defer x.rstreams.close()
+	defer x.closeSessions()
 	ticker := time.NewTicker(x.interval)
 	defer ticker.Stop()
 	for {
@@ -95,6 +121,18 @@ func (x *Indexer) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+	}
+}
+
+// closeSessions releases the indexer's sessions when its job ends.
+func (x *Indexer) closeSessions() {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for _, s := range []*contract.Session{&x.activeSess, &x.rebuildSess} {
+		if *s != nil {
+			_ = (*s).Close()
+			*s = nil
 		}
 	}
 }
@@ -140,11 +178,28 @@ func (x *Indexer) step() (contract.Progress, *contract.Progress) {
 	_ = x.store.ActivateGeneration(context.Background(), x.rebuild.gen)
 	_ = x.store.DeleteItems(context.Background(), x.rebuild.from)
 	x.rebuild = nil
+	old := x.activeSess
+	x.activeSess, x.rebuildSess = x.rebuildSess, nil
+	if old != nil {
+		_ = old.Close()
+	}
 	return x.snapshot(x.active, x.store.activeGenID(), true), &rp
 }
 
-// commitDue completes every file whose tokens are processed and commits its items and row.
-// Commit cannot fail here: the generation exists and the items match the file.
+// sessionLocked returns the session of generation gen, the active or the building one. The caller holds x.mu.
+func (x *Indexer) sessionLocked(gen int64) (contract.Session, error) {
+	if gen == x.store.activeGenID() && x.activeSess != nil {
+		return x.activeSess, nil
+	}
+	if x.rebuild != nil && gen == x.rebuild.gen && x.rebuildSess != nil {
+		return x.rebuildSess, nil
+	}
+	return nil, contract.ErrUnknownGen
+}
+
+// commitDue completes every file whose tokens are processed: it embeds the file's items through the
+// session of its generation, then commits them with the file_index row. A file whose embedding or commit
+// fails stays queued for the next tick. A file that was deleted is skipped.
 func (x *Indexer) commitDue(j *job) {
 	for j.next < len(j.queue) && j.consumed >= float64(j.next+1)*tokensPerFile {
 		f := j.queue[j.next]
@@ -152,10 +207,51 @@ func (x *Indexer) commitDue(j *job) {
 		if gen == 0 {
 			gen = x.store.activeGenID()
 		}
-		ix, items := simulate(f, gen)
-		_ = x.store.CommitFile(context.Background(), ix, items)
+		if err := x.commitFile(f, gen); err != nil {
+			if errors.Is(err, contract.ErrUnknownFile) {
+				j.next++
+				continue
+			}
+			return
+		}
 		j.next++
 	}
+}
+
+// commitFile embeds and commits one file into gen. Each item's vector comes from the session of gen.
+func (x *Indexer) commitFile(f contract.FileRec, gen int64) error {
+	sess, err := x.sessionLocked(gen)
+	if err != nil {
+		return err
+	}
+	ix, items := simulate(f, gen)
+	ctx := x.lifetime()
+	for i := range items {
+		key := fmt.Sprintf("file %d unit %d", f.ID, items[i].Unit)
+		var vec []float32
+		if items[i].Modality == "image" {
+			vec, _, err = sess.EmbedImage(ctx, []byte(key), "image/png")
+		} else {
+			var vecs [][]float32
+			vecs, _, err = sess.EmbedTexts(ctx, []string{key})
+			if err == nil {
+				vec = vecs[0]
+			}
+		}
+		if err != nil {
+			return err
+		}
+		items[i].Vector = vec
+	}
+	return x.store.CommitFile(ctx, ix, items)
+}
+
+// lifetime returns the context of the job: the one Start was given, or Background before Start.
+func (x *Indexer) lifetime() context.Context {
+	if x.life == nil {
+		return context.Background()
+	}
+	return x.life
 }
 
 // snapshot builds the Progress for a job. Active snapshots count every file in the store; a
@@ -277,7 +373,8 @@ func (x *Indexer) Rescan(ctx context.Context, folderID int64) error {
 }
 
 // Rebuild creates a building generation for the precisions and queues every file indexed in the
-// active generation for it. The rebuild gets half the rate while the active job has work.
+// active generation for it. The rebuild gets half the rate while the active job has work. It opens the
+// session of the building space first, so a refused session creates no generation.
 func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -287,14 +384,21 @@ func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64,
 	if x.rebuild != nil {
 		return 0, contract.ErrRebuildBusy
 	}
+	space := contract.VectorSpace{TextQuant: text, EncQuant: enc, ModelRev: modelRev}
+	sess, err := x.rt.Session(ctx, space)
+	if err != nil {
+		return 0, err
+	}
 	from := x.store.activeGenID()
 	g := contract.Generation{
-		Space: contract.VectorSpace{TextQuant: text, EncQuant: enc, ModelRev: modelRev},
+		Space:     space,
 		CreatedAt: time.Date(2026, 10, 21, 9, 30, 0, 0, time.UTC),
 	}
 	if err := x.store.NewGeneration(ctx, &g); err != nil {
+		_ = sess.Close()
 		return 0, err
 	}
+	x.rebuildSess = sess
 	x.rebuild = &job{gen: g.ID, from: from, queue: x.store.doneFiles(from)}
 	return g.ID, nil
 }

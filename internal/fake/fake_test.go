@@ -207,7 +207,7 @@ func TestByteFallbackTokenizer(t *testing.T) {
 func TestIndexerCompletesIntoStore(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	x := newIndexer(s, time.Second)
+	x := newIndexer(s, NewRuntime(), time.Second)
 	if err := x.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestIndexerCompletesIntoStore(t *testing.T) {
 // The ETA counts down steadily once estimating ends.
 func TestIndexerETACountsDown(t *testing.T) {
 	ctx := context.Background()
-	x := newIndexer(NewStore(), time.Second)
+	x := newIndexer(NewStore(), NewRuntime(), time.Second)
 	_ = x.Start(ctx)
 	var etas []time.Duration
 	for i := 0; i < 200; i++ {
@@ -286,7 +286,7 @@ func TestIndexerETACountsDown(t *testing.T) {
 func TestRebuildRunsBesideActiveJob(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore()
-	x := newIndexer(s, time.Second)
+	x := newIndexer(s, NewRuntime(), time.Second)
 	if _, err := x.Rebuild(ctx, contract.QuantBF16, contract.QuantBF16); !errors.Is(err, contract.ErrNotStarted) {
 		t.Fatalf("Rebuild before Start: %v", err)
 	}

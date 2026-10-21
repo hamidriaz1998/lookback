@@ -570,6 +570,14 @@ func (s *Store) folderFilesLocked(folderID int64) []contract.FileRec {
 	return out
 }
 
+// generation returns generation id.
+func (s *Store) generation(id int64) (contract.Generation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.gens[id]
+	return g, ok
+}
+
 // activeGenID returns the active generation, or 0 when there is none.
 func (s *Store) activeGenID() int64 {
 	s.mu.Lock()
