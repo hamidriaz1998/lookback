@@ -1,0 +1,32 @@
+{
+  "backend": "cpu",
+  "build": "b11755",
+  "dims": 768,
+  "items": [
+    "img-01.png",
+    "img-02.png",
+    "img-03.png",
+    "img-04.png",
+    "img-05.png",
+    "img-06.png",
+    "img-07.png",
+    "img-08.png",
+    "chunk-01.txt",
+    "chunk-02.txt",
+    "chunk-03.txt",
+    "chunk-04.txt",
+    "chunk-05.txt",
+    "chunk-06.txt",
+    "chunk-07.txt",
+    "chunk-08.txt",
+    "chunk-09.txt",
+    "chunk-10.txt",
+    "chunk-11.txt",
+    "chunk-12.txt",
+    "chunk-13.txt",
+    "chunk-14.txt",
+    "chunk-15.txt",
+    "chunk-16.txt"
+  ],
+  "model": "embeddinggemma-2-BF16.gguf"
+}

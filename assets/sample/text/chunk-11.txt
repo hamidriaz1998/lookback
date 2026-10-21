@@ -1,0 +1,1 @@
+Reading notes on distributed systems. A consensus protocol needs a majority of nodes to agree before a value is committed. Leader election uses timeouts with random jitter so that two nodes rarely start an election at the same moment. Read the paper twice; the second time, skip the proofs.
