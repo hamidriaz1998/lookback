@@ -61,6 +61,32 @@ func TestRetryRead(t *testing.T) {
 	}
 }
 
+func TestWatchRereadsAfterEnrollment(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(dir, "theme"), 0o755))
+	path := filepath.Join(dir, "theme", "colors.toml")
+	must(t, os.WriteFile(path, palette("#aaaaaa"), 0o644))
+	s := &omarchy{dir: dir, changed: make(chan struct{}, 1)}
+	if kv, err := readOmarchy(dir); err != nil {
+		t.Fatal(err)
+	} else {
+		s.kv = kv
+	}
+	// Swap after the initial read but before the watch goroutine enrolls.
+	must(t, os.WriteFile(path, palette("#bbbbbb"), 0o644))
+	go s.watch(ctx)
+	select {
+	case <-s.Changed():
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not emit the palette present at enrollment")
+	}
+	if got := accentOf(t, s); got != "#bbbbbb" {
+		t.Fatalf("accent = %q, want #bbbbbb", got)
+	}
+}
+
 func TestSwapStylesEmitOnce(t *testing.T) {
 	if testing.Short() {
 		t.Skip("watcher test waits for debounce")

@@ -183,6 +183,9 @@ func (s *omarchy) watch(ctx context.Context) {
 	}
 
 	arm()
+	// WatchFiles does not report existing files; reread after both watches are enrolled to close
+	// the gap between the constructor's initial read and watcher setup.
+	s.reload(ctx, omarchyRetryWait)
 	timer := time.NewTimer(omarchyDebounce)
 	timer.Stop()
 	for {
