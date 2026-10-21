@@ -18,8 +18,8 @@ import (
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
-// maxLongEdge is the longest side of an image sent to the sidecar (SPEC section 9, a setting).
-const maxLongEdge = 1600
+// DefaultImageEdge is the default longest side, in pixels, of an image sent to the sidecar (SPEC section 9).
+const DefaultImageEdge = 1600
 
 // maxPixels refuses images whose decoded size would be too large to hold in memory.
 const maxPixels = 100_000_000
@@ -31,10 +31,21 @@ const jpegQuality = 90
 // are. Other formats, and any image with a long edge over maxLongEdge, are decoded, downscaled and re-encoded
 // (JPEG stays JPEG; everything else becomes PNG, because the sidecar's decoder does not read WebP). GIF
 // sends its first frame.
-type Image struct{}
+type Image struct {
+	// MaxLongEdge is the longest side, in pixels, of the image sent to the sidecar. Zero means DefaultImageEdge.
+	MaxLongEdge int
+}
+
+// edge returns the long-edge cap in pixels.
+func (i Image) edge() int {
+	if i.MaxLongEdge > 0 {
+		return i.MaxLongEdge
+	}
+	return DefaultImageEdge
+}
 
 // Extract emits the one image unit of f.
-func (Image) Extract(ctx context.Context, f contract.FileRec, emit func(contract.Unit) error) error {
+func (i Image) Extract(ctx context.Context, f contract.FileRec, emit func(contract.Unit) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -58,9 +69,10 @@ func (Image) Extract(ctx context.Context, f contract.FileRec, emit func(contract
 	}
 	reader = contextReader{ctx: ctx, r: file}
 	long := max(cfg.Width, cfg.Height)
+	edge := i.edge()
 
 	var out []byte
-	if (format == "png" || format == "jpeg") && long <= maxLongEdge {
+	if (format == "png" || format == "jpeg") && long <= edge {
 		out, err = io.ReadAll(reader)
 		if err != nil {
 			return err
@@ -70,10 +82,10 @@ func (Image) Extract(ctx context.Context, f contract.FileRec, emit func(contract
 		if err != nil {
 			return fmt.Errorf("image decode: %w", err)
 		}
-		if long > maxLongEdge {
-			img = downscale(img, maxLongEdge)
+		if long > edge {
+			img = downscale(img, edge)
 		}
-		out, err = encode(img, format == "jpeg" && long > maxLongEdge)
+		out, err = encode(img, format == "jpeg" && long > edge)
 		if err != nil {
 			return err
 		}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,5 +260,39 @@ func TestRTFBinaryPayloadIsNotParsed(t *testing.T) {
 		if got, err := rtfText(ctx, []byte(bad)); err == nil {
 			t.Fatalf("rtfText(%q) = %q with no error; want a truncated or invalid \\bin error", bad, got)
 		}
+	}
+}
+
+// TestRegistryImageEdgeSetting covers R2 finding 6: the image edge is a setting (SPEC section 9, 1600 px by
+// default). The registry the integration layer holds must apply a new edge to the next image extraction.
+func TestRegistryImageEdgeSetting(t *testing.T) {
+	r := NewRegistry()
+	defer r.Close()
+	longEdge := func() (int, int) {
+		t.Helper()
+		units := extractFile(t, r, "wide.png")
+		if len(units) != 1 {
+			t.Fatalf("wide.png: %d units, want 1", len(units))
+		}
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(units[0].Image))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Width, cfg.Height
+	}
+	if w, h := longEdge(); w != 1600 || h != 800 {
+		t.Fatalf("default edge: got %dx%d, want 1600x800", w, h)
+	}
+	if err := r.SetImageEdge(800); err != nil {
+		t.Fatal(err)
+	}
+	if w, h := longEdge(); w != 800 || h != 400 {
+		t.Fatalf("edge 800: got %dx%d, want 800x400", w, h)
+	}
+	if err := r.SetImageEdge(0); err == nil {
+		t.Fatal("edge 0 accepted")
+	}
+	if w, h := longEdge(); w != 800 || h != 400 {
+		t.Fatalf("rejected edge changed the setting: got %dx%d", w, h)
 	}
 }

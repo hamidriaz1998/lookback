@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
@@ -45,6 +46,7 @@ var ErrUnsupported = errors.New("no extractor for this file kind")
 
 // Registry holds one extractor per kind and dispatches by the kind of a FileRec.
 type Registry struct {
+	mu         sync.RWMutex // guards extractors, which SetImageEdge replaces
 	extractors map[contract.Kind]contract.Extractor
 	pdf        *PDF
 }
@@ -66,11 +68,25 @@ func NewRegistry() *Registry {
 
 // Extract streams the units of f to emit, using the extractor of f.Kind.
 func (r *Registry) Extract(ctx context.Context, f contract.FileRec, emit func(contract.Unit) error) error {
+	r.mu.RLock()
 	ex, ok := r.extractors[f.Kind]
+	r.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("%s: %w", f.Path, ErrUnsupported)
 	}
 	return ex.Extract(ctx, f, emit)
+}
+
+// SetImageEdge sets the longest side, in pixels, of the images extracted from now on (the image setting of
+// SPEC section 9). Extractions already running keep the edge they started with.
+func (r *Registry) SetImageEdge(edge int) error {
+	if edge < 1 {
+		return fmt.Errorf("image edge %d is not a positive pixel count", edge)
+	}
+	r.mu.Lock()
+	r.extractors[contract.KindImage] = Image{MaxLongEdge: edge}
+	r.mu.Unlock()
+	return nil
 }
 
 // Close releases the PDF runtime, if it started.
