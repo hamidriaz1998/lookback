@@ -410,6 +410,12 @@ func (a *App) maybeRunSearch(c *ui.Context) {
 	s.submit = false
 	s.ranKey = key
 	if key == "" {
+		// Ending the query ends its run: the run's context is canceled, and its sequence no longer matches.
+		if s.cancel != nil {
+			s.cancel()
+			s.cancel = nil
+		}
+		s.seq++
 		s.hits, s.err, s.searching = nil, "", false
 		s.selected = -1
 		return
