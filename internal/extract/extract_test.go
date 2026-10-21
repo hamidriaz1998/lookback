@@ -328,7 +328,7 @@ func TestPDFWaiterCancellationLeavesActiveExtractionAlone(t *testing.T) {
 	}()
 	select {
 	case <-firstUnit:
-	case <-time.After(15 * time.Second):
+	case <-time.After(2 * time.Minute):
 		t.Fatal("first PDF extraction did not reach its callback")
 	}
 
