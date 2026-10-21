@@ -108,3 +108,11 @@ See `.review/wp4-r3.md`.
 |---|---|---|
 | R1-#7 (medium): removing the configured root leaves deleted files searchable | WP9 | `scanFolder` returns on a missing root before the deletion pass, and its caller ignores the error. Distinguish a confirmed missing root from permission or transient I/O errors, delete the tracked files on confirmed disappearance, and surface the unavailable-folder error. Add a test that deletes the root, not only a file inside it. See `.review/wp8-r1.md`. |
 | R1-#8 (medium): progress counts stale rows as done and drops the running file from the ETA | WP8 | `snapshotLocked` counts every existing row in FilesDone, including stale ones. Count only rows that match the current size and mtime (the `NeedsWork` rule), and include the running file's remaining cost in the ETA. Add a snapshot test with stale rows and one in-flight file. See `.review/wp8-r1.md`. |
+
+## From the orchestrator (2026-10-21 deadline)
+
+| Item | Owner | What to do |
+|---|---|---|
+| Pre-push hook takes 3–8 min per push | WP10/maintenance | The hook exports each pushed commit to a fresh temp dir, so the Go test cache never hits, and it runs the real 22 MB runtime download test on a slow link. Skip `real_test.go` downloads unless `LOOKBACK_REAL_NET=1`, and export to a stable path per branch so the test cache works. |
+| Silent GUI driving does not work | WP9 | Hyprland `send_shortcut` to the window on a hidden workspace does not reach MyGo's keyboard handling, so onboarding cannot be driven without showing the window. Add a MyGo-Tester-based end-to-end test over the real `OpenServices` instead (models from a reflinked data dir). |
+| Smoke data dir needed reflinked models | WP9 | The downloader expects `models/<revision>/<file>` and `downloads/<sha>.done`; the verified flat files in `lookback-data/models` are not found. Add an "import existing model files" path that verifies SHA-256 and records them. |
