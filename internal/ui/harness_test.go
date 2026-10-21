@@ -39,6 +39,15 @@ type harness struct {
 // changes the fixture or wraps it in the store the App uses.
 func newHarness(t *testing.T, setup func(*fake.Store) contract.Store) *harness {
 	t.Helper()
+	return newHarnessWith(t, setup, func(context.Context) []contract.ThemeSource {
+		return []contract.ThemeSource{fixedTheme("light", false), fixedTheme("dark", true)}
+	}, false)
+}
+
+// newHarnessWith is newHarness with the theme sources built by themes, and the desktop starting dark
+// when dark is set.
+func newHarnessWith(t *testing.T, setup func(*fake.Store) contract.Store, themes func(context.Context) []contract.ThemeSource, dark bool) *harness {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	base := fake.NewStore()
@@ -73,13 +82,16 @@ func newHarness(t *testing.T, setup func(*fake.Store) contract.Store) *harness {
 		Downloader: fake.NewDownloader(ctx),
 		Detector:   fake.NewDetector(),
 		Catalog:    fake.NewCatalog(),
-		Themes:     []contract.ThemeSource{fixedTheme("light", false), fixedTheme("dark", true)},
+		Themes:     themes(ctx),
 		Media:      solidMedia{},
 		DataDir:    t.TempDir(),
 		OS:         "linux",
 	})
 	h.app.Start(ctx, func(f func()) { h.queue <- f })
 	h.tt = ui.NewTester(h.app.View, 1280, 800)
+	if dark {
+		h.tt.SetDark(true)
+	}
 	h.pump(0)
 	return h
 }

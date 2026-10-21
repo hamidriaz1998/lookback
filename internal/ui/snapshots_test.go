@@ -11,19 +11,36 @@ import (
 	"github.com/hamidriaz1998/lookback/internal/fake"
 )
 
-// TestSnapshots writes the screenshots of every screen and state in a dark and a light theme, offscreen from
-// the tester. It runs only when LOOKBACK_SNAPSHOTS names the output folder.
+// snapshotThemes are the themes the screenshots cover: each fixed palette, the desktop in both
+// appearances, and an Omarchy theme. Each one gets a folder of its own under LOOKBACK_SNAPSHOTS.
+var snapshotThemes = []struct {
+	folder, id string
+	dark       bool
+}{
+	{"catppuccin-mocha", "catppuccin-mocha", true},
+	{"catppuccin-latte", "catppuccin-latte", false},
+	{"one-dark", "one-dark", true},
+	{"one-light", "one-light", false},
+	{"system-light", "system", false},
+	{"system-dark", "system", true},
+	{"omarchy", "omarchy", true},
+}
+
+// TestSnapshots writes the screenshots of every screen and state in each snapshot theme, offscreen from the
+// tester. It runs only when LOOKBACK_SNAPSHOTS names the output folder.
 func TestSnapshots(t *testing.T) {
 	dir := os.Getenv("LOOKBACK_SNAPSHOTS")
 	if dir == "" {
 		t.Skip("set LOOKBACK_SNAPSHOTS=<dir> to write the screenshots")
 	}
-	for _, theme := range []string{"dark", "light"} {
+	isolateOmarchy(t, omarchyDark)
+	for _, th := range snapshotThemes {
+		folder := filepath.Join(dir, th.folder)
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
 		for _, sc := range snapshotCases() {
-			h := newHarness(t, func(s *fake.Store) contract.Store {
-				if err := s.SetSetting(context.Background(), "theme", theme); err != nil {
-					t.Fatal(err)
-				}
+			h := newThemedHarness(t, th.id, th.dark, func(s *fake.Store) contract.Store {
 				if sc.setup != nil {
 					return sc.setup(s)
 				}
@@ -36,7 +53,7 @@ func TestSnapshots(t *testing.T) {
 			h.tt.SetSize(1896, 1025)
 			h.wait(sc.name, func() bool { return h.app.data.ready && (sc.ready == nil || sc.ready(h)) })
 			h.pump(0)
-			writePNG(t, filepath.Join(dir, sc.name+"-"+theme+".png"), h)
+			writePNG(t, filepath.Join(folder, sc.name+".png"), h)
 		}
 	}
 }
