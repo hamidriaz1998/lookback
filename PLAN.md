@@ -157,14 +157,23 @@ type ThemeSource interface {
    Set `TURSO_GO_CACHE_DIR` to `<data root>/lib` in `internal/app` before the database opens.
 5. **Spike 2, MyGo image grid (blocks WP6):** a window with a virtualized Grid view of 1,000 thumbnails
    decoded off the main thread, scrolling at 60 fps. Report the APIs used (`ui.Image`, Grid view,
-   `Window.Update`).
+   `Window.Update`). **Status:** decode passed; frame rate open, owned by WP6 (measure with MyGo
+   Inspector). Recorded in `docs/spikes.md`.
 6. **Spike 3, sidecar (blocks WP2):** start `llama-server` from the CPU build with the Q8_0 model,
    wait for `/health`, embed one text and one image, and stop it. Run it on Linux, and on Windows
-   through GitHub Actions.
+   through GitHub Actions. **Status:** Linux BF16 passed; Windows and Q8_0 open, owned by WP2. Recorded
+   in `docs/spikes.md`.
 7. A CI workflow: vet, test, and the "no hex colors outside `internal/theme`" grep from UI_GUIDE §5.
 
 **Done when:** the module builds on Linux and Windows; `go test ./...` passes; the three spike
-reports are in `docs/spikes.md`.
+reports are in `docs/spikes.md`. Spikes 2 and 3 have open gates, recorded there and owned by WP6 and
+WP2, so M0 closes with them open.
+
+**Interfaces M0 freezes** (`internal/contract`, each with a fake in `internal/fake`): `Embedder`,
+`Store`, `Extractor`, `Indexer` (Start, Pause, Resume, Retry, RetryAll, Rescan, Rebuild, Progress,
+RebuildProgress), `ThemeSource`, `Catalog` (Assets, Backends), `Downloader` (Ensure, Pause, Resume,
+PauseAll, ResumeAll, Retry, Progress), `Detector` (Detect, Probe), `Lab` (Run, Progress, Recommend),
+and `Runtime` (embeds `Embedder`; Active, Status, Changes, Use, RetryGPU, Stop).
 
 ## Parallel work packages
 
@@ -175,8 +184,10 @@ them start after M0 merges.
 
 - **Owns:** `internal/catalog`, `internal/download`.
 - **Uses:** SPEC §4, §7. `mygo.Network` for offline detection.
-- **Provides:** `catalog.Assets(os, combo)` → files with URL, size and SHA-256;
-  `download.Manager` with `Start`, `Pause`, `Resume`, `Progress()`, and resume-on-launch.
+- **Provides:** `contract.Catalog` (`Assets(os, combo)` → files with URL, size and SHA-256;
+  `Backends(os)`), and `contract.Downloader` (`Ensure`, `Pause`, `Resume`, `PauseAll`, `ResumeAll`,
+  `Retry`, `Progress()` with the states queued, downloading, paused, verifying, done, failed, offline),
+  with resume-on-launch.
 - **Tasks:** fill `catalog.json` with the pins from SPEC §4, including SHA-256 values for the llama.cpp
   assets (download each once and hash it). Implement `.part` + `.part.json`, Range resume, the 200
   fallback, verification, atomic rename, backoff, offline pause, and safe archive unpacking.
@@ -187,30 +198,39 @@ them start after M0 merges.
 ### WP2: hardware, runtime and test lab
 
 - **Owns:** `internal/hw`, `internal/runtime`, `internal/bench`, `tools/mkref`, `assets/sample`.
-- **Uses:** SPEC §5, §6 (step 1 and 2 logic), §8. WP1's catalog (through the contract).
-- **Provides:** `hw.Detect()`; `runtime.Sidecar` implementing `contract.Embedder` with restart and CPU
-  fallback; `bench.Run(combo, extraFiles)` → the result row; `bench.Recommend(results)`.
+- **Uses:** SPEC §5, §6 (step 1 and 2 logic), §8. WP1's `contract.Catalog` and `contract.Downloader`.
+- **Provides:** `contract.Detector` (`Detect`, `Probe` per backend); `contract.Lab` (`Run(combo, extra)`,
+  `Progress`, `Recommend`); `contract.Runtime`, implemented by `runtime.Sidecar`, which embeds
+  `contract.Embedder` and adds `Active`, `Status`, `Changes`, `Use`, `RetryGPU` and `Stop`.
 - **Tasks:** Linux and Windows detection; `--list-devices` parsing; the CUDA driver-version rule
   (verify and record the minimum driver versions); sidecar flags, free port, API key, health, logs,
   process-group/job-object cleanup; the sample set (8 images, 16 chunks); BF16 reference vectors via
   `tools/mkref`; peak RAM and VRAM measurement.
 - **Acceptance:** on the reference laptop, detection lists the Radeon iGPU through Vulkan; the bench
   ranks Vulkan above CPU; killing the server twice switches to the CPU and the embedder keeps working;
-  parsing tests for `--list-devices` output.
+  parsing tests for `--list-devices` output. Startup wait uses one context with a 120 s deadline,
+  canceled on child exit, with short per-attempt timeouts and a retry on port collision (review r1 #12;
+  `cmd/spike-sidecar` does not yet do this).
+- **Also:** the Windows job object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and the Windows and Q8_0
+  sidecar runs that spike 3 leaves open.
 
 ### WP3: store
 
 - **Owns:** `internal/store`, `internal/search`.
 - **Uses:** SPEC §10, §12. The spike 1 findings.
-- **Provides:** the `contract.Store` implementation with migrations; `search.Run(query)` (embed the
-  query, search, group by file, filename boost); `search.Similar(itemID)`.
+- **Provides:** the `contract.Store` implementation with migrations. Activation is
+  `ActivateGeneration` (one transaction). `ClearFileIndex` backs Retry. `CommitFile` allocates item IDs.
+  `RecentItems` filters to indexed files before the limit. `Similar` returns `ErrStaleItem` for a seed
+  outside the generation. `search.Run(query)` (embed the query, search, group by file, filename boost);
+  `search.Similar(itemID)`.
 - **Acceptance:** tests for grouping, the boost cap, type filters, generation isolation (a `building`
   generation's items never appear in search), deleting a file's rows, and the 100k-item timing.
 
 ### WP4: extraction and chunking
 
 - **Owns:** `internal/extract`, `internal/chunk`.
-- **Uses:** SPEC §9.
+- **Uses:** SPEC §9. `contract.Embedder.Tokenize` returns byte offsets; the fake's `ByteFallback` mode
+  emits byte-fallback tokens for WP4's cut-inside-a-character test.
 - **Provides:** one `contract.Extractor` per kind and a registry by extension; `chunk.Split` with
   token-exact windows (it takes a tokenizer function, so tests run without the sidecar).
 - **Tasks:** images (resize, re-encode, GIF first frame, header-only size read); text (encoding check,
@@ -237,12 +257,15 @@ them start after M0 merges.
 ### WP6: UI
 
 - **Owns:** `internal/ui`.
-- **Uses:** UI_GUIDE.md (all of it), the contract interfaces, and `internal/fake` until WP9.
+- **Uses:** UI_GUIDE.md (all of it), the contract interfaces, and `internal/fake` until WP9. Progress
+  streams carry `Gen`; the rebuild card reads `Indexer.RebuildProgress`.
 - **Provides:** every screen in UI_GUIDE §3, the theme picker, and the keyboard map.
 - **Tasks:** build screen by screen against the fakes. Each screen meets the UI_GUIDE definition of
   done before the next one starts. Order: Search + preview, Activity, Onboarding 1–3, Folders, Models &
   Hardware, Settings.
 - **Acceptance:** the UI_GUIDE §11 checklist per screen, with MyGo UI tests and screenshots in the PR.
+  The 1,000-thumbnail grid holds 60 fps while scrolling, measured with MyGo Inspector on the reference
+  laptop (review r1 #14; spike 2 stays open until this is recorded in `docs/spikes.md`).
 
 ### WP7: tray, hotkey, toggle, power
 
@@ -262,7 +285,9 @@ them start after M0 merges.
 - **Owns:** `internal/index`, `internal/watch`.
 - **Uses:** SPEC §11, §13 (watching), §10 (generations).
 - **Provides:** the `contract.Indexer` implementation: the queue, the pipeline, generations, the
-  startup rescan, folder watchers, pause reasons, and the token-weighted ETA.
+  startup rescan, folder watchers, pause reasons, and the token-weighted ETA. The commands are
+  `Retry`, `RetryAll`, `Rescan(folderID)` and `Rebuild(text, enc)`, and the streams are `Progress`
+  (active generation) and `RebuildProgress`.
 - **Acceptance:** index the 40-image sample and check the ETA criterion (within 25% after 2 minutes);
   edit, add and delete files in a watched temp folder and see the index follow within 10 s; a precision
   switch builds a new generation while search serves the old one.

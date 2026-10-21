@@ -34,9 +34,9 @@
 
 ## Spike 2: MyGo image grid
 
-**Result: passed on Linux, compiles for Windows.** The grid draws 1,000 thumbnails from the real
-screenshots, decoded off the main thread, and the view updates through `Window.Update`. The frame rate
-was not measured (see below).
+**Status: decode passed; frame rate open, owned by WP6** (measure with MyGo Inspector). The grid draws
+1,000 thumbnails from the real screenshots, decoded off the main thread, and the view updates through
+`Window.Update`. The 60 fps scrolling gate of PLAN.md M0 was not measured, so Spike 2 is not closed.
 
 - **Setup:** `github.com/egoist/mygo` v0.6.0 (`go.mod`), Go 1.27.1 toolchain, Linux (Wayland session,
   Hyprland), Ryzen 7 5700U (8 cores, 16 threads). Program: `cmd/spike-grid/main.go`. Run with
@@ -73,7 +73,9 @@ Findings and limits:
 
 ## Spike 3: sidecar on Linux and Windows
 
-**Result: passed on Linux. Windows run not done (no Windows machine here, and CI cannot run the sidecar).**
+**Status: Linux BF16 passed; Windows and Q8_0 open, owned by WP2.** The Linux run used the BF16 pair,
+which is the only pair on disk. The Q8_0 run and the Windows run through Actions are not done. CI does not
+run the sidecar, so Spike 3 is not closed.
 
 - **Program:** `cmd/spike-sidecar/main.go`, with `process_unix.go` (process group, `SIGTERM` then `SIGKILL`)
   and `process_windows.go`. Run: `go run ./cmd/spike-sidecar -log <file>`.
