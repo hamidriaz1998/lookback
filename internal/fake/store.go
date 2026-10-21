@@ -318,7 +318,33 @@ func (s *Store) ListGenerations(ctx context.Context) ([]contract.Generation, err
 	return out, nil
 }
 
+// GenerationComplete reports whether gen covers every tracked file at its current size and mtime.
+func (s *Store) GenerationComplete(ctx context.Context, gen int64) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.gens[gen]; !ok {
+		return false, contract.ErrUnknownGen
+	}
+	return s.completeLocked(gen), nil
+}
+
+// completeLocked reports whether every file has a row in gen with the file's current size and mtime. The
+// caller holds s.mu.
+func (s *Store) completeLocked(gen int64) bool {
+	for id, f := range s.files {
+		ix, ok := s.index[[2]int64{id, gen}]
+		if !ok || ix.Size != f.Size || ix.MTime != f.MTime {
+			return false
+		}
+	}
+	return true
+}
+
 // ActivateGeneration makes gen active and retires the previous active generation, in one step under the lock.
+// It refuses a generation that does not cover every file (ErrIncomplete).
 func (s *Store) ActivateGeneration(ctx context.Context, gen int64) error {
 	if err := s.lock(ctx); err != nil {
 		return err
@@ -330,6 +356,9 @@ func (s *Store) ActivateGeneration(ctx context.Context, gen int64) error {
 	}
 	if g.State == contract.GenRetired {
 		return errors.New("fake store: a retired generation cannot be activated")
+	}
+	if !s.completeLocked(gen) {
+		return contract.ErrIncomplete
 	}
 	for id, other := range s.gens {
 		if other.State == contract.GenActive && id != gen {
@@ -640,20 +669,6 @@ func (s *Store) needingWork(gen int64) []contract.FileRec {
 		}
 		if contract.NeedsWork(f, p) {
 			out = append(out, f)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
-}
-
-// doneFiles returns the files with a done row in gen, by ID.
-func (s *Store) doneFiles(gen int64) []contract.FileRec {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []contract.FileRec
-	for k, ix := range s.index {
-		if k[1] == gen && ix.Status == contract.StatusDone {
-			out = append(out, s.files[k[0]])
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

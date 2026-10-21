@@ -443,15 +443,21 @@ Turso adds a vector index.
 
 - The active generation serves every search.
 - When the user switches precision, create a `building` generation and index into it in the
-  background. The old one keeps serving. When the new one is complete, one transaction marks it `active`
-  and the old one `retired` (at most one generation is active at a time). Then the old one's items are
-  deleted.
+  background. The old one keeps serving. A building generation is complete when every tracked file has a
+  `file_index` row in it whose size and mtime equal the file's current ones (status done, error or
+  skipped). While the rebuild runs, a file that changes is queued for both generations. Before the
+  handover, the rebuild queues every file that is not yet complete in the building generation.
+- Handover: in one transaction, `ActivateGeneration` checks completeness and refuses an incomplete
+  generation (`ErrIncomplete`). When it succeeds, it marks the new one `active` and the old one `retired`
+  (at most one generation is active at a time). Then the old one's items are deleted.
 - Switching only the backend keeps the generation.
 
 ## 11. Indexing pipeline
 
 - **Queue order**: files changed while the app runs, then new files, then the startup rescan's
   changes, then the rebuild of a `building` generation.
+- **Stat at run time**: a queued file is read when it comes up, and it is committed only if its size and
+  mtime have not changed since. A file that changed while it ran is queued again.
 - **Steps**: stat → exclusion check → extract → chunk → embed → write the items and the
   `file_index` row in one transaction. Delete a file's rows when it disappears.
 - **Errors**: record them in `file_index` (status `error`) and continue. Activity lists them with Retry.

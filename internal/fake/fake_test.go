@@ -133,6 +133,7 @@ func TestActivateGenerationIsSingle(t *testing.T) {
 	if err := s.NewGeneration(ctx, &g); err != nil {
 		t.Fatal(err)
 	}
+	fillGeneration(t, s, g.ID)
 	if err := s.ActivateGeneration(ctx, g.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +330,7 @@ func TestRebuildRunsBesideActiveJob(t *testing.T) {
 	}
 
 	var final *contract.Progress
-	for i := 0; i < 20000 && final == nil; i++ {
+	for i := 0; i < 40000 && final == nil; i++ {
 		_, rp := x.step()
 		if rp != nil && rp.FilesDone == rp.FilesTotal {
 			final = rp
@@ -350,8 +351,106 @@ func TestRebuildRunsBesideActiveJob(t *testing.T) {
 	if rows, _ := s.ListFileIndex(ctx, 1); len(rows) != 0 {
 		t.Fatalf("retired generation keeps %d rows", len(rows))
 	}
-	if hits, _ := s.Search(ctx, gen, unitVector(5), nil, 300); len(hits) != 300 {
-		t.Fatalf("new generation search returned %d hits, want 300", len(hits))
+	// Every outcome of the 402 files is in the new generation: 401 indexed and the broken PDF, which
+	// is retried in the active generation during the rebuild and fails again (review finding 2).
+	if rows, _ := s.ListFileIndex(ctx, gen); len(rows) != imageCount+pendingPictures+pendingNotes+2 {
+		t.Fatalf("new generation has %d rows, want all 402 files", len(rows))
+	}
+	if hits, _ := s.Search(ctx, gen, unitVector(5), nil, 500); len(hits) != imageCount+pendingPictures+pendingNotes+1 {
+		t.Fatalf("new generation search returned %d hits, want 401", len(hits))
+	}
+}
+
+// Files that finish in the active generation while a rebuild runs are in the new generation at handover,
+// and searchable there (review finding 2).
+func TestRebuildKeepsFilesCompletedDuringRebuild(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore()
+	x := newIndexer(s, NewRuntime(), time.Second)
+	life, stop := context.WithCancel(ctx)
+	defer stop()
+	_ = x.Start(life)
+	before, _ := s.ListFileIndex(ctx, 1)
+	gen, err := x.Rebuild(ctx, contract.QuantBF16, contract.QuantBF16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 200; i++ {
+		x.step()
+	}
+	activeRows, _ := s.ListFileIndex(ctx, 1)
+	if len(activeRows) <= len(before) {
+		t.Fatal("the active job did not complete files during the rebuild")
+	}
+	done := map[int64]bool{}
+	for _, r := range activeRows {
+		done[r.FileID] = true
+	}
+	for _, r := range before {
+		delete(done, r.FileID)
+	}
+	for i := 0; i < 40000; i++ {
+		if _, rp := x.step(); rp != nil && rp.FilesDone == rp.FilesTotal {
+			break
+		}
+	}
+	gens, _ := s.ListGenerations(ctx)
+	for _, g := range gens {
+		if g.ID == gen && g.State != contract.GenActive {
+			t.Fatal("the rebuild did not activate")
+		}
+	}
+	rows, _ := s.ListFileIndex(ctx, gen)
+	inNew := map[int64]bool{}
+	for _, r := range rows {
+		inNew[r.FileID] = true
+	}
+	for id := range done {
+		if !inNew[id] {
+			t.Fatalf("file %d finished in the active generation during the rebuild but has no row in the new one", id)
+		}
+	}
+}
+
+// A file edited after the rebuild indexed it is indexed again before the handover (review finding 2).
+func TestRebuildReconcilesEditedFile(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore()
+	x := newIndexer(s, NewRuntime(), time.Second)
+	life, stop := context.WithCancel(ctx)
+	defer stop()
+	_ = x.Start(life)
+	gen, err := x.Rebuild(ctx, contract.QuantBF16, contract.QuantBF16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Run until the rebuild has indexed a file, then edit that file and rescan its folder.
+	var edited contract.FileRec
+	for i := 0; i < 40000 && edited.ID == 0; i++ {
+		x.step()
+		rows, _ := s.ListFileIndex(ctx, gen)
+		if len(rows) > 0 {
+			edited, _ = s.fileByID(rows[0].FileID)
+		}
+	}
+	if edited.ID == 0 {
+		t.Fatal("the rebuild indexed no file")
+	}
+	edited.MTime += 5_000_000_000
+	if err := s.SaveFile(ctx, &edited); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.Rescan(ctx, edited.FolderID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40000; i++ {
+		if _, rp := x.step(); rp != nil && rp.FilesDone == rp.FilesTotal {
+			break
+		}
+	}
+	row, ok := s.fileIndexRow(edited.ID, gen)
+	if !ok || row.MTime != edited.MTime {
+		t.Fatalf("the new generation has row %+v for the edited file, want the new mtime", row)
 	}
 }
 
@@ -403,5 +502,52 @@ func TestStoreOwnsValues(t *testing.T) {
 		if c.Combo == combo && (c.Bench.ImageMS != 100 || *c.Bench.Quality != 0.5) {
 			t.Fatalf("ListCombos returned a value that aliases the store: %+v", c.Bench)
 		}
+	}
+}
+
+// fillGeneration commits every tracked file into gen, so the generation covers every file.
+func fillGeneration(t *testing.T, s *Store, gen int64) {
+	t.Helper()
+	ctx := context.Background()
+	for _, f := range s.files {
+		ix, items := simulate(f, gen)
+		if err := s.CommitFile(ctx, ix, items); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Activation refuses a generation that does not cover every file, and changes nothing (review finding 2).
+func TestActivateRefusesIncompleteGeneration(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore()
+	g := contract.Generation{Space: fixtureSpace}
+	if err := s.NewGeneration(ctx, &g); err != nil {
+		t.Fatal(err)
+	}
+	if done, _ := s.GenerationComplete(ctx, g.ID); done {
+		t.Fatal("an empty generation reports complete")
+	}
+	if err := s.ActivateGeneration(ctx, g.ID); !errors.Is(err, contract.ErrIncomplete) {
+		t.Fatalf("activating an empty generation: %v, want ErrIncomplete", err)
+	}
+	gens, _ := s.ListGenerations(ctx)
+	for _, x := range gens {
+		if x.ID == 1 && x.State != contract.GenActive {
+			t.Fatal("a refused activation retired the active generation")
+		}
+	}
+	// One file changed after it was indexed in the new generation: still incomplete until it is re-indexed.
+	fillGeneration(t, s, g.ID)
+	if done, _ := s.GenerationComplete(ctx, g.ID); !done {
+		t.Fatal("a fully indexed generation reports incomplete")
+	}
+	f := indexedFiles()[0]
+	f.MTime++
+	if err := s.SaveFile(ctx, &f); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ActivateGeneration(ctx, g.ID); !errors.Is(err, contract.ErrIncomplete) {
+		t.Fatalf("a stale row: %v, want ErrIncomplete", err)
 	}
 }

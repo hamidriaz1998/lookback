@@ -49,6 +49,7 @@ type Indexer struct {
 
 	activeSess  contract.Session // the session of the active generation
 	rebuildSess contract.Session // the session of the building generation, during a rebuild
+	retire      int64            // a retired generation whose items DeleteItems has not removed yet, or 0
 
 	elapsed time.Duration
 	tick    int
@@ -167,6 +168,9 @@ func (x *Indexer) step() (contract.Progress, *contract.Progress) {
 		}
 	}
 	x.tick++
+	if x.retire != 0 && x.store.DeleteItems(x.lifetime(), x.retire) == nil {
+		x.retire = 0
+	}
 
 	x.commitDue(x.active)
 	active := x.snapshot(x.active, x.store.activeGenID(), true)
@@ -178,15 +182,29 @@ func (x *Indexer) step() (contract.Progress, *contract.Progress) {
 		rp := x.snapshot(x.rebuild, x.rebuild.gen, false)
 		return active, &rp
 	}
-	// The rebuild is complete: its generation takes over, and the old one's items go.
+	// Every queued file is done. Queue what still lacks a current row in the building generation, then hand
+	// over only when that generation covers every file (SPEC section 10).
+	if missing := x.store.needingWork(x.rebuild.gen); len(missing) > 0 {
+		x.queueRebuildLocked(missing...)
+		rp := x.snapshot(x.rebuild, x.rebuild.gen, false)
+		return active, &rp
+	}
+	if err := x.store.ActivateGeneration(x.lifetime(), x.rebuild.gen); err != nil {
+		rp := x.snapshot(x.rebuild, x.rebuild.gen, false)
+		return active, &rp
+	}
 	rp := x.snapshot(x.rebuild, x.rebuild.gen, false)
-	_ = x.store.ActivateGeneration(x.lifetime(), x.rebuild.gen)
-	_ = x.store.DeleteItems(x.lifetime(), x.rebuild.from)
+	from := x.rebuild.from
 	x.rebuild = nil
 	old := x.activeSess
 	x.activeSess, x.rebuildSess = x.rebuildSess, nil
 	if old != nil {
 		_ = old.Close()
+	}
+	// The old generation's items go now. If that fails, the next tick retries it.
+	x.retire = from
+	if err := x.store.DeleteItems(x.lifetime(), from); err == nil {
+		x.retire = 0
 	}
 	return x.snapshot(x.active, x.store.activeGenID(), true), &rp
 }
@@ -280,8 +298,9 @@ func (x *Indexer) lifetime() context.Context {
 	return x.life
 }
 
-// snapshot builds the Progress for a job. Active snapshots count every file in the store; a
-// rebuild snapshot counts the files it was asked to rebuild.
+// snapshot builds the Progress for a job. The active job counts the file_index rows of its generation. A
+// rebuild (active false) counts the files whose row in the building generation is current, so its last
+// snapshot, with FilesDone equal to FilesTotal, comes only at handover.
 func (x *Indexer) snapshot(j *job, gen int64, active bool) contract.Progress {
 	p := contract.Progress{
 		Gen:          gen,
@@ -290,10 +309,13 @@ func (x *Indexer) snapshot(j *job, gen int64, active bool) contract.Progress {
 		Paused:       x.pauseReason(),
 	}
 	remaining := float64(len(j.queue))*tokensPerFile - j.consumed
+	rows, errs, total, per := x.store.progressCounts(gen)
+	p.Errors, p.FilesTotal, p.PerFolder = errs, total, per
 	if active {
-		p.FilesDone, p.Errors, p.FilesTotal, p.PerFolder = x.store.progressCounts(gen)
+		p.FilesDone = rows
 	} else {
-		p.FilesDone, p.FilesTotal = j.next, len(j.queue)
+		// A rebuild counts the files that have a current row in its generation, so a stale row is not done.
+		p.FilesDone = p.FilesTotal - len(x.store.needingWork(gen))
 	}
 	if j.next < len(j.queue) {
 		p.Current = j.queue[j.next].Path
@@ -412,12 +434,30 @@ func (x *Indexer) Rescan(ctx context.Context, folderID int64) error {
 		}
 	}
 	x.enqueueLocked(due...)
+	if x.rebuild != nil {
+		var building []contract.FileRec
+		for _, f := range x.store.needingWork(x.rebuild.gen) {
+			if f.FolderID == folderID {
+				building = append(building, f)
+			}
+		}
+		x.queueRebuildLocked(building...)
+	}
 	return nil
 }
 
-// Rebuild creates a building generation for the precisions and queues every file indexed in the
-// active generation for it. The rebuild gets half the rate while the active job has work. It opens the
-// session of the building space first, so a refused session creates no generation.
+// queueRebuildLocked queues files in the rebuild job unless they are already waiting there. The caller holds x.mu.
+func (x *Indexer) queueRebuildLocked(files ...contract.FileRec) {
+	for _, f := range files {
+		if x.waitingIndex(x.rebuild, f.ID) < 0 {
+			x.rebuild.queue = append(x.rebuild.queue, f)
+		}
+	}
+}
+
+// Rebuild creates a building generation for the precisions and queues every tracked file for it. The
+// rebuild gets half the rate while the active job has work. It opens the session of the building space
+// first, so a refused session creates no generation.
 func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -442,7 +482,7 @@ func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64,
 		return 0, err
 	}
 	x.rebuildSess = sess
-	x.rebuild = &job{gen: g.ID, from: from, queue: x.store.doneFiles(from)}
+	x.rebuild = &job{gen: g.ID, from: from, queue: x.store.needingWork(g.ID)}
 	return g.ID, nil
 }
 

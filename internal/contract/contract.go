@@ -302,8 +302,12 @@ type Store interface {
 	NewGeneration(ctx context.Context, g *Generation) error
 	// ListGenerations returns every generation, oldest first.
 	ListGenerations(ctx context.Context) ([]Generation, error)
+	// GenerationComplete reports whether every tracked file has a file_index row in gen whose size and mtime
+	// equal the file's current ones, with status done, error or skipped (SPEC section 10).
+	GenerationComplete(ctx context.Context, gen int64) (bool, error)
 	// ActivateGeneration makes gen the active generation and retires the previous active one, in one
-	// transaction. The retired generation's items stay until DeleteItems removes them.
+	// transaction. It checks GenerationComplete in that transaction and returns ErrIncomplete when gen is not
+	// complete, and then nothing changes. The retired generation's items stay until DeleteItems removes them.
 	ActivateGeneration(ctx context.Context, gen int64) error
 	// DeleteItems removes the items and file_index rows of one generation. It refuses the active one.
 	DeleteItems(ctx context.Context, gen int64) error
@@ -363,10 +367,12 @@ type Indexer interface {
 	RetryAll(ctx context.Context) error
 	// Rescan queues the files of one folder that need work (NeedsWork), as the startup rescan does.
 	Rescan(ctx context.Context, folderID int64) error
-	// Rebuild starts a building generation for the precisions text and enc, and indexes every file
-	// indexed in the active generation into it. The active generation keeps serving until the rebuild
-	// finishes, and then the rebuild activates the new generation (SPEC section 10). It returns the new
-	// generation's ID. ErrRebuildBusy while another rebuild runs.
+	// Rebuild starts a building generation for the precisions text and enc, and indexes every tracked file
+	// into it, including files still pending in the active generation. The active generation keeps serving
+	// until the building one is complete, and then the rebuild activates it (SPEC section 10). While the
+	// rebuild runs, a file that changes is queued for both generations. Before activation the rebuild
+	// queues every file whose row in the building generation is missing or stale, so no file is lost. It
+	// returns the new generation's ID. ErrRebuildBusy while another rebuild runs.
 	Rebuild(ctx context.Context, text, enc Quant) (gen int64, err error)
 	// Subscribe streams snapshots of the active generation's job, keyed by Gen. No value is terminal.
 	Subscribe(ctx context.Context) <-chan Progress
