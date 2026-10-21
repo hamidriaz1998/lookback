@@ -31,6 +31,8 @@ func TestSettingsShowsAboutAndStorage(t *testing.T) {
 	h.wantText("Open logs")
 	h.wantText("llama.cpp b11755")
 	h.wantText("Copy bind line")
+	h.wantText("Super+.")
+	h.wantText("bind = SUPER, period, exec, lookback --toggle")
 }
 
 // TestSettingsHotkeyRecorderCapturesAndPersists checks an actual MyGo key event reaches the settings store.
@@ -66,5 +68,11 @@ func TestHotkeyFromEventRequiresModifierAndFormatsKey(t *testing.T) {
 	}
 	if got := hyprlandBind("Super+Shift+Space"); got != "bind = SUPER SHIFT, space, exec, lookback --toggle" {
 		t.Fatalf("Hyprland binding = %q", got)
+	}
+	if got, ok := hotkeyFromEvent(ui.Super, ui.KeyPeriod); !ok || got != "Super+." {
+		t.Fatalf("period chord = %q, %v; want Super+.", got, ok)
+	}
+	if got := hyprlandBind("Super+."); got != "bind = SUPER, period, exec, lookback --toggle" {
+		t.Fatalf("default Hyprland binding = %q", got)
 	}
 }

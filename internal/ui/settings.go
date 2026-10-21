@@ -125,7 +125,7 @@ func (a *App) shortcutsSection(c *ui.Context) {
 	section(c, "Shortcuts", func() {
 		ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "Show or hide Lookback").Grow(1)
-			label := a.data.setting("hotkey", "Super+Shift+Space")
+			label := a.data.setting("hotkey", "Super+.")
 			if a.settings.recording {
 				label = "Press a shortcut…"
 			}
@@ -162,7 +162,7 @@ func (a *App) shortcutsSection(c *ui.Context) {
 		if a.settings.recordError != "" {
 			ui.Text(c, a.settings.recordError).TextColor(t.Warning).FontSize(t.Rem(0.85))
 		}
-		bind := hyprlandBind(a.data.setting("hotkey", "Super+Shift+Space"))
+		bind := hyprlandBind(a.data.setting("hotkey", "Super+."))
 		ui.Column(c).Gap(t.Space(2)).Padding(t.Space(3)).Radius(8).Background(t.Surface).Children(func() {
 			ui.Text(c, "Your desktop can bind the same key to Lookback. Add this line to your Hyprland config:").TextColor(t.TextMuted)
 			ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
@@ -226,7 +226,7 @@ func keyName(key ui.Key) string {
 	case ui.KeyComma:
 		return "Comma"
 	case ui.KeyPeriod:
-		return "Period"
+		return "."
 	case ui.KeySlash:
 		return "Slash"
 	case ui.KeySemicolon:
@@ -254,6 +254,8 @@ func hyprlandBind(hotkey string) string {
 	}
 	key := strings.ToLower(parts[len(parts)-1])
 	switch parts[len(parts)-1] {
+	case ".":
+		key = "period"
 	case "Enter":
 		key = "Return"
 	case "Quote":
