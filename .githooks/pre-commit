@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Fast checks on every commit: format, vet, color rule, and short tests of the touched packages.
+set -euo pipefail
+export CGO_ENABLED=0
+
+mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+if ((${#files[@]})); then
+	bad=$(gofmt -l "${files[@]}")
+	if [[ -n $bad ]]; then
+		printf 'pre-commit: run gofmt on:\n%s\n' "$bad" >&2
+		exit 1
+	fi
+	go vet ./...
+	# Packages of the staged files that still exist as packages (go list drops the rest).
+	mapfile -t pkgs < <(printf './%s\n' "${files[@]}" | xargs -n1 dirname | sort -u | xargs go list 2>/dev/null || true)
+	if ((${#pkgs[@]})); then
+		go test -short "${pkgs[@]}"
+	fi
+fi
+bash scripts/check-colors.sh

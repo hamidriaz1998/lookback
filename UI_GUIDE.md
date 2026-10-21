@@ -273,8 +273,8 @@ Embed these Lucide SVGs in `internal/ui/icons/` with the Lucide license file: `s
 
 ## 5. Tokens
 
-- **Colors**: only from `c.Theme()`. No hex literals outside `internal/theme/`. A grep in CI fails the
-  build on `ui.Hex(` or `ui.RGB(` outside that package.
+- **Colors**: only from `c.Theme()`. No hex literals outside `internal/theme/`. `scripts/check-colors.sh`,
+  run by the pre-commit hook, rejects `ui.Hex(` or `ui.RGB(` outside that package.
 - **Spacing**: `Theme.Spacing = 3` (compact). Use `t.Space(n)` for every gap and padding:
   `t.Space(1)` inside controls, `t.Space(2)` between related items and grid gaps, `t.Space(4)` between
   sections, `t.Space(6)` page padding.

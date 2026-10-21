@@ -29,7 +29,7 @@ same change.
   [Windows phase](#windows-phase), after the Linux build is tested on the reference machine.
 - Portability rule for v1: OS-specific code lives only in `_linux.go` files. Each has a `_windows.go`
   twin that is a minimal stub returning `errors.ErrUnsupported`, so the tree compiles. No half-written
-  Windows logic. `GOOS=windows CGO_ENABLED=0 go build ./...` stays a CI gate, to keep Linux-only
+  Windows logic. `GOOS=windows CGO_ENABLED=0 go build ./...` stays in the pre-push hook, to keep Linux-only
   assumptions out of shared code. Windows details below are marked "Windows phase" and are not v1 work.
 - Content: images and text documents (Q4, Q14). See [section 9](#9-extraction-and-chunking).
 
@@ -693,7 +693,7 @@ laptop. It replaces the `_windows.go` stubs; nothing in the shared code should n
 - Single instance: a named pipe in the data folder.
 - Data root: `%LOCALAPPDATA%\Lookback`.
 - Packaging: a Windows installer; check SmartScreen and antivirus against tursogo's extracted DLL.
-- CI: add `windows-latest` to the test matrix.
+- Checks: run the hooks' test suite on Windows itself.
 
 ## 21. Risks
 

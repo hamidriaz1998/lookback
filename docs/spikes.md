@@ -74,8 +74,7 @@ Findings and limits:
 ## Spike 3: sidecar on Linux (Windows run moved to the Windows phase)
 
 **Status: Linux BF16 passed; Q8_0 open, owned by WP2; Windows moved to the Windows phase (SPEC.md).** The Linux run used the BF16 pair,
-which is the only pair on disk. The Q8_0 run and the Windows run through Actions are not done. CI does not
-run the sidecar, so Spike 3 is not closed.
+which is the only pair on disk. The Q8_0 run and the Windows run are not done, so Spike 3 is not closed.
 
 - **Program:** `cmd/spike-sidecar/main.go`, with `process_unix.go` (process group, `SIGTERM` then `SIGKILL`)
   and `process_windows.go`. Run: `go run ./cmd/spike-sidecar -log <file>`.
@@ -102,10 +101,9 @@ Findings and limits:
 - **Windows:** `process_windows.go` only kills the process. It has no job object, so the server can
   outlive a crash of the app. The app needs a job object (SPEC section 8). The spike cross-compiles for
   `windows/amd64` only.
-- **CI:** `.github/workflows/ci.yml` runs `go vet` and `go test` on `ubuntu-latest` only. The
-  `windows-latest` matrix entry returns in the Windows phase (SPEC.md). The Windows cross-build still runs
-  in CI. The workflow has not run on a GitHub runner from this session, and it does not start
-  `llama-server`, so the Windows sidecar path is still unverified.
+- **Checks:** there is no hosted CI. Git hooks in `.githooks/` run the checks locally (see PLAN.md
+  "Checks"); the pre-push hook includes the Windows cross-build. Nothing starts `llama-server` on Windows,
+  so the Windows sidecar path is still unverified (Windows phase).
 - Failure-path tests (kill twice, CPU fallback) belong to WP2, not this spike.
 
 ### Follow-up checks (run before the contract froze)

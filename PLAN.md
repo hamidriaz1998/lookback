@@ -39,6 +39,19 @@ implementations into the UI. WP10 ships it.
    a minimal stub returning `errors.ErrUnsupported`. Don't write Windows logic now (see SPEC.md "Windows
    phase"). `GOOS=windows CGO_ENABLED=0 go build ./...` must still pass.
 
+## Checks
+
+There is no hosted CI. Git hooks in `.githooks/` run the checks locally:
+
+- **pre-commit** (a few seconds): `gofmt` on staged Go files, `go vet ./...`, `go test -short` on the
+  touched packages, and `scripts/check-colors.sh`.
+- **pre-push** (about 30–90 s): `go vet`, the full `go test ./...`, `GOOS=windows go build ./...`, the
+  color check, and `go test -race -short` (with cgo) on the packages the push changes.
+
+The hooks are enabled for this clone and every worktree with `git config core.hooksPath .githooks`. Run
+that once after cloning, including on Windows. Never bypass them with `--no-verify`. The orchestrator
+runs the full checks again before merging into `main`.
+
 ## Repository
 
 - Folder: `~/Desktop/AI/lookback`. Go module: `github.com/hamidriaz1998/lookback`.
@@ -172,7 +185,8 @@ type ThemeSource interface {
    wait for `/health`, embed one text and one image, and stop it. Run it on Linux. **Status:** Linux BF16 passed; Q8_0 open, owned by WP2; the Windows run moved to
    the Windows phase. Recorded
    in `docs/spikes.md`.
-7. A CI workflow: vet, test, and the "no hex colors outside `internal/theme`" grep from UI_GUIDE §5.
+7. Checks: the git hooks described under "Checks" below, and the "no hex colors outside `internal/theme`"
+   grep from UI_GUIDE §5 (`scripts/check-colors.sh`).
 
 **Done when:** the module builds on Linux and cross-builds for Windows; `go test ./...` passes; the three spike
 reports are in `docs/spikes.md`. Spikes 2 and 3 have open gates, recorded there and owned by WP6 and
