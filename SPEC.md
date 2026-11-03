@@ -535,7 +535,7 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 - Single instance: `lookback --toggle` shows or hides the running window and exits. Use MyGo's
   single-instance support if it has one; otherwise a Unix socket in the
   data folder. On Hyprland, where global shortcuts may not reach apps, the user binds:
-  `bind = SUPER, period, exec, lookback --toggle`.
+  `hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))`.
 
 ## 14. Settings
 

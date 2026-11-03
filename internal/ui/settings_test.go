@@ -32,7 +32,7 @@ func TestSettingsShowsAboutAndStorage(t *testing.T) {
 	h.wantText("llama.cpp b11755")
 	h.wantText("Copy bind line")
 	h.wantText("Super+.")
-	h.wantText("bind = SUPER, period, exec, lookback --toggle")
+	h.wantText(`hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))`)
 }
 
 // TestSettingsHotkeyRecorderCapturesAndPersists checks an actual MyGo key event reaches the settings store.
@@ -56,7 +56,7 @@ func TestSettingsHotkeyRecorderCapturesAndPersists(t *testing.T) {
 		got, ok, err := h.store.GetSetting(context.Background(), "hotkey")
 		return err == nil && ok && got == "Ctrl+Alt+L"
 	})
-	h.wantText("bind = CTRL ALT, l, exec, lookback --toggle")
+	h.wantText(`hl.bind("CTRL + ALT + l", hl.dsp.exec_cmd("lookback --toggle"))`)
 }
 
 func TestHotkeyFromEventRequiresModifierAndFormatsKey(t *testing.T) {
@@ -66,13 +66,13 @@ func TestHotkeyFromEventRequiresModifierAndFormatsKey(t *testing.T) {
 	if got, ok := hotkeyFromEvent(ui.Super|ui.Shift, ui.KeySpace); !ok || got != "Super+Shift+Space" {
 		t.Fatalf("recorded chord = %q, %v; want Super+Shift+Space", got, ok)
 	}
-	if got := hyprlandBind("Super+Shift+Space"); got != "bind = SUPER SHIFT, space, exec, lookback --toggle" {
+	if got := hyprlandBind("Super+Shift+Space"); got != `hl.bind("SUPER + SHIFT + space", hl.dsp.exec_cmd("lookback --toggle"))` {
 		t.Fatalf("Hyprland binding = %q", got)
 	}
 	if got, ok := hotkeyFromEvent(ui.Super, ui.KeyPeriod); !ok || got != "Super+." {
 		t.Fatalf("period chord = %q, %v; want Super+.", got, ok)
 	}
-	if got := hyprlandBind("Super+."); got != "bind = SUPER, period, exec, lookback --toggle" {
+	if got := hyprlandBind("Super+."); got != `hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))` {
 		t.Fatalf("default Hyprland binding = %q", got)
 	}
 }

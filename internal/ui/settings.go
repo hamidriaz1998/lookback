@@ -165,7 +165,7 @@ func (a *App) shortcutsSection(c *ui.Context) {
 		}
 		bind := hyprlandBind(a.data.setting("hotkey", "Super+."))
 		ui.Column(c).Gap(t.Space(2)).Padding(t.Space(3)).Radius(8).Background(t.Surface).Children(func() {
-			ui.Text(c, "Your desktop can bind the same key to Lookback. Add this line to your Hyprland config:").TextColor(t.TextMuted)
+			ui.Text(c, "Your desktop can bind the same key to Lookback. Add this line to your Hyprland Lua config:").TextColor(t.TextMuted)
 			ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, bind).FontFeatures("tnum").Grow(1).SingleLine()
 				if ui.Button(c, "").Label("Copy bind line").Tooltip("Copy bind line").Children(func() {
@@ -246,7 +246,7 @@ func keyName(key ui.Key) string {
 	return ""
 }
 
-// hyprlandBind converts the persisted shortcut into the matching Hyprland bind line.
+// hyprlandBind converts the persisted shortcut into the matching Hyprland Lua bind line.
 func hyprlandBind(hotkey string) string {
 	parts := strings.Split(hotkey, "+")
 	mods := make([]string, 0, len(parts)-1)
@@ -266,7 +266,7 @@ func hyprlandBind(hotkey string) string {
 	case "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12":
 		key = parts[len(parts)-1]
 	}
-	return "bind = " + strings.Join(mods, " ") + ", " + key + ", exec, lookback --toggle"
+	return `hl.bind("` + strings.Join(append(mods, key), " + ") + `", hl.dsp.exec_cmd("lookback --toggle"))`
 }
 
 // storageSection shows the data folder, what each part of it takes, and the logs.

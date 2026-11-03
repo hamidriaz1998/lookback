@@ -91,5 +91,6 @@ case ":$PATH:" in
   *) echo "Note: $bin_dir is not on PATH, so 'lookback --toggle' needs the full path." ;;
 esac
 echo
-echo "On Hyprland, add this line to your Hyprland config (the script does not edit it):"
-echo "  bind = SUPER, period, exec, lookback --toggle"
+echo "On Hyprland, add this line to your Hyprland Lua config, for example ~/.config/hypr/bindings.lua"
+echo "(the script does not edit it):"
+echo '  hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))'

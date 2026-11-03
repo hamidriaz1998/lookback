@@ -133,10 +133,10 @@ To open setup again, go to **Models & Hardware**.
 ### Use the global hotkey on Hyprland
 
 On Hyprland, the global hotkey can fail to register. If it does, add this line to your Hyprland
-configuration:
+Lua configuration (for example `~/.config/hypr/bindings.lua`):
 
 ```
-bind = SUPER, period, exec, lookback --toggle
+hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))
 ```
 
 `lookback --toggle` shows or hides the window of the running app.
