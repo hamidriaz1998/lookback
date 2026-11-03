@@ -49,8 +49,29 @@ func size(bytes int64) string {
 	return fmt.Sprintf("%.0f %s", v, units[i])
 }
 
+// iec formats a byte count in binary units for downloads: "412 MiB", "1.6 GiB".
+func iec(bytes int64) string {
+	const unit = 1024
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	v, i := float64(bytes), 0
+	for v >= unit && i < len(units)-1 {
+		v /= unit
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	if v < 10 {
+		return fmt.Sprintf("%.1f %s", v, units[i])
+	}
+	return fmt.Sprintf("%.0f %s", v, units[i])
+}
+
 // rate formats a speed in bytes per second, such as "4.1 MB/s".
 func rate(bytesPerSec float64) string { return size(int64(bytesPerSec)) + "/s" }
+
+// rateIEC is rate in binary units, to sit beside iec.
+func rateIEC(bytesPerSec float64) string { return iec(int64(bytesPerSec)) + "/s" }
 
 // eta formats the time left as UI guide section 3.8 says. A negative value means the job is still estimating.
 func eta(d time.Duration) string {

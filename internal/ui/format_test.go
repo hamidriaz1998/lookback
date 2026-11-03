@@ -44,3 +44,16 @@ func TestETA(t *testing.T) {
 		}
 	}
 }
+
+func TestIEC(t *testing.T) {
+	for n, want := range map[int64]string{
+		512:        "512 B",
+		4 << 20:    "4.0 MiB",
+		412 << 20:  "412 MiB",
+		1717986918: "1.6 GiB",
+	} {
+		if got := iec(n); got != want {
+			t.Errorf("iec(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

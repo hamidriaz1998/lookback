@@ -352,7 +352,7 @@ func TestFirstRunChoiceSetsVectorSpace(t *testing.T) {
 	if h.app.pickReady() {
 		t.Fatal("the choice is ready while its files still download")
 	}
-	h.wantText("Waiting for the files of")
+	h.wantText("Downloading the files of")
 	dl.release()
 	h.wait("the files to verify", h.app.pickReady)
 	h.wait("the choice saved", func() bool {

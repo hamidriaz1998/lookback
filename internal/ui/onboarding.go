@@ -309,21 +309,7 @@ func (a *App) backendStatus(c *ui.Context) {
 			ui.Text(c, "Downloading the runtime builds to test the backends…").TextColor(t.TextMuted)
 		})
 		for _, as := range o.runtimes {
-			d, ok := a.downloads[as.Key()]
-			if !ok {
-				continue
-			}
-			switch d.State {
-			case contract.FileFailed:
-				ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, as.Name+": download failed").TextColor(t.Danger).Grow(1)
-					if ui.Button(c, "Retry").Clicked() {
-						_ = a.d.Downloader.Retry(a.ctx, as.Key())
-					}
-				})
-			case contract.FileOffline:
-				ui.Text(c, "Offline. Downloads resume when you're back online.").TextColor(t.Warning)
-			}
+			a.downloadRow(c, as)
 		}
 	})
 }
@@ -635,52 +621,72 @@ func (a *App) downloadsView(c *ui.Context) {
 		}
 	})
 	for _, as := range keys {
-		d, ok := a.downloads[as.Key()]
-		ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, as.Name).SingleLine().Basis(260)
-			switch {
-			case !ok:
-				ui.Text(c, "queued").TextColor(t.TextMuted).Grow(1)
-			case d.State == contract.FileDone:
-				ui.Text(c, "✓ verified").Grow(1)
-			case d.State == contract.FilePaused:
-				ui.Text(c, "Paused · "+size(d.Done)+" / "+size(max(d.Total, as.Bytes))).TextColor(t.TextMuted).Grow(1)
-			case d.State == contract.FileOffline:
-				ui.Text(c, "Offline · "+size(d.Done)+" / "+size(max(d.Total, as.Bytes))).TextColor(t.TextMuted).Grow(1)
-			case d.State == contract.FileVerifying:
-				ui.Row(c).Gap(t.Space(1)).Grow(1).Children(func() {
-					ui.Spinner(c)
-					ui.Text(c, "Verifying…")
-				})
-			case d.State == contract.FileFailed:
-				ui.Row(c).Gap(t.Space(2)).Grow(1).AlignItems(ui.Center).Children(func() {
-					ui.Badge(c, "Checksum failed").Tooltip(d.Err)
-					if ui.Button(c, "Retry").Clicked() {
-						_ = a.d.Downloader.Retry(a.ctx, as.Key())
-					}
-				})
-			default:
-				total := max(d.Total, as.Bytes)
-				ui.Progress(c, float64(d.Done)/float64(max(total, 1))).Grow(1)
-				ui.Text(c, fmt.Sprintf("%s / %s · %s", size(d.Done), size(total), rate(d.BytesPerSec))).
-					FontFeatures("tnum").SingleLine()
-			}
-			if ok && (d.State == contract.FilePaused) && ui.Button(c, "").Label("Resume "+as.Name).Children(func() {
-				ui.Icon(c, icon("play"))
-			}).Clicked() {
-				_ = a.d.Downloader.Resume(as.Key())
-			}
-			if ok && (d.State == contract.FileDownloading || d.State == contract.FileQueued) &&
-				ui.Button(c, "").Label("Pause "+as.Name).Children(func() {
-					ui.Icon(c, icon("pause"))
-				}).Clicked() {
-				_ = a.d.Downloader.Pause(as.Key())
-			}
-			if ok && d.ResumedFrom > 0 {
-				ui.Text(c, "Resumed at "+size(d.ResumedFrom)+".").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
-			}
-		})
+		a.downloadRow(c, as)
 	}
+}
+
+// assetLabel says which backend or model variant a file is: "Vulkan runtime", "Text model · Q8_0".
+func assetLabel(as contract.Asset) string {
+	switch as.Part {
+	case contract.PartRuntime:
+		return strings.ToUpper(string(as.Backend)) + " runtime"
+	case contract.PartText:
+		return "Text model · " + strings.ToUpper(string(as.Quant))
+	case contract.PartEncoder:
+		return "Image encoder · " + strings.ToUpper(string(as.Quant))
+	}
+	return as.Name
+}
+
+// downloadRow draws one file: what it is, a progress bar with MiB/GiB done of total and the speed, and
+// Pause or Resume. Onboarding steps 1 and 2 share it.
+func (a *App) downloadRow(c *ui.Context, as contract.Asset) {
+	t := c.Theme()
+	d, ok := a.downloads[as.Key()]
+	total := max(d.Total, as.Bytes)
+	ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, assetLabel(as)).SingleLine().Tooltip(as.Name).Basis(200)
+		switch {
+		case !ok:
+			ui.Text(c, "Queued · "+iec(as.Bytes)).TextColor(t.TextMuted).Grow(1)
+		case d.State == contract.FileDone:
+			ui.Text(c, "✓ verified · "+iec(total)).Grow(1)
+		case d.State == contract.FilePaused:
+			ui.Text(c, "Paused · "+iec(d.Done)+" / "+iec(total)).TextColor(t.TextMuted).Grow(1)
+		case d.State == contract.FileOffline:
+			ui.Text(c, "Offline · "+iec(d.Done)+" / "+iec(total)).TextColor(t.TextMuted).Grow(1)
+		case d.State == contract.FileVerifying:
+			ui.Row(c).Gap(t.Space(1)).Grow(1).Children(func() {
+				ui.Spinner(c)
+				ui.Text(c, "Verifying…")
+			})
+		case d.State == contract.FileFailed:
+			ui.Row(c).Gap(t.Space(2)).Grow(1).AlignItems(ui.Center).Children(func() {
+				ui.Badge(c, "Download failed").Tooltip(d.Err)
+				if ui.Button(c, "Retry").Clicked() {
+					_ = a.d.Downloader.Retry(a.ctx, as.Key())
+				}
+			})
+		default:
+			ui.Progress(c, float64(d.Done)/float64(max(total, 1))).Grow(1)
+			ui.Text(c, fmt.Sprintf("%s / %s · %s", iec(d.Done), iec(total), rateIEC(d.BytesPerSec))).
+				FontFeatures("tnum").SingleLine()
+		}
+		if ok && d.State == contract.FilePaused && ui.Button(c, "").Label("Resume "+as.Name).Children(func() {
+			ui.Icon(c, icon("play"))
+		}).Clicked() {
+			_ = a.d.Downloader.Resume(as.Key())
+		}
+		if ok && (d.State == contract.FileDownloading || d.State == contract.FileQueued) &&
+			ui.Button(c, "").Label("Pause "+as.Name).Children(func() {
+				ui.Icon(c, icon("pause"))
+			}).Clicked() {
+			_ = a.d.Downloader.Pause(as.Key())
+		}
+		if ok && d.ResumedFrom > 0 {
+			ui.Text(c, "Resumed at "+iec(d.ResumedFrom)+".").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
+		}
+	})
 }
 
 // extraDialog takes up to 10 of the user's own files for the test lab.
@@ -908,7 +914,11 @@ func (a *App) stepFolders(c *ui.Context) {
 					ui.Icon(c, icon("folder")).TextColor(t.TextMuted)
 					ui.Column(c).Grow(1).Children(func() {
 						ui.Text(c, fv.folder.Path).SingleLine()
-						ui.Text(c, countsLine(fv)).TextColor(t.TextMuted).FontSize(t.Rem(0.85)).FontFeatures("tnum")
+						line := countsLine(fv)
+						if fv.files == 0 { // nothing is scanned before Start indexing
+							line = "Counted when indexing starts"
+						}
+						ui.Text(c, line).TextColor(t.TextMuted).FontSize(t.Rem(0.85)).FontFeatures("tnum")
 						if fv.denied != "" {
 							ui.Text(c, "Can't read this folder: "+fv.denied).TextColor(t.Danger).FontSize(t.Rem(0.85))
 						}
@@ -934,12 +944,18 @@ func (a *App) stepFolders(c *ui.Context) {
 		}
 		a.skippedLine(c)
 	}
+	if a.picked != nil && !a.pickReady() {
+		ui.Text(c, "Downloading the files of "+comboLabel(*a.picked)+". Start indexing unlocks when they are verified.").TextColor(t.TextMuted)
+		assets, _ := a.d.Catalog.Assets(a.d.OS, *a.picked)
+		for _, as := range assets {
+			if !a.verified(as) {
+				a.downloadRow(c, as)
+			}
+		}
+	}
 	ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Children(func() {
 		if ui.Button(c, "Back").Clicked() {
 			a.setStep(2)
-		}
-		if a.picked != nil && !a.pickReady() {
-			ui.Text(c, "Waiting for the files of "+comboLabel(*a.picked)+" to download.").TextColor(t.TextMuted).SingleLine()
 		}
 		if ui.PrimaryButton(c, "Start indexing").Disabled(len(a.data.folders) == 0 || !a.pickReady()).Clicked() {
 			a.finishOnboarding()
@@ -959,6 +975,9 @@ func (a *App) skippedLine(c *ui.Context) {
 				skipped = append(skipped, rec)
 			}
 		}
+	}
+	if len(a.data.files) == 0 { // no scan yet: the count would read 0 and mislead
+		return
 	}
 	ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, fmt.Sprintf("Skipped by rules: %s files", count(len(skipped)))).TextColor(t.TextMuted).Grow(1)

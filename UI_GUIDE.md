@@ -314,7 +314,7 @@ The focus order follows the visual order. The grid is one tab stop; arrows move 
 - Progress reaches the UI through `Window.Update` at most 4 times per second. Batch updates.
 - Toasts: 4 s, at most one at a time; errors that need action are inline, not toasts.
 - Units: MB and GB with one decimal place under 10 (4.1 MB/s, 1.6 GB); whole numbers above; thousands
-  separators for counts.
+  separators for counts. Downloads use MiB and GiB (412 MiB / 1.6 GiB).
 - Tone: short, plain sentences. Say what happened and what the user can do. No exclamation marks.
   No "Oops". Use "Lookback", never "the app", in onboarding.
 
