@@ -49,6 +49,9 @@ type Registry struct {
 	mu         sync.RWMutex // guards extractors, which SetImageEdge replaces
 	extractors map[contract.Kind]contract.Extractor
 	pdf        *PDF
+	// PreviewDir keeps the PDFs that Office previews convert to. Empty turns Office previews off.
+	PreviewDir string
+	convertMu  sync.Mutex
 }
 
 // NewRegistry returns a registry with the extractors of every kind. The PDF extractor starts its

@@ -123,7 +123,8 @@ func New(d Deps) *App {
 		d.PickFolder = pickFolder
 	}
 	if fm, ok := d.Media.(FileMedia); ok && fm.CacheDir == "" && d.DataDir != "" {
-		d.Media = FileMedia{CacheDir: filepath.Join(d.DataDir, "thumbs")}
+		fm.CacheDir = filepath.Join(d.DataDir, "thumbs")
+		d.Media = fm
 	}
 	return &App{
 		d:           d,

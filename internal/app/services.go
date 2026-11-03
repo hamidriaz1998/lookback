@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"io/fs"
 	"log"
 	"net/url"
@@ -131,6 +132,7 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 		LogPath: filepath.Join(dataDir, "logs", "llama-server.log"),
 	})
 	ext := extract.NewRegistry()
+	ext.PreviewDir = filepath.Join(dataDir, "previews")
 	s.closers = append(s.closers, func() { ext.Close() })
 
 	ix := index.New(st, ext, rt, contract.VectorSpace{})
@@ -199,7 +201,7 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 		Detector:   det,
 		Catalog:    cat,
 		Themes:     themes,
-		Media:      lookui.FileMedia{},
+		Media:      lookui.FileMedia{Pages: pageRenderer{ext}},
 		OS:         osName,
 		DataDir:    dataDir,
 	}
@@ -386,4 +388,16 @@ func allDone(assets []contract.Asset, done map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// pageRenderer is the preview renderer of the extractors. A file that needs a converter that is not installed shows
+// its text instead.
+type pageRenderer struct{ r *extract.Registry }
+
+func (p pageRenderer) RenderPage(ctx context.Context, path string, page, edge int) (image.Image, error) {
+	img, err := p.r.RenderPage(ctx, path, page, edge)
+	if errors.Is(err, extract.ErrNoRenderer) {
+		return nil, fmt.Errorf("%s: %w", path, lookui.ErrNoPicture)
+	}
+	return img, err
 }

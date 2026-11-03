@@ -52,6 +52,7 @@ type searchState struct {
 	selected  int
 	grid      ui.GridState
 	previewOn bool
+	peek      peek
 	previewW  float32
 	splitW    float32
 	focus     bool
@@ -263,7 +264,7 @@ func (a *App) resultsArea(c *ui.Context) {
 	ui.Row(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
 		body := func() { a.grid(c, items) }
 		wide, _ := c.Size()
-		bodyW := wide - a.sidebarWidth()
+		bodyW := wide - a.sidebarWidth() - 2*t.Space(6) // the page pads both sides
 		if !s.previewOn {
 			ui.Column(c).Grow(1).Fill().Children(body)
 			return
@@ -392,6 +393,12 @@ func pictureOf(h contract.Hit) (page int, ok bool) {
 		return 0, true
 	case contract.KindPDF:
 		return h.Unit, h.Unit > 0
+	case contract.KindOffice:
+		// The renderer converts the file to a PDF: a slide is a page, a document or sheet shows its first page.
+		if strings.EqualFold(filepath.Ext(h.Path), ".pptx") && h.Unit > 0 {
+			return h.Unit, true
+		}
+		return 1, true
 	}
 	return 0, false
 }

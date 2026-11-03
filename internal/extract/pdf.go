@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
 	"image/png"
 	"io"
 	"math"
@@ -283,6 +284,42 @@ func renderPage(inst pdfium.Pdfium, page requests.Page) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// RenderPage draws page (1-based) of the PDF at path, for the preview. It shares the runtime and the gate with
+// Extract, so it waits for a running extraction of one page.
+func (p *PDF) RenderPage(ctx context.Context, path string, page, edge int) (image.Image, error) {
+	if err := p.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer p.release()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	inst, err := p.instance(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var doc *responses.OpenDocument
+	var out []byte
+	interrupted, err := interruptPDFCall(ctx, inst.Kill, func() error {
+		var err error
+		if doc, err = inst.OpenDocument(&requests.OpenDocument{File: &data}); err != nil {
+			return fmt.Errorf("open pdf: %w", err)
+		}
+		out, err = renderPage(inst, requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: page - 1}})
+		return err
+	})
+	if interrupted {
+		p.inst = nil
+	} else if doc != nil {
+		inst.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return png.Decode(bytes.NewReader(out))
 }
 
 // countNonSpace returns the number of characters in s that are not white space.

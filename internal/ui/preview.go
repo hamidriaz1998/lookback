@@ -39,6 +39,12 @@ func (a *App) previewBody(c *ui.Context, h contract.Hit) {
 	s := &a.search
 	page, isPicture := pictureOf(h)
 	if !isPicture {
+		if h.Kind == contract.KindText {
+			if p, ok := a.peekOf(h.Path, a.pictureKey(h, 0, 0)); ok {
+				a.textCard(c, h, p)
+				return
+			}
+		}
 		a.snippetCard(c, h)
 		return
 	}
@@ -57,6 +63,8 @@ func (a *App) previewBody(c *ui.Context, h contract.Hit) {
 				a.removeFromIndex(h.FileID)
 			}
 		})
+	case err != nil && h.Kind == contract.KindOffice:
+		a.snippetCard(c, h) // LibreOffice could not convert the file: its text still shows
 	case err != nil:
 		ui.Column(c).Fill().Center().Children(func() {
 			ui.Text(c, "No preview for this file.").TextColor(t.TextMuted)
@@ -78,6 +86,18 @@ func (a *App) snippetCard(c *ui.Context, h contract.Hit) {
 	t := c.Theme()
 	ui.Column(c).Fill().Radius(8).Background(t.Surface).Padding(t.Space(3)).Gap(t.Space(2)).Clip().Children(func() {
 		ui.RichText(c, highlight(h.Snippet, a.search.query, t)...).MaxLines(0)
+	})
+}
+
+// textCard shows the head of a text file with its line breaks, colored when it is code.
+func (a *App) textCard(c *ui.Context, h contract.Hit, p peek) {
+	t := c.Theme()
+	// MinWidth(0): a long unbroken token must not widen the column and push the page past the window edge.
+	ui.Column(c).Fill().MinWidth(0).Radius(8).Background(t.Surface).Padding(t.Space(3)).Gap(t.Space(2)).Clip().Children(func() {
+		ui.RichText(c, codeSpans(p.text, h.Path, t)...).Font("monospace").FontSize(t.Rem(0.85)).MaxLines(0).MinWidth(0)
+		if p.cut {
+			ui.Text(c, "Showing the first "+iec(peekMax)+". Open the file to see the rest.").TextColor(t.TextMuted)
+		}
 	})
 }
 
