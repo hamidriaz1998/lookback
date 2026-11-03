@@ -473,6 +473,9 @@ func (a *App) stepLab(c *ui.Context) {
 			ui.Text(c, "Choose a combination to continue.").TextColor(t.TextMuted).SingleLine()
 		}
 	})
+	if a.onb == nil { // Back from Models closed the lab in this frame
+		return
+	}
 	a.extraDialog(c)
 }
 
