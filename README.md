@@ -96,7 +96,7 @@ sudo apt install ./lookback_*_amd64.deb
 
 ### Build from source
 
-You need [Go](https://go.dev/dl/) 1.27.1 or later.
+You need [Go](https://go.dev/dl/) 1.27.3 or later.
 
 ```sh
 git clone https://github.com/hamidriaz1998/lookback.git
@@ -139,7 +139,7 @@ Lua configuration (for example `~/.config/hypr/bindings.lua`):
 hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))
 ```
 
-`lookback --toggle` shows or hides the window of the running app.
+`lookback --toggle` shows or hides a compact search launcher (a small window; Esc, Enter on a result, or clicking away closes it).
 
 ## Keyboard shortcuts
 
@@ -163,7 +163,7 @@ hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))
 
 | Option | Description |
 |---|---|
-| `--toggle` | Show or hide the window of the running app, then exit |
+| `--toggle` | Show or hide the compact search launcher of the running app, then exit |
 | `--data-dir DIR` | Use `DIR` as the data folder |
 
 ## Privacy

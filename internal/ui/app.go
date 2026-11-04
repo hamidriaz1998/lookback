@@ -98,6 +98,7 @@ type App struct {
 	usageBusy bool
 	usageAt   time.Time
 
+	launcher bool // the compact launcher window: View shows launcherView only
 	search   searchState
 	folders  foldersState
 	models   modelsState
@@ -343,6 +344,10 @@ func (a *App) View(c *ui.Context) {
 		} else {
 			a.loading(c)
 		}
+		return
+	}
+	if a.launcher {
+		a.launcherView(c)
 		return
 	}
 	a.applyPick()

@@ -1,9 +1,9 @@
 module github.com/hamidriaz1998/lookback
 
-go 1.27.1
+go 1.27.3
 
 require (
-	github.com/egoist/mygo v0.6.0
+	github.com/egoist/mygo v0.7.4
 	github.com/klippa-app/go-pdfium v1.21.3
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/image v0.46.0
