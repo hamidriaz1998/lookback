@@ -123,12 +123,23 @@ This command writes the tarball, `install.sh`, and the `.deb` package to `dist/l
 1. Start Lookback from your app launcher, or run `lookback`.
 2. Follow the first-run setup:
    1. **Hardware.** Lookback shows the CPU, RAM, and GPUs that it found.
+
+      ![The first-run setup shows the CPU, RAM, and GPU, and the recommended combination of backend and precision](docs/images/onboarding-hardware.png)
+
    2. **Downloads and test lab.** Lookback downloads the runtimes and recommends a combination of
       backend and precision. You can test other combinations before you continue.
+
+      ![Progress bars for the CPU and Vulkan runtime downloads during setup](docs/images/onboarding-downloads.png)
+
    3. **Folders.** Choose the folders to index.
+
+      ![The Folders page lists the indexed folder with its image and document counts](docs/images/folders.png)
+
 3. Type a query in the search field. Results appear while indexing continues.
 
 To open setup again, go to **Models & Hardware**.
+
+![The Models & Hardware page shows the active combination and the installed combinations](docs/images/models.png)
 
 ### Use the global hotkey on Hyprland
 
@@ -140,6 +151,12 @@ hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))
 ```
 
 `lookback --toggle` shows or hides a compact search launcher (a small window; Esc, Enter on a result, or clicking away closes it).
+
+![The compact launcher lists the results for "invoice from the hosting company"](docs/images/launcher.png)
+
+Press Ctrl+P in the launcher to preview the selected result.
+
+![The launcher shows a preview of the selected invoice image](docs/images/launcher-preview.png)
 
 ## Keyboard shortcuts
 
