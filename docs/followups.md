@@ -67,7 +67,6 @@ See `.review/wp4-r3.md`.
 | Signed auto-updates | WP10 | Configure `updates` in `mygo.json` (`github` or `url`, keys from `mygo keygen`), publish the signed update archives and manifests, and check that a delta update installs. Needs the signing key in CI secrets. |
 | Release workflow | WP10 | A GitHub Actions job that runs `mygo build -platform linux/amd64,windows/amd64` and publishes the `.deb`, tarball and `install.sh`. Also runs `tools/mkref` and embeds the reference vectors. |
 | Reference vectors embedding (`tools/mkref`) | WP10 | Generate the reference vectors in the release job and embed them in the binary. Not started. |
-| Icon artwork | WP10 | `resources/icon.png` is a 1024 px tile made from the 32 px tray glyph (upscaled). Replace it with designed artwork. |
 | Windows installer | WP10 (Windows phase) | Out of scope on Linux. |
 
 ## From WP10 review round 1 (final round under the 2026-10-21 deadline)

@@ -1,3 +1,5 @@
+<p align="center"><img src="resources/icon.svg" alt="Lookback logo" width="128"></p>
+
 # Lookback
 
 Lookback is a native desktop app that finds your images and documents by what they contain. Type
