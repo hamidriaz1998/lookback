@@ -35,20 +35,23 @@ case "$prefix" in /*) ;; *) echo "install.sh: --prefix must be an absolute path"
 
 bin_dir="$prefix/bin"
 app_dir="$prefix/share/applications"
-icon_dir="$prefix/share/icons/hicolor/1024x1024/apps"
+# hicolor has no 1024x1024 size, so launchers skip that folder: install the SVG (scalable) and a 512 px PNG.
+icon_root="$prefix/share/icons/hicolor"
+icon_dirs="$icon_root/scalable/apps $icon_root/512x512/apps"
 bin_path="$bin_dir/lookback"
 desktop_path="$app_dir/lookback.desktop"
-icon_path="$icon_dir/lookback.png"
+icon_files="$icon_root/scalable/apps/lookback.svg $icon_root/512x512/apps/lookback.png $icon_root/1024x1024/apps/lookback.png"
 
 refresh_caches() {
   # Optional icon cache: a missing tool or a failed refresh does not stop the install.
   if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f "$prefix/share/icons/hicolor/index.theme" ]; then
     gtk-update-icon-cache -q -t "$prefix/share/icons/hicolor" >/dev/null 2>&1 || true
   fi
+  touch "$prefix/share/icons/hicolor" 2>/dev/null || true # makes GTK drop a stale icon-theme.cache
 }
 
 if [ "$mode" = uninstall ]; then
-  rm -f "$bin_path" "$desktop_path" "$icon_path"
+  rm -f "$bin_path" "$desktop_path" $icon_files
   refresh_caches
   echo "Removed Lookback from $prefix (settings and data are kept)."
   exit 0
@@ -65,9 +68,11 @@ if [ -z "$binary" ]; then
 fi
 [ -f "$binary" ] || { echo "install.sh: no binary at $binary" >&2; exit 1; }
 
-mkdir -p "$bin_dir" "$app_dir" "$icon_dir"
+mkdir -p "$bin_dir" "$app_dir" $icon_dirs
 install -m 0755 "$binary" "$bin_path"
-install -m 0644 "$here/resources/icon.png" "$icon_path"
+install -m 0644 "$here/resources/icon.svg" "$icon_root/scalable/apps/lookback.svg"
+install -m 0644 "$here/resources/icon-512.png" "$icon_root/512x512/apps/lookback.png"
+rm -f "$icon_root/1024x1024/apps/lookback.png" # left by earlier versions
 # The desktop file name (lookback.desktop) is the app ID that the Wayland GlobalShortcuts portal reads.
 cat > "$work/lookback.desktop" <<DESKTOP
 [Desktop Entry]
@@ -85,7 +90,7 @@ refresh_caches
 echo "Installed Lookback to $prefix:"
 echo "  $bin_path"
 echo "  $desktop_path"
-echo "  $icon_path"
+echo "  $icon_root/scalable/apps/lookback.svg"
 case ":$PATH:" in
   *":$bin_dir:"*) ;;
   *) echo "Note: $bin_dir is not on PATH, so 'lookback --toggle' needs the full path." ;;
