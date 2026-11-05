@@ -354,8 +354,8 @@ them start after M0 merges.
 ## Windows phase
 
 After the Linux build is tested, continue on a Windows boot of the same laptop: clone the repo,
-then replace the `_windows.go` stubs with the items in SPEC.md "Windows phase". Plan it then, with
-the same review loop.
+then follow the work order in SPEC.md "Windows phase" (decided 2026-11-05), in one session on the
+Windows boot.
 
 ## Suggested agent prompts
 

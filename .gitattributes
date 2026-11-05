@@ -1,0 +1,4 @@
+# Check out LF everywhere, also on Windows, so that the bash hooks and scripts run under Git Bash and
+# byte-exact test fixtures match on every OS.
+* text=auto eol=lf
+**/testdata/** -text

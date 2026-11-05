@@ -31,6 +31,7 @@ same change.
   twin that is a minimal stub returning `errors.ErrUnsupported`, so the tree compiles. No half-written
   Windows logic. `GOOS=windows CGO_ENABLED=0 go build ./...` stays in the pre-push hook, to keep Linux-only
   assumptions out of shared code. Windows details below are marked "Windows phase" and are not v1 work.
+  The [Windows phase](#windows-phase) section lists the shared-code changes that Windows needs.
 - Content: images and text documents (Q4, Q14). See [section 9](#9-extraction-and-chunking).
 
 ### Non-goals for v1
@@ -527,15 +528,21 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 
 - Closing the window hides it. The app keeps running in the tray, watching and indexing (Q16).
 - Tray menu: Open Lookback, Pause or Resume indexing, Quit.
-- Watching (Q5): one recursive `mygo.WatchFiles` per folder, with the exclusion rules as its `Ignore`.
-  Batches of events are debounced for 1 s.
+- Watching (Q5): `internal/watch` runs one recursive watcher per folder (inotify on Linux,
+  `ReadDirectoryChangesW` on Windows), with the exclusion rules as its skip function.
+  Batches of events are debounced for 1 s. An overflow starts a rescan of that folder.
 - Startup rescan: walk each folder and compare size and mtime with `files`; queue the differences.
-- Global hotkey (Q30): Super+. by default, configurable, through MyGo's global shortcuts. Under Hyprland the
-  portal path needs an installed desktop entry (WP10); until then registration fails, is logged once, and Settings shows the bind tip.
-- Single instance: `lookback --toggle` shows or hides the running window and exits. Use MyGo's
-  single-instance support if it has one; otherwise a Unix socket in the
-  data folder. On Hyprland, where global shortcuts may not reach apps, the user binds:
+- Global hotkey (Q30, Q35): Super+. on Linux and Ctrl+Alt+Space on Windows by default, configurable, through
+  MyGo's global shortcuts. Under Hyprland the portal path needs an installed desktop entry (WP10); until then
+  registration fails, is logged once, and Settings shows the bind tip (Linux only).
+- Single instance: `lookback --toggle` shows or hides the running window and exits. This uses MyGo's
+  single-instance lock on both OSes. On Hyprland, where global shortcuts may not reach apps, the user binds:
   `hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))`.
+- Start at login (Q41): off by default. When it is on, the OS starts `lookback --background`, which starts
+  the app in the tray with no window. Linux writes `~/.config/autostart/lookback.desktop` (or
+  `$XDG_CONFIG_HOME/autostart`); Windows writes the value `Lookback` under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, set to the quoted `os.Executable()` path plus
+  `--background`. A second instance started with `--background` does not show the window.
 
 ## 14. Settings
 
@@ -545,7 +552,8 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 | Active combination | From onboarding |
 | Installed combinations | Delete unused ones (frees disk) |
 | Pause indexing on battery | On |
-| Global hotkey | Super+. (period) |
+| Global hotkey | Super+. (period) on Linux; Ctrl+Alt+Space on Windows |
+| Start at login | Off (starts in the tray when on) |
 | Max image edge | 1600 px |
 | Folders and ignore lists | From onboarding |
 | Data folder | Platform default (moving it moves the files) |
@@ -656,8 +664,11 @@ change only the parent folder, so:
 
 ## 17. Packaging and updates
 
-- Linux: a `.deb` and a Linux install script (MyGo distribution). Windows phase: an installer.
-- App updates: MyGo's signed auto-updates (Q20).
+- Linux: a `.deb` and a Linux install script (MyGo distribution).
+- Windows (Q34, Q39, Q40): the MyGo NSIS installer only (no zip, winget or Scoop), unsigned, built on the
+  Windows boot with `mygo build -platform windows/amd64` and uploaded to the release by hand.
+- App updates: MyGo's signed auto-updates (Q20). Not built yet on either OS (Q44); users install the new
+  release over the old one.
 - Each app release pins one llama.cpp tag and one model revision with checksums. When an update
   changes a pin, the new files download in the background. The index is rebuilt only if the model
   revision or the precision changes, as a `building` generation.
@@ -718,18 +729,210 @@ PLAN.md maps these milestones to work packages.
 
 ## Windows phase
 
-Starts after the Linux build is tested on the reference machine, on a Windows boot of the same
-laptop. It replaces the `_windows.go` stubs; nothing in the shared code should need to change. Scope:
+Decided 2026-11-05 (Q32–Q45). The Linux build is done (0.2.0). This phase runs in **one Claude session
+on a Windows 11 boot of the reference laptop** (Ryzen 7 5700U, Radeon RENOIR iGPU, no NVIDIA GPU). The
+session works through the [work order](#work-order) one step at a time and checks each step on the real
+hardware before it starts the next one. The release is **0.3.0** for both OSes.
 
-- Catalog: the Windows rows of section 4, with SHA-256 pins (the `cudart` asset names have no tag).
-- Hardware detection: the Windows column of section 5 (DXGI, `GlobalMemoryStatusEx`).
-- Sidecar: job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the spike 3 run on Windows with Q8_0.
-- Test lab: peak memory from `PeakWorkingSetSize`.
-- Exclusions: the hidden file attribute.
-- Single instance: a named pipe in the data folder.
-- Data root: `%LOCALAPPDATA%\Lookback`.
-- Packaging: a Windows installer; check SmartScreen and antivirus against tursogo's extracted DLL.
-- Checks: run the hooks' test suite on Windows itself.
+To start the session, say: "Read SPEC.md, section 'Windows phase', and start the work order."
+
+### Scope
+
+- Targets (Q32): Windows 10 22H2 and Windows 11, x64. Tests run on Windows 11 only. No arm64.
+- In scope: all items in the work order, including Start at login on **both** OSes (Q41).
+- Out of scope: winget, Scoop, a portable zip, code signing, auto-update (Q34, Q39, Q44), the Windows
+  accent color in the System theme (Q43), and the Omarchy theme (Linux only).
+
+### What already works
+
+- `internal/catalog/catalog.json` pins the Windows llama.cpp zips with SHA-256. `internal/download`
+  unpacks `.zip` and refuses path traversal.
+- MyGo provides the tray, the global shortcut, the single-instance lock, power and suspend events,
+  dialogs, the clipboard, `OpenURL`, and the NSIS installer on Windows. Lookback's code that uses them is
+  shared. Check each of them on Windows (see [Acceptance](#windows-acceptance)); write no new code for them
+  unless a check fails.
+- go-pdfium runs in wazero (pure Go). tursogo extracts its native DLL to `<data root>\lib`.
+
+### Changes to shared code
+
+The Linux phase said that the Windows phase would change only the `_windows.go` stubs. That is no longer
+true. These shared changes are part of the phase:
+
+| Change | Where |
+|---|---|
+| Per-OS hotkey default. Replace the four `"Super+."` literals with one constant in a `_linux.go`/`_windows.go` pair | `internal/app/app.go:35`, `internal/fake/store.go:38`, `internal/ui/settings.go:129`, `internal/ui/settings.go:166` |
+| Show the Hyprland bind tip on Linux only | `internal/ui/settings.go` |
+| Find `llama-server.exe` on Windows. Today the code compares `d.Name() == "llama-server"`, so every Windows runtime looks "not downloaded" | `internal/app/services.go:320` |
+| Make `file:///C:/…` URLs for drive letters and `file://server/share/…` for UNC paths. Today `fileURL` puts a backslash path in `url.URL.Path` | `internal/ui/search.go:586` |
+| Hide the console window of every child process (`SysProcAttr{HideWindow: true, CreationFlags: CREATE_NO_WINDOW}`) through a small per-OS helper. This applies to the sidecar and the `--list-devices` probe | `internal/hw/detector.go:84`, `internal/runtime` |
+| The data root default `%LOCALAPPDATA%\Lookback`, and the `--data-dir` help text | `internal/app/services.go:62`, `internal/app/args.go:21` |
+| Hidden, system and cloud-placeholder exclusions (see [Exclusions](#exclusions-on-windows)) | `internal/index/scan.go`, the watcher's skip function |
+| Start at login: the `autostart` setting, the `--background` flag in `ParseArgs`, a Settings switch, and a `_linux.go`/`_windows.go` backend pair | `internal/app`, `internal/ui/settings.go` |
+| Network folder note on the folder row | `internal/ui/folders.go` |
+| Per-OS CUDA driver minimums (see [Hardware detection](#hardware-detection-on-windows)) | `internal/hw/detector.go:20` |
+| Folder overlap checks (nested or same folder) ignore case on Windows | where folders are added |
+
+Keep the current stubs as `//go:build !linux && !windows` (rename `_other.go` where needed), so that a
+later macOS build still compiles.
+
+### Bootstrap on Windows
+
+1. Install Git for Windows, Go 1.27.3, and MSYS2. In MSYS2, run
+   `pacman -S mingw-w64-ucrt-x86_64-gcc`, then add `C:\msys64\ucrt64\bin` to the PATH that Git Bash sees.
+2. Clone the repo. `.gitattributes` keeps LF line endings, so the bash hooks and the test fixtures work.
+   Check `git ls-files --eol | grep crlf` prints nothing.
+3. Run `git config core.hooksPath .githooks`.
+4. Build the MyGo CLI at the pinned version: `go build -o mygo.exe github.com/egoist/mygo/cmd/mygo`.
+5. Install the AMD Adrenalin driver if Vulkan is missing (`vulkaninfo --summary`).
+
+### Work order
+
+Each step ends with its tests passing on Windows and a commit. Steps that change behavior also end with a
+manual check from the [acceptance list](#windows-acceptance).
+
+1. **Test triage.** Run `go vet ./...` and `go test ./...` natively, and list every failure before any stub
+   work. Expect these kinds of failures:
+   - Windows cannot rename or delete an open file. Look at log rotation at 10 MB, the `.part` rename in
+     downloads, generation retirement, the data folder move, and `t.TempDir` cleanup.
+   - Path separators and drive letters in test expectations.
+   - Pixel snapshots in `internal/ui/snapshots_test.go`: fonts render differently on Windows. If a test
+     compares pixels, give it Windows goldens or skip it on Windows with a reason. Don't change the
+     Linux goldens.
+   - Tests that are Linux-only by design (`*_linux_test.go`) are skipped already.
+   Fix the real bugs. Record the rest in `docs/followups.md`.
+2. **Pre-push hook.** When `GOOS` is windows (`go env GOOS`) and `gcc` is not on the PATH, print
+   "pre-push: gcc not found, skipping -race (install MSYS2 ucrt64 gcc)" and skip the `-race` step (Q38). With
+   gcc, run it. The `GOOS=windows go build` line becomes a native build on Windows; keep it.
+3. **Data root.** `%LOCALAPPDATA%\Lookback` (`os.UserCacheDir()` returns `%LOCALAPPDATA%` on Windows). Check
+   that tursogo's DLL loads from `<data root>\lib` and that Defender does not block it.
+4. **Hardware detection** ([details](#hardware-detection-on-windows)).
+5. **Sidecar process** ([details](#sidecar-on-windows)). Then repeat spike 3 on Windows with Q8_0 and BF16
+   and record the results in `docs/spikes.md`.
+6. **Watcher** ([details](#watcher-on-windows)). The `r1_*` tests in `internal/watch` must pass on Windows.
+7. **Exclusions** ([details](#exclusions-on-windows)).
+8. **Hotkey and Settings gating.** The per-OS default, and the Hyprland tip on Linux only.
+9. **Open and Show in folder.** Fix `fileURL`. Check a path with spaces, a non-ASCII name, a drive root,
+   and a UNC path.
+10. **Start at login** (Q41), on both OSes. Unit-test the file and the registry value that each backend
+    writes (the Linux one with a temporary `XDG_CONFIG_HOME`). Check Linux by hand on the next Linux boot,
+    and record that check in `docs/followups.md`.
+11. **Network folders** (Q42). When a folder is added, `GetDriveType` of its volume is `DRIVE_REMOTE` or
+    its path starts with `\\`: add it, and show a muted note on its row in Folders: "Network folder:
+    changes appear after a restart."
+12. **Uninstaller spike** ([details](#installer)). Do this before the installer step.
+13. **Installer** ([details](#installer)).
+14. **Full run.** Do the whole [acceptance list](#windows-acceptance) on a clean user account.
+15. **Docs and release.** README: Windows install steps, the SmartScreen "More info → Run anyway" note,
+    the Windows hotkey, and the status line. CHANGELOG and version 0.3.0. Build the Linux packages on
+    Linux and the Windows installer on Windows, and upload both to the 0.3.0 release.
+
+### Hardware detection on Windows
+
+| What | Source |
+|---|---|
+| CPU name | Registry `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0`, `ProcessorNameString` |
+| Threads and physical cores | `GetLogicalProcessorInformationEx` (`RelationProcessorCore` counts cores) |
+| RAM | `GlobalMemoryStatusEx` (`ullTotalPhys`, `ullAvailPhys`) |
+| GPUs | Recommended: the display-adapter class key `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\NNNN`, with `DriverDesc`, `DriverVersion` and `MatchingDeviceId` (`PCI\VEN_xxxx&DEV_xxxx`). This needs much less code than DXGI COM vtables from pure Go. Use DXGI `EnumAdapters1` only if the registry is incomplete on the test machine |
+| NVIDIA driver | `DriverVersion` such as `32.0.15.6094`. The NVIDIA version is the last 5 digits: `560.94` |
+
+As on Linux, the ground truth is `llama-server --list-devices`. CUDA minimums are per OS, because the
+Windows assets are CUDA 12.4 (not 12.8) and 13.4. Look up the minimum Windows driver for each in NVIDIA's
+CUDA release notes, and put the values next to the Linux ones in `internal/hw/detector.go`. CUDA is offered
+but untested on Windows (Q37); say so in the release notes.
+
+### Sidecar on Windows
+
+- Create a job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, start `llama-server.exe` suspended
+  (`CREATE_SUSPENDED`), assign it to the job, then resume it. Keep the job handle open for the life of the
+  app; Windows closes it when the app dies, which kills the child.
+- No console window (see the shared change above).
+- `terminate`: Windows has no SIGTERM for a console-less child. Call `TerminateJobObject` (or
+  `Process.Kill`), then wait for the exit.
+- `peakRSS`: `PeakWorkingSetSize` from `GetProcessMemoryInfo`.
+- `bindCollision`: match the Windows error text ("Only one usage of each socket address",
+  WSAEADDRINUSE) in the log tail.
+- `trimLogAll`: the same behavior as Linux. The log file may be open; open it with share flags or copy it.
+
+### Watcher on Windows
+
+- One `ReadDirectoryChangesW` handle per root, with `bWatchSubtree = TRUE`, opened with
+  `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED` and `FILE_SHARE_READ | FILE_SHARE_WRITE |
+  FILE_SHARE_DELETE` (so that the user can still rename or delete the root). Filter for file name, dir
+  name, size, last write, and creation changes.
+- An overflow (`ERROR_NOTIFY_ENUM_DIR`, or a zero-byte result) calls `onChange` as a full-rescan signal,
+  as the Linux overflow does.
+- A renamed or deleted root: the handle reports it or fails. Watch the parent for the root's name and
+  re-open, with the same behavior as `watch_linux.go`.
+- Apply the skip function to every event path.
+
+### Exclusions on Windows
+
+- Read attributes with `os.Lstat` (`syscall.Win32FileAttributeData`) or `GetFileAttributesEx`. **Never open
+  the file to check**, because opening a OneDrive placeholder downloads it.
+- Skip `FILE_ATTRIBUTE_HIDDEN` and `FILE_ATTRIBUTE_SYSTEM` files and folders (Q36). This covers
+  `$Recycle.Bin`, `System Volume Information`, and most of `AppData`. The dot-prefix rule and the name list
+  stay the same.
+- Skip online-only files: `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` (0x400000) or `FILE_ATTRIBUTE_OFFLINE`
+  (Q33). When such a file becomes local, the watcher sees the change and indexes it.
+- Treat junctions and other reparse points like symlinks: skip those that resolve outside the folder.
+- These rules are defaults like the others, editable per folder.
+
+### Installer
+
+The MyGo NSIS installer: per user, in `%LOCALAPPDATA%\Programs\Lookback`, no admin rights, a Start menu
+shortcut, and an entry in Settings > Apps. It is unsigned (Q39). Add `windows.installerInclude`
+(`resources/installer.nsh`) to `mygo.json`.
+
+Uninstall (Q45):
+
+- A **checkbox page** in the uninstaller, unchecked by default: "Also delete the index and the
+  downloaded models (`%LOCALAPPDATA%\Lookback`)". It deletes the default data root only. If the user moved
+  the data folder, the page says that the moved folder is kept.
+- Before it removes files, the uninstaller stops a running `Lookback.exe` and `llama-server.exe`.
+- It removes the `HKCU\…\Run` value `Lookback`.
+- **Spike first:** MyGo includes `installerInclude` after MUI2 and its languages, but MUI page macros
+  normally come before `MUI_LANGUAGE`. Check that a custom uninstaller page (for example `UninstPage custom`
+  with nsDialogs) works from the include. **If it doesn't, stop and ask the user.** Don't fall back to a
+  message box; the user rejected that option.
+
+`install.sh --uninstall` on Linux also removes the autostart file. The `.deb` can't edit home folders, so
+the README tells `.deb` users to turn off Start at login before they remove the package.
+
+### Windows acceptance
+
+Run these on the Windows 11 boot, on a clean user account where noted.
+
+1. `go vet ./...` and `go test ./...` pass natively. The pre-push hook passes under Git Bash, with `-race`
+   when gcc is installed.
+2. The installer installs without admin rights (clean account) and starts Lookback. Note the SmartScreen
+   prompt text for the README.
+3. Onboarding detects the Ryzen 7 5700U, the RAM, and the Radeon GPU, and recommends Vulkan with BF16.
+   CUDA is not offered. The test lab fills in for CPU and Vulkan.
+4. No console window appears at any point (probe, sidecar, restart).
+5. `taskkill /f /im Lookback.exe` leaves no `llama-server.exe` running.
+6. Kill `llama-server.exe` twice during indexing: the app falls back to the CPU, shows the toast, and
+   continues.
+7. Kill the app during a model download. Restart: the download continues and verifies.
+8. Index a folder of the reference screenshots. "an error message" returns the "Connection activation
+   failed" screenshot in the top 3.
+9. Edit a watched text file: its new content is searchable within 10 s. Rename and delete files and
+   folders, and rename the root: the index follows. Copy 10,000 files in at once: the overflow rescan
+   catches all of them.
+10. A hidden file, a system file, and an online-only OneDrive file are not indexed, and the OneDrive file
+    stays online-only (its cloud icon doesn't change).
+11. A folder on a mapped network drive is added, and its row shows the network note.
+12. Ctrl+Alt+Space shows and hides the window. A rebind in Settings works. The Hyprland tip is not shown.
+13. `Lookback.exe --toggle` shows or hides the running window.
+14. Open, Show in folder, and Copy path work for a path with spaces and a non-ASCII name.
+15. Unplug AC power: indexing pauses; plug it back in: it resumes. Sleep and wake: indexing resumes.
+16. Start at login on: sign out and in, and Lookback starts in the tray with no window. Off: the Run value
+    is removed.
+17. Tray menu: Open, Pause or Resume, Quit all work.
+18. Uninstall with the checkbox off: the data root stays. Reinstall: the index is still there. Uninstall
+    with the checkbox on: the data root is deleted. Both remove the Run value.
+19. Defender does not quarantine the tursogo DLL or `llama-server.exe`.
+20. Every screen passes the UI_GUIDE.md definition of done in the light and dark System themes.
 
 ## 21. Risks
 
@@ -737,6 +940,9 @@ laptop. It replaces the `_windows.go` stubs; nothing in the shared code should n
 |---|---|
 | ~~tursogo vector functions unverified~~ **Resolved 2026-10-21:** spike 1 passed in Go (results match brute force; 226 ms at 100k) | `spikes/tursogo` stays as a regression test |
 | (Windows phase) tursogo's extracted native DLL may be blocked by SmartScreen or antivirus | Check on real Windows in the Windows phase; the cache folder is set to the app's data folder |
+| (Windows phase) The unsigned installer makes SmartScreen warn users | The README explains "More info → Run anyway"; add signing later (Q39) |
+| (Windows phase) MyGo's `installerInclude` may not allow a custom uninstaller page | Spike before the installer step; ask the user if it fails |
+| (Windows phase) CUDA is untested on Windows (no NVIDIA GPU on the test machine) | `--list-devices` gates it, the CPU fallback catches failures, and the release notes say so |
 | MyGo is pre-1.0; APIs may change | Pin its version in `go.mod`; spike 2 checks the image grid early |
 | CUDA runtime downloads are large (400–600 MB) | Show sizes before download; CUDA is offered only when an NVIDIA GPU is found |
 | go-pdfium in WASM may be slow on large PDFs | Measure in WP4; process pages lazily, one at a time |
@@ -747,7 +953,7 @@ laptop. It replaces the `_windows.go` stubs; nothing in the shared code should n
 
 | ID | Topic | Decision |
 |---|---|---|
-| Q1 | Platforms | Linux x64 for v1 (revised 2026-10-21); Windows x64 in the Windows phase; macOS later |
+| Q1 | Platforms | Linux x64 for v1 (revised 2026-10-21); Windows x64 in the Windows phase (Q32); macOS later |
 | Q2 | Runtime | llama-server sidecar, official llama.cpp build per backend |
 | Q3 | UI | MyGo native UI with built-in components only; Lucide SVG icons |
 | Q4 | Text scope | Plain text, code, PDF and Office |
@@ -778,5 +984,20 @@ laptop. It replaces the `_windows.go` stubs; nothing in the shared code should n
 | Q29 | UI style | Keyboard-first, photo-library grid, preview panel, compact |
 | Q30 | Hotkey | Global shortcut + `lookback --toggle` |
 | Q31 | Work split | Contracts first, then parallel work packages |
+| Q32 | Windows targets | Windows 10 22H2 and 11, x64; tested on 11; no arm64 |
+| Q33 | Cloud files | Skip online-only placeholders (`RECALL_ON_DATA_ACCESS`, `OFFLINE`) |
+| Q34 | Windows distribution | MyGo NSIS installer only; no zip, winget or Scoop |
+| Q35 | Windows hotkey | Ctrl+Alt+Space (Win+. is the emoji panel) |
+| Q36 | Windows exclusions | Hidden and system attributes; same name list |
+| Q37 | Windows backends | CPU, Vulkan and CUDA; CUDA untested on Windows |
+| Q38 | Checks on Windows | Hook under Git Bash with MSYS2 gcc; warn and skip `-race` without gcc |
+| Q39 | Signing | Unsigned for now; README explains SmartScreen |
+| Q40 | Windows build | Built on the Windows boot, uploaded by hand |
+| Q41 | Start at login | Setting on both OSes, off by default, starts in the tray (`--background`) |
+| Q42 | Network folders | Allowed, with a note on the folder row |
+| Q43 | Accent color | System theme ignores the Windows accent color |
+| Q44 | Auto-update | Stays a followup on both OSes |
+| Q45 | Uninstall | Checkbox page, unchecked: delete the default data root; always remove the Run value |
+| — | Windows work mode | One session on the Windows boot, in the work order |
 | — | Downloads | Resumable after crashes, verified by SHA-256 |
 | — | Omarchy | Follows `colors.toml` live, including directory and symlink swaps |
