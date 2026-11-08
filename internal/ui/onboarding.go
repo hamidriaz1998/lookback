@@ -109,19 +109,27 @@ func (a *App) queueRuntimes() {
 		o.runtimes = append(o.runtimes, runtimeAssets(as)...)
 		o.probeBackends = append(o.probeBackends, b)
 	}
-	if len(o.runtimes) > 0 {
-		ctx, assets := a.ctx, o.runtimes
-		go func() {
-			if err := a.d.Downloader.Ensure(ctx, assets); err != nil {
-				a.dispatch(func() {
-					if a.onb == o {
-						o.labErr = err.Error()
-					}
-				})
-			}
-		}()
-	}
+	a.ensureRuntimes()
 	a.probeWhenReady()
+}
+
+// ensureRuntimes queues the runtime builds that the probes need. A failure shows in step 1 with Retry, which
+// calls this again.
+func (a *App) ensureRuntimes() {
+	o := a.onb
+	if len(o.runtimes) == 0 {
+		return
+	}
+	ctx, assets := a.ctx, o.runtimes
+	go func() {
+		if err := a.d.Downloader.Ensure(ctx, assets); err != nil {
+			a.dispatch(func() {
+				if a.onb == o {
+					o.labErr = err.Error()
+				}
+			})
+		}
+	}()
 }
 
 // runtimeAssets returns the runtime archives among as.
@@ -310,6 +318,15 @@ func (a *App) backendStatus(c *ui.Context) {
 		})
 		for _, as := range o.runtimes {
 			a.downloadRow(c, as)
+		}
+		if o.labErr != "" {
+			ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, o.labErr).TextColor(t.Danger).Grow(1)
+				if ui.Button(c, "Retry").Clicked() {
+					o.labErr = ""
+					a.ensureRuntimes()
+				}
+			})
 		}
 	})
 }

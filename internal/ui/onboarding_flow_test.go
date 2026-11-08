@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -393,4 +395,37 @@ func TestLabRowShowsEachMetricUnderItsHeading(t *testing.T) {
 		}
 	}
 	t.Fatalf("the row does not show %q in its columns in order; texts: %q", want, texts)
+}
+
+// failFirstEnsure is a downloader whose first Ensure fails, as a catalog conflict would.
+type failFirstEnsure struct {
+	contract.Downloader
+	mu     sync.Mutex
+	failed bool
+}
+
+func (f *failFirstEnsure) Ensure(ctx context.Context, a []contract.Asset) error {
+	f.mu.Lock()
+	first := !f.failed
+	f.failed = true
+	f.mu.Unlock()
+	if first {
+		return errors.New("catalog conflict")
+	}
+	return f.Downloader.Ensure(ctx, a)
+}
+
+// TestStepOneRetriesAFailedEnsure checks that step 1 shows why the runtime builds are not downloading, and that
+// Retry queues them again, so the first run does not stay on "Checking the backends" for good.
+func TestStepOneRetriesAFailedEnsure(t *testing.T) {
+	h, _ := newFirstRunHarness(t, nil, func(d *Deps) { d.Downloader = &failFirstEnsure{Downloader: d.Downloader} })
+	h.wait("the Ensure error", func() bool { return h.app.onb != nil && h.app.onb.labErr != "" })
+	h.wantText("catalog conflict")
+	if err := h.tt.Click("Retry"); err != nil {
+		t.Fatalf("step 1 has no Retry button: %v", err)
+	}
+	waitDetection(h)
+	if h.app.onb.labErr != "" {
+		t.Errorf("labErr = %q after a good retry, want it cleared", h.app.onb.labErr)
+	}
 }
