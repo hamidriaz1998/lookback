@@ -11,9 +11,7 @@ import (
 )
 
 const (
-	quiet   = time.Second     // a burst fires this long after its last event (SPEC section 13)
-	maxWait = 5 * time.Second // ponytail: a burst also fires after this, so a busy folder cannot starve the rescan
-	mask    = unix.IN_CREATE | unix.IN_DELETE | unix.IN_MODIFY | unix.IN_CLOSE_WRITE | unix.IN_MOVED_FROM |
+	mask = unix.IN_CREATE | unix.IN_DELETE | unix.IN_MODIFY | unix.IN_CLOSE_WRITE | unix.IN_MOVED_FROM |
 		unix.IN_MOVED_TO | unix.IN_DELETE_SELF | unix.IN_MOVE_SELF | unix.IN_ATTRIB
 	// parentMask watches the parent of the root, so that renaming or replacing the root is seen.
 	parentMask = unix.IN_CREATE | unix.IN_DELETE | unix.IN_MOVED_FROM | unix.IN_MOVED_TO
