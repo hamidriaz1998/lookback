@@ -90,6 +90,7 @@ type App struct {
 	reloading  bool
 	reloadWant bool
 	reloadDue  bool
+	saving     map[string]string // settings whose write has not ended; a snapshot read before it ended must not undo them
 	lastLoad   time.Time
 	nowT       time.Time // the clock of the current frame
 	indexRev   uint64
@@ -138,6 +139,7 @@ func New(d Deps) *App {
 		thumbs:      newThumbs(d.Media),
 		searcher:    search.New(d.Store),
 		downloads:   map[string]contract.DownloadProgress{},
+		saving:      map[string]string{},
 		labSteps:    map[contract.RunID]contract.LabStep{},
 		search:      newSearchState(),
 		models:      modelsState{selected: -1},
@@ -222,6 +224,9 @@ func (a *App) reload() {
 					a.indexRev++
 				}
 				a.thumbs.forgetErrors()
+				for k, v := range a.saving {
+					s.settings[k] = v // the store may not hold it yet
+				}
 				a.data = s
 			}
 			a.reloading = false
@@ -269,7 +274,17 @@ func (a *App) setting(key, value string) {
 	a.data.settings[key] = value
 	var save func()
 	save = func() {
-		a.bg(a.page, func(ctx context.Context) error { return a.d.Store.SetSetting(ctx, key, value) }, save)
+		a.saving[key] = value
+		a.bg(a.page, func(ctx context.Context) error {
+			err := a.d.Store.SetSetting(ctx, key, value)
+			// The write has ended, so the store holds the value (or the write failed and Retry shows). Queued before bg's reload.
+			a.dispatch(func() {
+				if a.saving[key] == value {
+					delete(a.saving, key)
+				}
+			})
+			return err
+		}, save)
 	}
 	save()
 }
