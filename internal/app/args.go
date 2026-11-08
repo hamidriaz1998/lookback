@@ -20,7 +20,7 @@ func ParseArgs(args []string) (Options, error) {
 	fs.SetOutput(io.Discard)
 	toggle := fs.Bool("toggle", false, "show or hide the running window")
 	background := fs.Bool("background", false, "start in the tray with no window")
-	dataDir := fs.String("data-dir", "", "data folder (default $XDG_DATA_HOME/lookback)")
+	dataDir := fs.String("data-dir", "", "data folder (default: $XDG_DATA_HOME/lookback on Linux, %LOCALAPPDATA%\\Lookback on Windows)")
 	if err := fs.Parse(args); err != nil {
 		return Options{}, err
 	}

@@ -27,9 +27,6 @@ import (
 	lookui "github.com/hamidriaz1998/lookback/internal/ui"
 )
 
-// osName is the operating system the app runs on. Windows comes with its phase (SPEC "Windows phase").
-const osName = contract.OS("linux")
-
 // Services is the set of real implementations the window and the indexer use. OpenServices builds it.
 type Services struct {
 	Deps    lookui.Deps
@@ -57,18 +54,6 @@ func (s *Services) Close() {
 	for i := len(s.closers) - 1; i >= 0; i-- {
 		s.closers[i]()
 	}
-}
-
-// DefaultDataDir is the SPEC section 2 data root: $XDG_DATA_HOME/lookback, or ~/.local/share/lookback.
-func DefaultDataDir() (string, error) {
-	if x := os.Getenv("XDG_DATA_HOME"); x != "" {
-		return filepath.Join(x, "lookback"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "share", "lookback"), nil
 }
 
 // OpenServices builds the real services under dataDir. life ends them all.
@@ -322,7 +307,7 @@ func serverBinary(dataDir string, assets []contract.Asset, b contract.Backend) (
 		root := filepath.Join(dataDir, "runtimes", revisionOf(a)+"-"+string(b))
 		var found string
 		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err == nil && !d.IsDir() && d.Name() == "llama-server" {
+			if err == nil && !d.IsDir() && d.Name() == serverExe {
 				found = p
 				return fs.SkipAll
 			}
