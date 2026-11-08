@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -215,7 +214,7 @@ func TestKillTwiceFallsBackToCPU(t *testing.T) {
 	defer sess.Close()
 
 	first := pidOf(r, spaceA)
-	if err := syscall.Kill(first, syscall.SIGKILL); err != nil {
+	if err := killPID(first); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "restart after the first kill", func() bool {
@@ -227,7 +226,7 @@ func TestKillTwiceFallsBackToCPU(t *testing.T) {
 	}
 
 	second := pidOf(r, spaceA)
-	if err := syscall.Kill(second, syscall.SIGKILL); err != nil {
+	if err := killPID(second); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "CPU fallback after the second kill", func() bool {
@@ -338,7 +337,7 @@ func TestStatusStreamStartsWithSnapshotAndEndsWithLifetime(t *testing.T) {
 	endLife()
 	for range ch {
 	}
-	waitFor(t, "sidecar to exit", func() bool { return syscall.Kill(pid, 0) != nil })
+	waitFor(t, "sidecar to exit", func() bool { return !alive(pid) })
 	if _, err := r.Session(context.Background(), spaceA); !errors.Is(err, contract.ErrStopped) {
 		t.Fatalf("Session after lifetime end: %v", err)
 	}
@@ -374,7 +373,7 @@ func TestTokenizeOffsetsCoverTheText(t *testing.T) {
 func TestStartWaitEndsWhenTheChildExits(t *testing.T) {
 	// /bin/false exits at once. The startup wait must end then, not after its 120 s deadline.
 	begin := time.Now()
-	_, err := Start(context.Background(), Options{Files: Files{Server: "/bin/false"}, Threads: 1,
+	_, err := Start(context.Background(), Options{Files: Files{Server: falseBin}, Threads: 1,
 		LogPath: filepath.Join(t.TempDir(), "llama-server.log")})
 	if err == nil {
 		t.Fatal("Start of a child that exits returned no error")
@@ -406,7 +405,7 @@ func TestModelPathsUseSpecNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "/d/embeddinggemma-2-Q8_0.gguf" || mm != "/d/mmproj-embeddinggemma-2-BF16.gguf" {
+	if text != filepath.Join("/d", "embeddinggemma-2-Q8_0.gguf") || mm != filepath.Join("/d", "mmproj-embeddinggemma-2-BF16.gguf") {
 		t.Fatalf("paths %s %s", text, mm)
 	}
 	if _, _, err := ModelPaths("/d", contract.VectorSpace{TextQuant: "f16"}); err == nil {
@@ -550,7 +549,7 @@ func TestStableRestartForgetsTheFailure(t *testing.T) {
 
 	for i := 1; i <= 3; i++ { // three crashes, each long after the one before
 		pid := pidOf(r, spaceA)
-		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		if err := killPID(pid); err != nil {
 			t.Fatal(err)
 		}
 		waitFor(t, "a restart", func() bool {

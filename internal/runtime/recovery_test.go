@@ -7,20 +7,32 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
+// skipWithoutShell skips a test whose llama-server stand-in is a /bin/sh script. Call it in the test goroutine,
+// because t.Skip from another goroutine does not stop the test.
+func skipWithoutShell(t *testing.T) {
+	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("the stand-in is a /bin/sh script")
+	}
+}
+
 // writeScript writes a /bin/sh llama-server stand-in with body and returns its path.
 func writeScript(t *testing.T, body string) string {
 	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("the stand-in is a /bin/sh script; Windows has no TERM signal to ignore")
+	}
 	p := filepath.Join(t.TempDir(), "llama-server")
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
@@ -29,7 +41,7 @@ func writeScript(t *testing.T, body string) string {
 }
 
 // deadFiles is a launch whose server exits at once.
-func deadFiles() Files { return Files{Server: "/bin/false", Model: "m", MMProj: "p"} }
+func deadFiles() Files { return Files{Server: falseBin, Model: "m", MMProj: "p"} }
 
 // blockedFiles is a launch whose server writes its PID to pidFile and never becomes ready.
 func blockedFiles(t *testing.T, pidFile string) Files {
@@ -85,6 +97,7 @@ func TestUseWaitsThroughItsOwnRecovery(t *testing.T) {
 // TestUseCancelStopsItsBlockedRecovery: when the Use's context ends while its restart is blocked, Use returns the
 // context's error and the blocked server is gone.
 func TestUseCancelStopsItsBlockedRecovery(t *testing.T) {
+	skipWithoutShell(t)
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	r, _ := countedRuntime(t, contract.BackendCPU, func(n int, _ contract.Backend, s contract.VectorSpace) (Files, error) {
 		switch n {
@@ -116,12 +129,13 @@ func TestUseCancelStopsItsBlockedRecovery(t *testing.T) {
 		t.Fatal("Use did not return after its context ended")
 	}
 	pid := readPID(t, pidFile)
-	waitFor(t, "the blocked server to exit", func() bool { return syscall.Kill(pid, 0) != nil })
+	waitFor(t, "the blocked server to exit", func() bool { return !alive(pid) })
 }
 
 // TestUseIsSupersededOnlyByLaterUseOrStop: while its restart is blocked and its context is alive, Use keeps
 // waiting. A later Stop supersedes it.
 func TestUseIsSupersededOnlyByLaterUseOrStop(t *testing.T) {
+	skipWithoutShell(t)
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	r, _ := countedRuntime(t, contract.BackendCPU, func(n int, _ contract.Backend, s contract.VectorSpace) (Files, error) {
 		switch n {
@@ -229,7 +243,7 @@ wait $!
 		if raw, err := os.ReadFile(pids); err == nil {
 			for _, f := range strings.Fields(string(raw)) {
 				pid, _ := strconv.Atoi(f)
-				if syscall.Kill(pid, 0) == nil {
+				if alive(pid) {
 					overlaps.Add(1)
 				}
 			}
@@ -330,7 +344,7 @@ wait $!
 		if raw, err := os.ReadFile(pids); err == nil {
 			for _, f := range strings.Fields(string(raw)) {
 				pid, _ := strconv.Atoi(f)
-				if syscall.Kill(pid, 0) == nil {
+				if alive(pid) {
 					overlaps.Add(1)
 				}
 			}
@@ -354,7 +368,7 @@ wait $!
 	if d := time.Since(begin); d > 5*time.Second {
 		t.Fatalf("Use returned %s after a 300 ms deadline", d)
 	}
-	if syscall.Kill(slow, 0) == nil {
+	if alive(slow) {
 		t.Fatal("the slow server still runs after Use returned")
 	}
 
