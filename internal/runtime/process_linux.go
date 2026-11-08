@@ -48,6 +48,7 @@ func startProcess(o Options, port int, key string) (*process, error) {
 		cmd.Stderr = sink
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 		if err := cmd.Start(); err != nil {
+			sink.release()
 			started <- fmt.Errorf("runtime: start %s: %w", bin, err)
 			close(p.exited)
 			return
@@ -55,6 +56,7 @@ func startProcess(o Options, port int, key string) (*process, error) {
 		p.pid = cmd.Process.Pid
 		started <- nil
 		p.waitErr = cmd.Wait()
+		sink.release()
 		close(p.exited)
 	}()
 	if err := <-started; err != nil {
