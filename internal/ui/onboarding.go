@@ -268,7 +268,14 @@ func (a *App) stepHardware(c *ui.Context) {
 			row("GPU", "No supported GPU. Lookback will use the CPU.")
 		} else {
 			g := o.hw.GPUs[0]
-			row("GPU", fmt.Sprintf("%s · %s free", g.Name, size(g.VRAMFree)))
+			switch {
+			case g.VRAMFree > 0:
+				row("GPU", fmt.Sprintf("%s · %s free", g.Name, size(g.VRAMFree)))
+			case g.VRAMTotal > 0:
+				row("GPU", fmt.Sprintf("%s · %s", g.Name, size(g.VRAMTotal)))
+			default:
+				row("GPU", g.Name) // the free memory is unknown until a backend lists the device
+			}
 		}
 	})
 	if o.detecting && o.hwDone {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -140,6 +141,9 @@ func waitBackground(t *testing.T, h *harness, what string, want ui.Color) {
 // TestThemeLiveRecolor proves that a theme change at runtime recolors the window without a restart: the
 // setting, the desktop's appearance and an Omarchy theme edited in place.
 func TestThemeLiveRecolor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Omarchy theme source exists on Linux only (SPEC section 15)")
+	}
 	themeDir := isolateOmarchy(t, omarchyDark)
 
 	t.Run("setting", func(t *testing.T) {

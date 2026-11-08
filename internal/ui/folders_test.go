@@ -62,3 +62,13 @@ func TestIgnoreMatches(t *testing.T) {
 		t.Errorf("empty rules matched %d files", got)
 	}
 }
+
+// TestFoldersNetworkNote checks that a folder on a network share shows its muted note on the row.
+func TestFoldersNetworkNote(t *testing.T) {
+	h := newHarness(t, nil)
+	h.app.page = pageFolders
+	h.wait("folders", func() bool { return len(h.app.data.folders) == 2 })
+	h.app.data.folders[0].network = true
+	h.pump(0)
+	h.wantText("Network folder: changes appear after a restart.")
+}
