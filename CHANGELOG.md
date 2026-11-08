@@ -4,6 +4,28 @@ All notable changes to Lookback are in this file. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Add Windows x64 support. Lookback detects the CPU, memory and GPUs through the Windows registry and
+  APIs. It runs `llama-server.exe` with no console window, inside a job object, so the server stops with the
+  app, even after a crash or `taskkill /f`. It watches folders with `ReadDirectoryChangesW`, keeps its data in
+  `%LOCALAPPDATA%\Lookback`, and the **Start at login** switch writes the `HKCU` Run value.
+- Skip hidden and system files and online-only (OneDrive) files on Windows.
+- Show **Open** and **Show in folder** with correct `file://` URLs for drive letters and network paths.
+- Show a note on a network folder row: "Network folder: changes appear after a restart."
+- Add `resources/installer.nsh` for the Windows installer: it stops a stray `llama-server.exe`, removes the
+  Start at login value, and offers to delete the index and models after the uninstall.
+
+### Changed
+
+- Compare folder paths without case on Windows when Lookback checks for nested or repeated folders.
+- Hide the console window of every child process on Windows.
+- The pre-push hook skips `-race` on Windows when `gcc` is missing.
+- Tests: open the Turso library from a shared folder, so that temporary data folders can be deleted on
+  Windows.
+
 ## [0.2.2] - 2026-11-08
 
 ### Fixed

@@ -866,8 +866,10 @@ but untested on Windows (Q37); say so in the release notes.
   name, size, last write, and creation changes.
 - An overflow (`ERROR_NOTIFY_ENUM_DIR`, or a zero-byte result) calls `onChange` as a full-rescan signal,
   as the Linux overflow does.
-- A renamed or deleted root: the handle reports it or fails. Watch the parent for the root's name and
-  re-open, with the same behavior as `watch_linux.go`.
+- A renamed or deleted root: the handle reports it or fails. The watcher compares the root's file identity
+  (volume and file index) with the held handle every 200 ms, and re-opens the root at the same path when it
+  was replaced or has come back, with the same behavior as `watch_linux.go`. (This polls instead of watching
+  the parent; it needs no second handle.)
 - Apply the skip function to every event path.
 
 ### Exclusions on Windows
@@ -879,7 +881,8 @@ but untested on Windows (Q37); say so in the release notes.
   stay the same.
 - Skip online-only files: `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` (0x400000) or `FILE_ATTRIBUTE_OFFLINE`
   (Q33). When such a file becomes local, the watcher sees the change and indexes it.
-- Treat junctions and other reparse points like symlinks: skip those that resolve outside the folder.
+- Treat junctions and other reparse points like symlinks. Go reports a junction as an irregular file, so the
+  walk does not follow it and `eligible` refuses it, whether it points inside the folder or outside.
 - These rules are defaults like the others, editable per folder.
 
 ### Installer
@@ -892,7 +895,11 @@ Uninstall (Q45):
 
 - A **checkbox page** in the uninstaller, unchecked by default: "Also delete the index and the
   downloaded models (`%LOCALAPPDATA%\Lookback`)". It deletes the default data root only. If the user moved
-  the data folder, the page says that the moved folder is kept.
+  the data folder, the page says that the moved folder is kept. **Spike result (2026-11-09):** the custom page
+  works from the include, but MyGo declares the Confirm and Instfiles pages first, so the page comes after
+  "Uninstallation Complete". Decision (user, 2026-11-09): keep it there. The data is deleted when the user
+  leaves the page, not during the uninstall. A page before the uninstall needs a hook in MyGo
+  (`docs/followups.md`).
 - Before it removes files, the uninstaller stops a running `Lookback.exe` and `llama-server.exe`.
 - It removes the `HKCU\…\Run` value `Lookback`.
 - **Spike first:** MyGo includes `installerInclude` after MUI2 and its languages, but MUI page macros
