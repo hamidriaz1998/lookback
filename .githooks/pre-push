@@ -30,7 +30,12 @@ check_commit() {
 			local pkgs=()
 			mapfile -t pkgs < <(cd "$tmp" && printf './%s\n' "${changed[@]}" | xargs -n1 dirname | sort -u | xargs go list 2>/dev/null || true)
 			if ((${#pkgs[@]})); then
-				(cd "$tmp" && CGO_ENABLED=1 go test -race -short "${pkgs[@]}") # the race detector needs cgo
+				if [[ $(go env GOOS) == windows ]] && ! command -v gcc > /dev/null 2>&1; then
+					# The race detector needs cgo, and Windows has no C compiler by default (SPEC "Windows phase").
+					echo "pre-push: gcc not found, skipping -race (install MSYS2 ucrt64 gcc)" >&2
+				else
+					(cd "$tmp" && CGO_ENABLED=1 go test -race -short "${pkgs[@]}") # the race detector needs cgo
+				fi
 			fi
 		fi
 	fi
