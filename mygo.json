@@ -16,5 +16,8 @@
     "depends": [
       "libayatana-appindicator3-1"
     ]
+  },
+  "windows": {
+    "installerInclude": "resources/installer.nsh"
   }
 }
