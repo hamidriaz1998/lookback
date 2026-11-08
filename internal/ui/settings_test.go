@@ -2,9 +2,11 @@ package ui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
 // TestSettingsThemeChoiceApplies checks that choosing a theme tile stores it, so the window takes it at once.
@@ -74,5 +76,20 @@ func TestHotkeyFromEventRequiresModifierAndFormatsKey(t *testing.T) {
 	}
 	if got := hyprlandBind("Super+."); got != `hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))` {
 		t.Fatalf("default Hyprland binding = %q", got)
+	}
+}
+
+// TestSettingsHyprlandTipIsLinuxOnly checks that a Windows build shows the shortcut recorder but not the Hyprland bind.
+func TestSettingsHyprlandTipIsLinuxOnly(t *testing.T) {
+	h := newHarnessTweak(t, nil, func(context.Context) []contract.ThemeSource {
+		return []contract.ThemeSource{fixedTheme("light", false)}
+	}, false, func(d *Deps) { d.OS = "windows" })
+	h.app.page = pageSettings
+	h.wait("settings", func() bool { return h.app.data.ready })
+	h.wantText("Record global hotkey")
+	for _, txt := range h.tt.Texts() {
+		if strings.Contains(txt, "Hyprland Lua") || strings.Contains(txt, "hl.bind") || txt == "Copy bind line" {
+			t.Fatalf("Windows shows the Linux bind tip: %q", txt)
+		}
 	}
 }

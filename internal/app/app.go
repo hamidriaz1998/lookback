@@ -32,7 +32,7 @@ type Config struct {
 
 // DefaultConfig returns the SPEC section 14 defaults.
 func DefaultConfig() Config {
-	return Config{Hotkey: "Super+.", PauseOnBattery: true}
+	return Config{Hotkey: contract.DefaultHotkey, PauseOnBattery: true}
 }
 
 var hotkeyState struct {

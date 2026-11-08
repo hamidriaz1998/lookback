@@ -35,7 +35,7 @@ type Store struct {
 func NewStore() *Store {
 	added := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
 	s := &Store{
-		settings: map[string]string{"battery_pause": "on", "max_image_edge": "1600", "hotkey": "Super+."},
+		settings: map[string]string{"battery_pause": "on", "max_image_edge": "1600", "hotkey": contract.DefaultHotkey},
 		folders: map[int64]contract.Folder{
 			1: {ID: 1, Path: picturesFolder, AddedAt: added},
 			2: {ID: 2, Path: documentFolder, Ignore: "*.tmp\n*.bak", AddedAt: added},

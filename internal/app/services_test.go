@@ -30,7 +30,7 @@ func TestOpenServicesWiresRealDeps(t *testing.T) {
 		d.Detector == nil || d.Catalog == nil || d.Media == nil || len(d.Themes) == 0 || d.DataDir == "" {
 		t.Fatalf("Deps has an unset field: %+v", d)
 	}
-	if svc.Config.Hotkey != "Super+." || !svc.Config.PauseOnBattery {
+	if svc.Config.Hotkey != contract.DefaultHotkey || !svc.Config.PauseOnBattery {
 		t.Fatalf("Config = %+v, want the SPEC defaults on an empty settings table", svc.Config)
 	}
 	if st := d.Runtime.Status().State; st != contract.RuntimeStopped {

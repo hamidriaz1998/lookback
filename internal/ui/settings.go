@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/hamidriaz1998/lookback/internal/contract"
 )
 
 // llamaTag is the pinned llama.cpp release (SPEC section 4), shown in About.
@@ -126,7 +127,7 @@ func (a *App) shortcutsSection(c *ui.Context) {
 	section(c, "Shortcuts", func() {
 		ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "Show or hide Lookback").Grow(1)
-			label := a.data.setting("hotkey", "Super+.")
+			label := a.data.setting("hotkey", contract.DefaultHotkey)
 			if a.settings.recording {
 				label = "Press a shortcut…"
 			}
@@ -163,7 +164,10 @@ func (a *App) shortcutsSection(c *ui.Context) {
 		if a.settings.recordError != "" {
 			ui.Text(c, a.settings.recordError).TextColor(t.Warning).FontSize(t.Rem(0.85))
 		}
-		bind := hyprlandBind(a.data.setting("hotkey", "Super+."))
+		if a.d.OS != "linux" {
+			return // the Hyprland bind tip is for Linux only
+		}
+		bind := hyprlandBind(a.data.setting("hotkey", contract.DefaultHotkey))
 		ui.Column(c).Gap(t.Space(2)).Padding(t.Space(3)).Radius(8).Background(t.Surface).Children(func() {
 			ui.Text(c, "Your desktop can bind the same key to Lookback. Add this line to your Hyprland Lua config:").TextColor(t.TextMuted)
 			ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
