@@ -229,7 +229,8 @@ will be indexed again when it's back."); permission denied (Danger with the reas
 
 Sections, as a single scrolling page with headings: Appearance (theme), Indexing (battery pause, max
 image edge), Shortcuts (global hotkey with a key recorder, and the `lookback --toggle` tip with the
-Hyprland bind line and a copy button), Storage (data folder, disk usage per part, Open logs), About
+Hyprland bind line and a copy button; the tip is shown on Linux only), Startup (the Start at login
+switch, off by default, with a muted line that says the app starts in the tray), Storage (data folder, disk usage per part, Open logs), About
 (version, pinned llama.cpp tag and model revision).
 
 **Theme picker**: a row of tiles, one per theme. Each tile is a live mini-preview drawn with that

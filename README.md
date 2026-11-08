@@ -86,7 +86,8 @@ Linux x64 distribution, an `install.sh` script, and a `.deb` package for Debian 
 
 The script installs Lookback in `~/.local/lookback.app`, adds the `lookback` command to `~/.local/bin`,
 and adds Lookback to the applications menu. To remove Lookback, run `sh install.sh --uninstall`.
-Uninstalling keeps your settings and index.
+Uninstalling keeps your settings and index. If you turned on **Start at login** in Settings, turn it off
+before you uninstall. This script cannot remove the autostart entry in `~/.config/autostart`.
 
 ### Debian and Ubuntu
 
@@ -95,6 +96,9 @@ Download the `.deb` package from the latest release, then install it:
 ```sh
 sudo apt install ./lookback_*_amd64.deb
 ```
+
+A package cannot edit your home folder. If you turned on **Start at login** in Settings, turn it off
+before you remove the package. Otherwise, delete `~/.config/autostart/lookback.desktop` by hand.
 
 ### Build from source
 
@@ -108,7 +112,7 @@ scripts/install.sh
 
 The script builds Lookback and installs the binary, a desktop entry, and the icon under `~/.local`.
 To install somewhere else, add `--prefix DIR`. To remove Lookback, run
-`scripts/install.sh --uninstall`.
+`scripts/install.sh --uninstall`. This also removes the Start at login entry.
 
 To build the release packages, use the [MyGo](https://github.com/egoist/mygo) CLI at the version
 that `go.mod` pins:

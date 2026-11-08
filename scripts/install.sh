@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installs Lookback for the current user, without root: the binary, the desktop entry and the icon under
 # PREFIX (default ~/.local). Running it again replaces the installed files (idempotent). --uninstall removes
-# them. It never edits compositor or shell configuration; it prints the bind line for the user to add.
+# them, and the Start at login entry that the app writes. It never edits compositor or shell configuration;
+# it prints the bind line for the user to add.
 #
 #   scripts/install.sh [--prefix DIR] [--binary PATH]
 #   scripts/install.sh --uninstall [--prefix DIR]
@@ -16,7 +17,7 @@ binary=""
 mode=install
 
 usage() {
-  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -41,6 +42,8 @@ icon_dirs="$icon_root/scalable/apps $icon_root/512x512/apps"
 bin_path="$bin_dir/lookback"
 desktop_path="$app_dir/lookback.desktop"
 icon_files="$icon_root/scalable/apps/lookback.svg $icon_root/512x512/apps/lookback.png $icon_root/1024x1024/apps/lookback.png"
+# The Start at login setting writes this file (SPEC section 13); it belongs to the user's config, not to PREFIX.
+autostart_path="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/lookback.desktop"
 
 refresh_caches() {
   # Optional icon cache: a missing tool or a failed refresh does not stop the install.
@@ -51,7 +54,7 @@ refresh_caches() {
 }
 
 if [ "$mode" = uninstall ]; then
-  rm -f "$bin_path" "$desktop_path" $icon_files
+  rm -f "$bin_path" "$desktop_path" "$autostart_path" $icon_files
   refresh_caches
   echo "Removed Lookback from $prefix (settings and data are kept)."
   exit 0
