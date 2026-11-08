@@ -71,9 +71,12 @@ func TestNvidiaDriverVersionAndMinimums(t *testing.T) {
 	}{
 		{"580.82.07", minDriverCUDA13, true},
 		{"579.99", minDriverCUDA13, false},
-		{"570.26", minDriverCUDA12, true},
-		{"570.25.9", minDriverCUDA12, false},
-		{"575.1", minDriverCUDA12, true},
+		{"570.26", "570.26", true}, // the Linux CUDA 12 minimum
+		{"570.25.9", "570.26", false},
+		{"575.1", "570.26", true},
+		{"551.61", "551.61", true}, // the Windows CUDA 12 minimum
+		{"551.60", "551.61", false},
+		{minDriverCUDA12, minDriverCUDA12, true},
 	}
 	for _, c := range cases {
 		got, err := DriverAtLeast(c.drv, c.min)
