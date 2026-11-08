@@ -24,7 +24,7 @@ var (
 	// ErrStaleItem is returned by Store.Similar when the seed item is not in the requested generation
 	// (or does not exist). The caller must drop the seed, since its vector is in another vector space.
 	ErrStaleItem = errors.New("item is not in the requested generation")
-	// ErrRebuildBusy is returned by Indexer.Rebuild while another rebuild runs.
+	// ErrRebuildBusy is returned by Indexer.Rebuild while a rebuild for another space runs.
 	ErrRebuildBusy = errors.New("a rebuild is already running")
 	// ErrUnknownCombo is returned by Catalog.Assets for a combination the catalog does not offer.
 	ErrUnknownCombo = errors.New("combination not in the catalog")
@@ -374,7 +374,9 @@ type Indexer interface {
 	// until the building one is complete, and then the rebuild activates it (SPEC section 10). While the
 	// rebuild runs, a file that changes is queued for both generations. Before activation the rebuild
 	// queues every file whose row in the building generation is missing or stale, so no file is lost. It
-	// returns the new generation's ID. ErrRebuildBusy while another rebuild runs.
+	// returns the new generation's ID. A call for the space that the running rebuild already builds, such as the
+	// first generation that Start creates, joins it and returns its ID. ErrRebuildBusy while a rebuild for another
+	// space runs.
 	Rebuild(ctx context.Context, text, enc Quant) (gen int64, err error)
 	// Subscribe streams snapshots of the active generation's job, keyed by Gen. No value is terminal.
 	Subscribe(ctx context.Context) <-chan Progress

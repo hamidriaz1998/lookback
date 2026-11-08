@@ -344,15 +344,22 @@ func (x *Indexer) Rebuild(ctx context.Context, text, enc contract.Quant) (int64,
 	ctx, cancel := x.bound(ctx)
 	defer cancel()
 	x.mu.Lock()
+	space := contract.VectorSpace{TextQuant: text, EncQuant: enc, ModelRev: x.initial.ModelRev}
+	if x.active != nil {
+		space.ModelRev = x.active.space.ModelRev
+	}
+	if x.rebuild != nil && !x.rebuildBusy && x.rebuild.space == space {
+		// Start made this generation on the first run, or an earlier call did. Asking again for the same
+		// space joins it, so the first run's Rebuild (finishOnboarding) does not fail.
+		gen := x.rebuild.gen
+		x.mu.Unlock()
+		return gen, nil
+	}
 	if x.rebuild != nil || x.rebuildBusy {
 		x.mu.Unlock()
 		return 0, contract.ErrRebuildBusy
 	}
 	x.rebuildBusy = true
-	space := contract.VectorSpace{TextQuant: text, EncQuant: enc, ModelRev: x.initial.ModelRev}
-	if x.active != nil {
-		space.ModelRev = x.active.space.ModelRev
-	}
 	x.mu.Unlock()
 
 	fail := func(err error) (int64, error) {

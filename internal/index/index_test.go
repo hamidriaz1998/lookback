@@ -443,3 +443,35 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// On the first run, Start creates the first generation as a building one. The UI then asks for a rebuild with
+// the same precisions (finishOnboarding), which must join that generation, not fail with ErrRebuildBusy.
+func TestRebuildJoinsFirstRunGenerationOfSameSpace(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := newRig(t, ctx)
+	r.ix.Pause(contract.PauseUser) // keeps the first generation in state building
+	if err := r.ix.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gens, err := r.st.ListGenerations(ctx)
+	if err != nil || len(gens) != 1 || gens[0].State != contract.GenBuilding {
+		t.Fatalf("generations after Start = %+v, %v; want one building generation", gens, err)
+	}
+
+	id, err := r.ix.Rebuild(ctx, testSpace.TextQuant, testSpace.EncQuant)
+	if err != nil {
+		t.Fatalf("Rebuild with the first run's space = %v, want it to join the building generation", err)
+	}
+	if id != gens[0].ID {
+		t.Errorf("Rebuild returned generation %d, want the building one, %d", id, gens[0].ID)
+	}
+	if gens, _ = r.st.ListGenerations(ctx); len(gens) != 1 {
+		t.Errorf("%d generations after joining, want 1", len(gens))
+	}
+
+	// A different space is still refused while a rebuild runs.
+	if _, err := r.ix.Rebuild(ctx, contract.QuantQ8_0, contract.QuantQ8_0); !errors.Is(err, contract.ErrRebuildBusy) {
+		t.Errorf("Rebuild with another space = %v, want ErrRebuildBusy", err)
+	}
+}
