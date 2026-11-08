@@ -31,20 +31,23 @@ type Store struct {
 
 var _ contract.Store = (*Store)(nil)
 
-// Open opens or creates <dataRoot>/lookback.db, applies the migrations and returns the store. It sets
-// TURSO_GO_CACHE_DIR to <dataRoot>/lib (SPEC section 2) first. The driver reads that variable once, when
-// it loads its native library on the first Open of the process, so the first root wins for the process:
-// call Open with the data root before any other Turso use.
+// Open opens or creates <dataRoot>/lookback.db, applies the migrations and returns the store. Unless the
+// environment already names a folder, it sets TURSO_GO_CACHE_DIR to <dataRoot>/lib (SPEC section 3) first. The
+// driver reads that variable once, when it loads its native library on the first Open of the process, so the
+// first root wins for the process: call Open with the data root before any other Turso use. (Tests name a folder of
+// their own, so that a temporary data root can be deleted while the library is loaded; see internal/testlib.)
 func Open(dataRoot string) (*Store, error) {
 	if strings.Contains(dataRoot, "?") {
 		return nil, fmt.Errorf("store: data root %q contains unsupported '?'", dataRoot)
 	}
-	lib := filepath.Join(dataRoot, "lib")
-	if err := os.MkdirAll(lib, 0o755); err != nil {
-		return nil, fmt.Errorf("store: create %s: %w", lib, err)
-	}
-	if err := os.Setenv("TURSO_GO_CACHE_DIR", lib); err != nil {
-		return nil, fmt.Errorf("store: set TURSO_GO_CACHE_DIR: %w", err)
+	if os.Getenv("TURSO_GO_CACHE_DIR") == "" {
+		lib := filepath.Join(dataRoot, "lib")
+		if err := os.MkdirAll(lib, 0o755); err != nil {
+			return nil, fmt.Errorf("store: create %s: %w", lib, err)
+		}
+		if err := os.Setenv("TURSO_GO_CACHE_DIR", lib); err != nil {
+			return nil, fmt.Errorf("store: set TURSO_GO_CACHE_DIR: %w", err)
+		}
 	}
 	db, err := sql.Open("turso", filepath.Join(dataRoot, dbFile))
 	if err != nil {
