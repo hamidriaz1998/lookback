@@ -4,6 +4,21 @@ All notable changes to Lookback are in this file. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-11-08
+
+### Added
+
+- Add the **Start at login** switch in Settings. It is off by default. When it is on, Lookback writes
+  `~/.config/autostart/lookback.desktop` (or `$XDG_CONFIG_HOME/autostart`), and your session starts
+  `lookback --background` at login.
+- Add the `--background` option. It starts Lookback in the tray with no window. If Lookback is already
+  running, the option does nothing.
+
+### Changed
+
+- Show the Hyprland bind tip on Linux only.
+- `scripts/install.sh --uninstall` also removes the Start at login entry.
+
 ## [0.2.0] - 2026-11-04
 
 ### Added

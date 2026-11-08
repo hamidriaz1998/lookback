@@ -1,7 +1,7 @@
 {
   "name": "Lookback",
   "identifier": "com.hamidriaz1998.lookback",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "main": "./cmd/lookback",
   "icon": "resources/icon.png",
   "out": "dist",
