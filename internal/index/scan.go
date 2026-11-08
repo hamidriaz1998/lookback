@@ -24,7 +24,7 @@ const maxFileBytes = 50 << 20
 // minImageEdge is the smallest width and height of an indexed image (SPEC section 9, Q15).
 const minImageEdge = 64
 
-// excludedDirNames are directories that are never indexed (SPEC section 9, Q15). Dot-prefixed names are excluded too.
+// excludedDirNames are directories that are never indexed (SPEC section 9, Q15). Dot-prefixed names are excluded too, and on Windows names with the hidden attribute.
 var excludedDirNames = map[string]bool{
 	".git": true, "node_modules": true, "__pycache__": true, ".venv": true, "venv": true,
 	"target": true, "build": true, "dist": true, ".cache": true,
@@ -40,6 +40,9 @@ func excludedPath(fo contract.Folder, p string, isDir bool) bool {
 	parts := strings.Split(rel, string(filepath.Separator))
 	for i, part := range parts {
 		if strings.HasPrefix(part, ".") {
+			return true
+		}
+		if isHidden(filepath.Join(fo.Path, filepath.Join(parts[:i+1]...))) { // the Windows hidden attribute
 			return true
 		}
 		if (i < len(parts)-1 || isDir) && excludedDirNames[part] {
