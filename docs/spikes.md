@@ -96,6 +96,22 @@ Findings and limits:
 - MyGo's docs say to make bitmaps once and not inside the view. The spike follows that: the view only
   reads the `*ui.Bitmap` slice.
 
+## Spike 3 on Windows (2026-11-09)
+
+**Result: Q8_0 passed; BF16 not run.** The check ran through the real `internal/runtime` package, not the spike
+program: `LOOKBACK_LIVE_DIR=<dir> go test -run TestLive ./internal/runtime`, with the `llama-b11755` Windows CPU
+build, `embeddinggemma-2-Q8_0.gguf` and `mmproj-embeddinggemma-2-Q8_0.gguf` (SHA-256 match the catalog).
+
+| Check | Result |
+|---|---|
+| Start with a job object, no console window, health | `ok` in about 3 s |
+| Text `task: search result \| query: the error dialog about the hotspot` | 768 dims, L2 norm 1.00 |
+| Peak working set (`GetProcessMemoryInfo`) | 821 MiB |
+| `Stop` | the process exits, and `Exited` closes |
+| Kill the app (`TerminateProcess` on the parent) | `llama-server.exe` is gone within the wait: the job object closes with the app |
+
+The child starts suspended (`CREATE_SUSPENDED`), joins the job, then resumes (`NtResumeProcess`).
+
 ## Spike 3: sidecar on Linux (Windows run moved to the Windows phase)
 
 **Status: Linux BF16 and Q8_0 passed; Windows moved to the Windows phase (SPEC.md).** Both Linux precision pairs

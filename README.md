@@ -12,7 +12,8 @@ no cloud, and no telemetry.
 
 ![Lookback search results for "error dialog about the hotspot": the matching error screenshot is first, followed by a troubleshooting note](docs/images/search.png)
 
-> **Status:** early release (0.2.2). Lookback runs on **Linux x64** only. Windows support comes next;
+> **Status:** early release (0.2.2). Lookback runs on **Linux x64**. Windows x64 support is on the main
+> branch and ships in the next release;
 > macOS is planned later.
 
 ## Features
@@ -55,18 +56,26 @@ Lookback does not do OCR, and it does not index audio, video, HEIC images, or le
 
 ## Requirements
 
-- Linux x64 with a graphical desktop (X11 or Wayland)
-- GTK 3 and `libayatana-appindicator3-1` (for the tray icon)
+- Linux x64 with a graphical desktop (X11 or Wayland), GTK 3 and `libayatana-appindicator3-1` (for the
+  tray icon), or Windows 10 (22H2) or Windows 11, x64
 - About 1–2 GB of free disk space for the model, plus space for the runtime and the index
 - An internet connection on first launch, to download the runtime and the model
 
 A GPU is optional. Vulkan works with most AMD, Intel, and NVIDIA GPUs. CUDA is offered for NVIDIA
-GPUs with a recent driver.
+GPUs with a recent driver (untested on Windows).
 
 ## Install
 
 Each [release](https://github.com/hamidriaz1998/lookback/releases) has a tarball that works on any
 Linux x64 distribution, an `install.sh` script, and a `.deb` package for Debian and Ubuntu.
+
+### Windows
+
+Run the `lookback-setup-*-amd64.exe` installer from a release. It installs for the current user, in
+`%LOCALAPPDATA%\Programs\Lookback`, and needs no administrator rights. The installer is not signed, so
+SmartScreen warns about it: choose **More info**, then **Run anyway**. The global hotkey on Windows is
+**Ctrl+Alt+Space** (Win+. opens the emoji panel). Lookback keeps its data in `%LOCALAPPDATA%\Lookback`. When you
+uninstall, the last page offers to delete that folder too.
 
 ### Arch Linux and other distributions
 

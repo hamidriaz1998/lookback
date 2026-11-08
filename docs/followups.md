@@ -4,6 +4,25 @@ Medium and low review findings deferred under the review rule (from round 3 on, 
 findings block a merge). Each item names its owner. The full findings are in the review files under
 `.review/` on the orchestrator's machine.
 
+## Windows phase (open after the code work of 2026-11-09)
+
+The code, tests and docs for the work order are on the `windows-support` branch. These checks and decisions
+are still open. Steps 14 and 15 of the work order (the full acceptance run on a clean account, and the 0.3.0
+release with the Linux and Windows packages) belong to the maintainer.
+
+| Item | Owner | What to do |
+|---|---|---|
+| Acceptance list run by hand | maintainer | Done here: the app starts, onboarding shows the CPU, RAM and GPU, the hotkey registers and is released, `--toggle` works, the sidecar dies when the app is killed. Item 14 is checked at the `ShellExecuteW` level (the call MyGo's `OpenURL` makes) for names with spaces, `%`, `#`, brackets, accented and Japanese characters, and a UNC path through the admin share; Windows does not decode UTF-8 percent-escapes in `file:` URLs, so non-ASCII characters stay raw in them. Still to do: items 2, 3 (test lab and Vulkan recommendation), 6, 7, 8, 9 (10,000-file overflow), 10 (OneDrive file), 11 (mapped drive), 14 (click Open and Show in folder in the app), 15, 16 (sign out and in), 17. |
+| Spike 3 with BF16 on Windows | maintainer | `docs/spikes.md` has the Q8_0 run only. Run `LOOKBACK_LIVE_DIR=<dir> go test -run TestLive ./internal/runtime` with the BF16 pair. |
+| SmartScreen text and Defender check | maintainer | Record the SmartScreen prompt text for the README, and check that Defender accepts tursogo's DLL in `%LOCALAPPDATA%\Lookback\lib` on a clean account. |
+| Uninstaller page after completion | maintainer | MyGo declares its uninstaller pages before the include, so the "delete the data" page comes after "Uninstallation Complete" (decided 2026-11-09). The page and the Run-value cleanup were checked by hand; deleting the data with the box ticked was not driven by a script. A page before the uninstall needs a MyGo hook; ask upstream. `resources/installer.nsh` is also copied into the install folder, because everything in `resources` ships. |
+| Linux Start at login by hand | maintainer | Work-order step 10: check the XDG autostart entry on the next Linux boot (on, sign out and in, off). |
+| `nestedIn` with a drive root | maintainer | A folder at `C:\` does not contain `C:\Data`, because the prefix check adds a separator to `C:\`. The same happens for `/` on Linux. Trim the separator before adding one, and test both OSes. |
+| Network note only on the Folders screen | maintainer | The first-run folder list in onboarding does not show the "Network folder" note. |
+| Free GPU memory on the first screen | maintainer | On Windows the registry gives the total dedicated memory only, so the first screen shows the total and the backend probe shows the free memory later. `IDXGIAdapter3::QueryVideoMemoryInfo` could fill it in; it was tried and not verified. |
+| Tar symlink chains on Windows | maintainer | `TestUnpackRefusesChainedSymlinkEscape` is skipped on Windows: Windows runtimes are zips, which refuse links, so the tar path never runs there. Check `os.Root` behavior if tars ever ship for Windows. |
+| Windows watcher overflow | maintainer | The `ERROR_NOTIFY_ENUM_DIR` path marks the burst dirty, but no test forces a buffer overflow. Copy 10,000 files in (acceptance 9) to exercise it. |
+
 ## From M0 review round 3
 
 | Item | Owner | What to do |
