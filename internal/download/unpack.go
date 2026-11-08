@@ -104,7 +104,7 @@ func untar(tr *tar.Reader, root *os.Root, record func(string)) error {
 		case tar.TypeSymlink:
 			// Llama.cpp ships libraries as links. A target is only accepted when it is relative and stays
 			// inside the archive lexically; Root confines the operations themselves.
-			if filepath.IsAbs(hdr.Linkname) || !within(".", filepath.Join(filepath.Dir(name), hdr.Linkname)) {
+			if absoluteLink(hdr.Linkname) || !within(".", filepath.Join(filepath.Dir(name), hdr.Linkname)) {
 				return fmt.Errorf("%w: link %s -> %s", errUnsafe, hdr.Name, hdr.Linkname)
 			}
 			if err := makeLink(root, name, func() error { return root.Symlink(hdr.Linkname, name) }); err != nil {
@@ -192,6 +192,14 @@ func mkParents(root *os.Root, name string) error {
 		return nil
 	}
 	return root.MkdirAll(dir, 0o755)
+}
+
+// absoluteLink reports whether a tar link target is absolute on any OS. Tar paths use slashes, so a leading slash
+// is absolute even where filepath.IsAbs says otherwise (Windows needs a drive letter), and a backslash root or a
+// volume name is absolute where it is read as a path.
+func absoluteLink(target string) bool {
+	return strings.HasPrefix(target, "/") || strings.HasPrefix(target, `\`) || filepath.IsAbs(target) ||
+		filepath.VolumeName(target) != ""
 }
 
 // within reports whether p, a cleaned path, lies inside dir.

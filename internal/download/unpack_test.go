@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -61,6 +62,9 @@ func TestUnpackRefusesEscapingLinks(t *testing.T) {
 // Ordered entries: a -> ., then b -> a/.. (lexically inside, really the parent once a is followed), then a
 // regular file written through b. Root must refuse the write; the parent of dest must stay clean.
 func TestUnpackRefusesChainedSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tar archives carry the Linux runtimes only; Windows runtimes are zips, which refuse links (docs/followups.md)")
+	}
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
