@@ -204,6 +204,8 @@ func OpenServices(life context.Context, dataDir string) (*Services, error) {
 		Media:      lookui.FileMedia{Pages: pageRenderer{ext}},
 		OS:         osName,
 		DataDir:    dataDir,
+
+		SetAutostart: SetAutostart,
 	}
 	return s, nil
 }
@@ -256,6 +258,9 @@ func readConfig(ctx context.Context, st contract.Store) Config {
 	}
 	if v, ok, err := st.GetSetting(ctx, "battery_pause"); err == nil && ok {
 		cfg.PauseOnBattery = v != "off"
+	}
+	if v, ok, err := st.GetSetting(ctx, "autostart"); err == nil && ok {
+		cfg.Autostart = v == "on"
 	}
 	return cfg
 }

@@ -28,6 +28,7 @@ var trayIcon []byte
 type Config struct {
 	Hotkey         string // accelerator for the global shortcut that toggles the window
 	PauseOnBattery bool   // pause indexing while the computer runs on battery
+	Autostart      bool   // start Lookback in the tray when the user logs in (SPEC section 13)
 }
 
 // DefaultConfig returns the SPEC section 14 defaults.
@@ -116,9 +117,12 @@ func Run(opts Options, life context.Context) error {
 	svc.Deps.Hide = a.hideLauncher
 	a.lui = lookui.NewLauncher(svc.Deps)
 	a.commands = &commandRouter{act: func(o Options) {
-		if o.Toggle {
+		switch {
+		case o.Toggle:
 			a.toggleLauncher()
-		} else {
+		case o.Background:
+			// A second start with --background (a login autostart) must not show the window.
+		default:
 			a.show()
 		}
 	}}
@@ -136,7 +140,7 @@ func Run(opts Options, life context.Context) error {
 	if opts.Toggle {
 		a.commands.receive(opts) // a cold start with --toggle opens the launcher, not the main window
 	}
-	mygo.App.WhenReady(func() { a.start(opts.Toggle) })
+	mygo.App.WhenReady(func() { a.start(opts.Toggle || opts.Background) })
 	return mygo.App.Run()
 }
 
@@ -180,6 +184,14 @@ func (a *application) start(hidden bool) {
 	}
 
 	current = a
+	if a.cfg.Autostart {
+		// Write the entry again, so that it follows the binary when the user moved or updated it.
+		go func() {
+			if err := SetAutostart(true); err != nil {
+				log.Printf("start at login: %v", err)
+			}
+		}()
+	}
 	if err := a.setHotkey(a.cfg.Hotkey); err != nil {
 		log.Printf("hotkey %q: %v", a.cfg.Hotkey, err) // once per change; Settings shows the bind tip
 	}

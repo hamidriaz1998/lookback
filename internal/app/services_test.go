@@ -99,3 +99,20 @@ func TestFirstRunStartsWithChosenSpace(t *testing.T) {
 		t.Fatalf("first generation space = %+v, want Q8_0/Q8_0", sp)
 	}
 }
+
+// TestReadConfigAutostart checks that Start at login is off by default and follows the "autostart" setting.
+func TestReadConfigAutostart(t *testing.T) {
+	ctx := context.Background()
+	st := fake.NewStore()
+	if readConfig(ctx, st).Autostart {
+		t.Fatal("Autostart is on by default, want off (SPEC section 14)")
+	}
+	for value, want := range map[string]bool{"on": true, "off": false} {
+		if err := st.SetSetting(ctx, "autostart", value); err != nil {
+			t.Fatal(err)
+		}
+		if got := readConfig(ctx, st).Autostart; got != want {
+			t.Errorf("autostart=%q: Autostart = %v, want %v", value, got, want)
+		}
+	}
+}

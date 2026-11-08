@@ -35,6 +35,9 @@ type Deps struct {
 	OS         contract.OS
 	DataDir    string
 	Hide       func()
+	// SetAutostart turns Start at login on or off in the desktop (SPEC section 13). A nil SetAutostart only saves
+	// the setting.
+	SetAutostart func(on bool) error
 }
 
 // page is one of the sidebar pages.

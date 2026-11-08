@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"runtime/debug"
@@ -33,6 +34,7 @@ func (a *App) settingsPage(c *ui.Context) {
 			a.appearanceSection(c)
 			a.indexingSection(c)
 			a.shortcutsSection(c)
+			a.startupSection(c)
 			a.storageSection(c)
 			a.aboutSection(c)
 		})
@@ -184,6 +186,40 @@ func (a *App) shortcutsSection(c *ui.Context) {
 			}
 		})
 	})
+}
+
+// startupSection holds the Start at login switch. When it is on, the desktop starts Lookback in the tray at login.
+func (a *App) startupSection(c *ui.Context) {
+	t := c.Theme()
+	section(c, "Startup", func() {
+		on := a.data.setting("autostart", "off") == "on"
+		ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "Start Lookback at login").Grow(1)
+			if ui.Switch(c, &on).Label("Start at login").Changed() {
+				a.setAutostart(on)
+			}
+		})
+		ui.Text(c, "Lookback starts in the tray, with no window.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
+	})
+}
+
+// setAutostart changes the desktop entry first and saves the setting only when that worked, so the switch never says
+// "on" for an entry that does not exist. A failure is shown on the page, with Retry.
+func (a *App) setAutostart(on bool) {
+	value := map[bool]string{true: "on", false: "off"}[on]
+	a.data.settings["autostart"] = value
+	var save func()
+	save = func() {
+		a.bg(a.page, func(ctx context.Context) error {
+			if a.d.SetAutostart != nil {
+				if err := a.d.SetAutostart(on); err != nil {
+					return fmt.Errorf("start at login: %w", err)
+				}
+			}
+			return a.d.Store.SetSetting(ctx, "autostart", value)
+		}, save)
+	}
+	save()
 }
 
 // hotkeyFromEvent formats one recorded chord in the stable setting syntax.

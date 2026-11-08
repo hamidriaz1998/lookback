@@ -74,7 +74,7 @@ func buildSnapshot(ctx context.Context, d Deps) snapshot {
 		s.err = err
 		return s
 	}
-	for _, key := range []string{"onboarded", "onboard_step", "onboard_combo", "battery_pause", "max_image_edge", "hotkey", "theme", "thumb_size", "preview_width"} {
+	for _, key := range []string{"onboarded", "onboard_step", "onboard_combo", "battery_pause", "max_image_edge", "hotkey", "autostart", "theme", "thumb_size", "preview_width"} {
 		v, ok, err := d.Store.GetSetting(ctx, key)
 		if err != nil {
 			return fail(err)
