@@ -12,8 +12,9 @@ type pauser interface {
 	Resume(reason contract.PauseReason)
 }
 
-// pauses forwards pause reasons to the indexer. The indexer stacks pauses per reason (contract.Indexer),
-// so this type sends only transitions: setting a reason that is already in that state does nothing.
+// pauses forwards pause reasons to the indexer. The indexer keeps one flag per reason (contract.Indexer), and
+// this type keeps a second copy so that it can answer has() and send only transitions: setting a reason that is
+// already in that state does nothing. The test lab pauses the indexer with PauseLab directly, not through here.
 type pauses struct {
 	mu     sync.Mutex
 	target pauser // nil until WP9 wires the indexer; the reasons are then only tracked

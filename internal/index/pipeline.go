@@ -16,7 +16,9 @@ import (
 const embedBatch = 8
 
 // errAbort marks a file whose work ended because its session or the runtime went away. Such a file gets no
-// error row, so it is retried later instead of being reported as broken.
+// error row, so it is not reported as broken. Nothing requeues it until the next start: sessions close only when
+// the lifetime ends, or after the single worker has handed a rebuild over, and the startup rescan then finds the
+// file without a row (contract.NeedsWork).
 var errAbort = errors.New("index: session ended")
 
 // process runs stat, extract, chunk, embed and commit for one file of job j (SPEC section 11). It stats the

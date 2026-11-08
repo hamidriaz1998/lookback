@@ -241,7 +241,8 @@ func (x *Indexer) live() error {
 	return nil
 }
 
-// Pause stops the job for reason. Reasons stack: the job runs when none is set.
+// Pause stops the job for reason. Each reason is a flag, so a second Pause for it changes nothing. The job runs
+// when no reason is set.
 func (x *Indexer) Pause(reason contract.PauseReason) {
 	x.mu.Lock()
 	defer x.mu.Unlock()

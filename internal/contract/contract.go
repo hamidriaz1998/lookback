@@ -358,7 +358,8 @@ type Extractor interface {
 type Indexer interface {
 	// Start begins the job in the background. Call it once; a second call is an error.
 	Start(ctx context.Context) error
-	// Pause stops the job for reason. Pauses for different reasons stack.
+	// Pause stops the job for reason. Each reason is a flag: pausing twice for one reason is the same as once, and
+	// Resume lifts it at once. Pauses for different reasons stack, and the job runs when no reason is set.
 	Pause(reason PauseReason)
 	// Resume lifts the pause for reason.
 	Resume(reason PauseReason)
@@ -445,7 +446,9 @@ type Catalog interface {
 // FileState is the state of one download.
 type FileState string
 
-// The download states, as the lab and Models screens show them.
+// The download states, as the lab and Models screens show them. A download stores only queued, downloading,
+// verifying, done and failed. FilePaused and FileOffline are shown states: the downloader computes them from the
+// user's pause and the connection, and never stores them as a file's phase.
 const (
 	FileQueued      FileState = "queued"
 	FileDownloading FileState = "downloading"
