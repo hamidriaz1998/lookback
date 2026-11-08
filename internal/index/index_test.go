@@ -151,6 +151,15 @@ func TestPipelineIndexesFolder(t *testing.T) {
 	}
 	waitFor(t, 30*time.Second, "the first generation to activate", func() bool { return r.activeGen(t) != 0 })
 	gen := r.activeGen(t)
+	// An empty set of files is complete, so the first generation can activate before the startup scan has saved
+	// any file. The files are then indexed into the active generation, so wait for them here.
+	waitFor(t, 30*time.Second, "the files to be indexed", func() bool {
+		h := r.hitPaths(t, gen)
+		_, a := h["notes.txt"]
+		_, b := h["deep.md"]
+		_, c := h["photo.png"]
+		return a && b && c
+	})
 
 	hits := r.hitPaths(t, gen)
 	for _, want := range []string{"notes.txt", "deep.md", "photo.png"} {
