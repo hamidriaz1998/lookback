@@ -20,6 +20,9 @@ type Config struct {
 	Files   func(b contract.Backend, s contract.VectorSpace) (Files, error)
 	LogPath string // logs/llama-server.log
 	Threads int    // -t; 0 means the physical core count
+	// StableAfter is how long a started sidecar must stay up before its earlier failures are forgotten (SPEC section 8,
+	// Q23: restart once, then fall back). 0 means 60 s.
+	StableAfter time.Duration
 }
 
 // Runtime is a contract.Runtime. It keeps one llama-server per open vector space (SPEC section 8).
@@ -44,7 +47,7 @@ type space struct {
 	epoch    uint64             // increments on every transition; a request that began earlier fails with ErrRestarting
 	srv      *Server            // the running server of this epoch, once ready
 	cancel   context.CancelFunc // ends the start of this epoch
-	failures int                // process failures since the last Use or RetryGPU
+	failures int                // process failures since the last Use or RetryGPU, forgotten after StableAfter up
 }
 
 // New returns a Runtime. It starts with no open space, so every state is stopped.
@@ -55,6 +58,9 @@ func New(cfg Config) *Runtime {
 		} else {
 			cfg.Threads = 4
 		}
+	}
+	if cfg.StableAfter == 0 {
+		cfg.StableAfter = 60 * time.Second
 	}
 	r := &Runtime{
 		cfg:     cfg,
@@ -236,9 +242,22 @@ func (r *Runtime) boot(ctx context.Context, sp *space, ep uint64, b contract.Bac
 	go r.watch(sp, ep, srv)
 }
 
-// watch reports an unexpected exit of the server of epoch ep. A stop or a newer epoch ends the watch quietly.
+// watch reports an unexpected exit of the server of epoch ep. A stop or a newer epoch ends the watch quietly. A
+// server that stays up for StableAfter has not failed again, so its earlier failures are forgotten: SPEC section 8
+// restarts once after a failure and falls back only when that restart fails too.
 func (r *Runtime) watch(sp *space, ep uint64, srv *Server) {
-	<-srv.Exited()
+	stable := time.NewTimer(r.cfg.StableAfter)
+	defer stable.Stop()
+	select {
+	case <-srv.Exited():
+	case <-stable.C:
+		r.mu.Lock()
+		if sp.epoch == ep {
+			sp.failures = 0
+		}
+		r.mu.Unlock()
+		<-srv.Exited()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if sp.epoch != ep {

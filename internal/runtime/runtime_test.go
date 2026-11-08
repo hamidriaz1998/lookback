@@ -525,3 +525,45 @@ func TestReadyOnReadySessionHonorsCanceledContext(t *testing.T) {
 		t.Fatalf("Ready with a canceled context on a ready session: %v, want context.Canceled", err)
 	}
 }
+
+// TestStableRestartForgetsTheFailure checks SPEC section 8 (Q23): the sidecar restarts once, and the CPU fallback
+// comes when that restart fails again. A restarted sidecar that stays up has not failed again, so a crash much
+// later restarts it once more and does not move it to the CPU.
+func TestStableRestartForgetsTheFailure(t *testing.T) {
+	life, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	r := New(Config{
+		Life:        life,
+		Backend:     contract.BackendVulkan,
+		LogPath:     filepath.Join(t.TempDir(), "logs", "llama-server.log"),
+		Threads:     2,
+		StableAfter: 300 * time.Millisecond,
+		Files: func(_ contract.Backend, s contract.VectorSpace) (Files, error) {
+			return fakeFiles(t, s), nil
+		},
+	})
+	sess, err := r.Session(context.Background(), spaceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	for i := 1; i <= 3; i++ { // three crashes, each long after the one before
+		pid := pidOf(r, spaceA)
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "a restart", func() bool {
+			p := pidOf(r, spaceA)
+			return p != 0 && p != pid && r.Status().State == contract.RuntimeReady
+		})
+		if r.Backend() != contract.BackendVulkan {
+			t.Fatalf("backend %s after crash %d, want vulkan: a stable sidecar must not fall back", r.Backend(), i)
+		}
+		waitFor(t, "the restarted sidecar to count as stable", func() bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.open[0].failures == 0
+		})
+	}
+}

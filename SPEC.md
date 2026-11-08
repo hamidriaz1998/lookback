@@ -284,6 +284,8 @@ llama-server -m <text.gguf> --mmproj <mmproj.gguf> --embeddings --pooling mean
   fails again, switch to the CPU build of the same precisions (download it if needed), show a toast
   ("GPU backend failed; indexing continues on the CPU"), and keep going. The vectors stay compatible,
   because only the precision defines the vector space.
+  A restart that then stays up for 60 s counts as a success: the failure count starts again, so a crash
+  much later restarts the sidecar once more and does not move it to the CPU.
 - Stop the process when the app quits, including on a crash path. On Linux, start it in its own process
   group and set `Pdeathsig` (SIGKILL), so it dies with the app even after `kill -9`; keep the forking thread
   alive with `runtime.LockOSThread`, because `Pdeathsig` follows that thread. Windows phase: a job object with
