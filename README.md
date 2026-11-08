@@ -12,7 +12,7 @@ no cloud, and no telemetry.
 
 ![Lookback search results for "error dialog about the hotspot": the matching error screenshot is first, followed by a troubleshooting note](docs/images/search.png)
 
-> **Status:** early release (0.2.1). Lookback runs on **Linux x64** only. Windows support comes next;
+> **Status:** early release (0.2.2). Lookback runs on **Linux x64** only. Windows support comes next;
 > macOS is planned later.
 
 ## Features

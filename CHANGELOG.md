@@ -4,6 +4,21 @@ All notable changes to Lookback are in this file. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-11-08
+
+### Fixed
+
+- Fix the end of the first-run setup. **Start indexing** could fail with "a rebuild is already running".
+- Keep the first-run setup closed after you finish it. On a slow disk, an older read of the settings could
+  bring the setup back to step 1.
+- Show an error and a **Retry** button in setup step 1 when Lookback cannot queue the runtime downloads.
+  Before, step 1 waited for ever.
+- Stop the hotkey recording when you leave Settings.
+- Move the model server to the CPU only when its restart fails again. A server that stays up for 60 seconds
+  starts with a clean count, so a crash much later no longer counts as a second failure.
+- Index a folder that was missing when Lookback started, such as a drive that was not mounted yet. Lookback
+  checks again every 30 seconds, and no longer needs a restart.
+
 ## [0.2.1] - 2026-11-08
 
 ### Added
