@@ -141,3 +141,25 @@ func TestSettingsHyprlandTipIsLinuxOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestSettingsRecordingEndsWhenYouLeaveSettings checks that hotkey recording does not stay on after a click on
+// another page. Without this, Settings would still say "Press a shortcut…" when you come back.
+func TestSettingsRecordingEndsWhenYouLeaveSettings(t *testing.T) {
+	h := newHarness(t, nil)
+	h.app.page = pageSettings
+	h.wait("settings", func() bool { return h.app.data.ready })
+	if err := h.tt.Click("Record global hotkey"); err != nil {
+		t.Fatal(err)
+	}
+	h.pump(0)
+	if !h.app.settings.recording {
+		t.Fatal("hotkey recording did not start")
+	}
+	h.app.page = pageSearch // as a sidebar click does
+	h.pump(0)
+	h.app.page = pageSettings
+	h.pump(0)
+	if h.app.settings.recording {
+		t.Error("recording is still on after leaving Settings")
+	}
+}

@@ -355,6 +355,9 @@ func (a *App) View(c *ui.Context) {
 	a.nowT = c.Now()
 	a.dueReload(c)
 	a.theme.apply(c, a.data.setting("theme", ""))
+	if a.page != pageSettings { // recording belongs to the Settings page; a sidebar click must not leave it on
+		a.settings.recording, a.settings.recordError = false, ""
+	}
 	a.shortcuts(c)
 	if !a.data.ready {
 		if a.loadErr != nil {
