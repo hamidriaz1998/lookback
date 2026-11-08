@@ -33,8 +33,8 @@ func TestSettingsShowsAboutAndStorage(t *testing.T) {
 	h.wantText("Open logs")
 	h.wantText("llama.cpp b11755")
 	h.wantText("Copy bind line")
-	h.wantText("Super+.")
-	h.wantText(`hl.bind("SUPER + period", hl.dsp.exec_cmd("lookback --toggle"))`)
+	h.wantText(contract.DefaultHotkey)
+	h.wantText(hyprlandBind(contract.DefaultHotkey))
 }
 
 // TestSettingsHotkeyRecorderCapturesAndPersists checks an actual MyGo key event reaches the settings store.

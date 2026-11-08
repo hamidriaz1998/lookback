@@ -83,6 +83,9 @@ func (a *App) folderRow(c *ui.Context, fv folderView) {
 			if parent := nestedIn(fv.folder.Path, a.data.folders); parent != "" {
 				ui.Text(c, "Inside "+parent+". Its files are merged with that folder.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
 			}
+			if fv.network {
+				ui.Text(c, "Network folder: changes appear after a restart.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
+			}
 			a.folderNotice(c, fv)
 		})
 		a.folderStatus(c, fv)
@@ -161,14 +164,27 @@ func countsLine(fv folderView) string {
 	return count(images) + " images · " + count(docs) + " documents"
 }
 
-// nestedIn returns the path of the folder that contains path, or "" when none does.
+// nestedIn returns the path of the folder that contains path, or "" when none does. On Windows the comparison
+// ignores case, so C:\Data contains c:\data\sub.
 func nestedIn(p string, folders []folderView) string {
 	for _, o := range folders {
-		if o.folder.Path != p && strings.HasPrefix(p, o.folder.Path+string(filepath.Separator)) {
+		if !pathsSame(o.folder.Path, p, foldPathCase) &&
+			pathHasPrefix(p, o.folder.Path+string(filepath.Separator), foldPathCase) {
 			return o.folder.Path
 		}
 	}
 	return ""
+}
+
+// folderNamed returns the folder whose path is p. On Windows the match ignores case, so c:\data is the folder
+// C:\Data.
+func folderNamed(p string, folders []folderView) (folderView, bool) {
+	for _, fv := range folders {
+		if pathsSame(fv.folder.Path, p, foldPathCase) {
+			return fv, true
+		}
+	}
+	return folderView{}, false
 }
 
 // addFolder asks for a folder with the native directory dialog, then saves it. With rescan, the folder is scanned at
@@ -183,6 +199,10 @@ func (a *App) addFolder(rescan bool) {
 			case err != nil:
 				a.notice = &notice{page: a.page, msg: err.Error()}
 			case dir != "":
+				if fv, ok := folderNamed(dir, a.data.folders); ok {
+					a.notice = &notice{page: a.page, msg: "That folder is already added: " + fv.folder.Path}
+					return
+				}
 				a.run(func(ctx context.Context) error {
 					fo := contract.Folder{Path: dir, AddedAt: time.Now()}
 					if err := a.d.Store.SaveFolder(ctx, &fo); err != nil {

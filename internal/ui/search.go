@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"errors"
-	"net/url"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -584,7 +583,7 @@ func (a *App) clearSeed() {
 
 // fileURL returns the file: URL of a path, which the desktop opens with its default application.
 func fileURL(path string) string {
-	return (&url.URL{Scheme: "file", Path: path}).String()
+	return platformFileURL(path)
 }
 
 // openFile opens path with its default application.

@@ -57,6 +57,7 @@ type folderView struct {
 	latest  int64  // newest modification time of its files, Unix nanoseconds
 	missing bool   // the folder is not on disk (an unmounted drive, say)
 	denied  string // why the folder can't be read, for display
+	network bool   // the folder is on a network share, so its changes show after a restart
 }
 
 // fileError is a file whose last indexing failed in the active generation.
@@ -117,7 +118,7 @@ func buildSnapshot(ctx context.Context, d Deps) snapshot {
 		s.recent = recent
 	}
 	for _, f := range folders {
-		fv := folderView{folder: f}
+		fv := folderView{folder: f, network: isNetworkPath(f.Path)}
 		files, err := d.Store.ListFiles(ctx, f.ID)
 		if err != nil {
 			return fail(err)
