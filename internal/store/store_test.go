@@ -93,8 +93,10 @@ func TestOpenRejectsQuestionMarkInDataRoot(t *testing.T) {
 		t.Fatalf("Open(%q) = %v, want explicit unsupported path error", root, err)
 	}
 	for _, p := range []string{root, filepath.Join(parent, "lookback"), filepath.Join(root, "lib")} {
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Fatalf("Open touched %q before rejecting the root: %v", p, err)
+		// Any error means the path does not exist. Windows rejects a name with "?" with an invalid-name error
+		// instead of "not exist", and a path that cannot be named cannot have been created either.
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("Open touched %q before rejecting the root", p)
 		}
 	}
 }
