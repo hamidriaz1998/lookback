@@ -533,6 +533,8 @@ Details of the layout, states and keyboard are in UI_GUIDE.md.
 - Watching (Q5): `internal/watch` runs one recursive watcher per folder (inotify on Linux,
   `ReadDirectoryChangesW` on Windows), with the exclusion rules as its skip function.
   Batches of events are debounced for 1 s. An overflow starts a rescan of that folder.
+  A folder that cannot be watched, such as a root that is missing at startup, is tried again every 30 s and
+  scanned as soon as its watcher starts, so a drive that mounts late is indexed without a restart.
 - Startup rescan: walk each folder and compare size and mtime with `files`; queue the differences.
 - Global hotkey (Q30, Q35): Super+. on Linux and Ctrl+Alt+Space on Windows by default, configurable, through
   MyGo's global shortcuts. Under Hyprland the portal path needs an installed desktop entry (WP10); until then

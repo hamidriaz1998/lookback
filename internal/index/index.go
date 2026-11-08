@@ -22,7 +22,7 @@ type Indexer struct {
 	initial contract.VectorSpace // the space of the first generation, when the store has none
 
 	scanMu sync.Mutex     // one folder scan at a time (watchers and the startup rescan both scan)
-	wg     sync.WaitGroup // the worker, progress ticker and startup rescan; Wait joins them
+	wg     sync.WaitGroup // the worker, progress ticker, startup rescan and rewatch loop; Wait joins them
 
 	mu          sync.Mutex
 	started     bool
@@ -38,6 +38,8 @@ type Indexer struct {
 	imageRate   ewma // tokens per second, images
 	actStream   *stream
 	rebStream   *stream
+
+	rewatchEvery time.Duration // how often a folder without a watcher is tried again; 0 means 30 s
 }
 
 type folderState struct {
@@ -62,9 +64,10 @@ func New(store contract.Store, ex contract.Extractor, rt contract.Runtime, initi
 	}
 }
 
-// Start loads the store, opens the active generation's session, and starts the worker, the progress ticker and
-// the startup rescan. If the store has no active generation, it starts a rebuild into a new one (or resumes a
-// building one from an earlier run), so the first index is a rebuild.
+// Start loads the store, opens the active generation's session, and starts the worker, the progress ticker, the
+// startup rescan and the loop that watches again the folders that have no watcher. If the store has no active
+// generation, it starts a rebuild into a new one (or resumes a building one from an earlier run), so the first
+// index is a rebuild.
 func (x *Indexer) Start(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -159,10 +162,11 @@ func (x *Indexer) Start(ctx context.Context) error {
 	x.mu.Unlock()
 	ok = true
 
-	x.wg.Add(3)
+	x.wg.Add(4)
 	go func() { defer x.wg.Done(); x.work(ctx) }()
 	go func() { defer x.wg.Done(); x.tick(ctx) }()
 	go func() { defer x.wg.Done(); x.startup(ctx) }()
+	go func() { defer x.wg.Done(); x.rewatch(ctx) }()
 	return nil
 }
 
@@ -174,8 +178,8 @@ func (x *Indexer) SetInitial(sp contract.VectorSpace) {
 	x.initial = sp
 }
 
-// Wait returns once the worker, the progress ticker and the startup rescan have ended. They end when the
-// lifetime passed to Start ends. It returns at once when Start was never called.
+// Wait returns once the worker, the progress ticker, the startup rescan and the rewatch loop have ended. They end
+// when the lifetime passed to Start ends. It returns at once when Start was never called.
 func (x *Indexer) Wait() {
 	x.wg.Wait()
 }
@@ -477,13 +481,48 @@ func (x *Indexer) watchFolder(fo contract.Folder) error {
 		return err
 	}
 	x.mu.Lock()
-	if fs, ok := x.folders[fo.ID]; ok {
+	if fs, ok := x.folders[fo.ID]; ok && fs.cancel == nil {
 		fs.cancel = cancel
 	} else {
-		cancel()
+		cancel() // the folder was removed, or another call already watches it
 	}
 	x.mu.Unlock()
 	return nil
+}
+
+// rewatch tries again to watch each folder that has no watcher, such as a folder whose root was missing at
+// startup (a drive that was not mounted yet). A folder that comes back is scanned at once.
+func (x *Indexer) rewatch(ctx context.Context) {
+	every := x.rewatchEvery
+	if every == 0 {
+		every = 30 * time.Second
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		x.mu.Lock()
+		var list []contract.Folder
+		for _, fs := range x.folders {
+			if fs.cancel == nil {
+				list = append(list, fs.f)
+			}
+		}
+		x.mu.Unlock()
+		sort.Slice(list, func(a, b int) bool { return list[a].ID < list[b].ID })
+		for _, fo := range list {
+			if ctx.Err() != nil {
+				return
+			}
+			if x.watchFolder(fo) == nil {
+				_ = x.scanFolder(ctx, fo)
+			}
+		}
+	}
 }
 
 // startup starts the watchers and scans every folder once (SPEC section 13, the startup rescan).

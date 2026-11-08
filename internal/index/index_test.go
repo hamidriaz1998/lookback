@@ -475,3 +475,27 @@ func TestRebuildJoinsFirstRunGenerationOfSameSpace(t *testing.T) {
 		t.Errorf("Rebuild with another space = %v, want ErrRebuildBusy", err)
 	}
 }
+
+// A folder whose root is missing at startup has no watcher. The Folders screen promises that it is indexed again
+// when it comes back, so the indexer must try to watch it again, without an app restart.
+func TestFolderThatAppearsAfterStartIsIndexed(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "usb-drive") // not created yet
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := newRig(t, ctx)
+	r.ix.rewatchEvery = 100 * time.Millisecond
+	r.addFolder(t, root)
+	if err := r.ix.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the first generation", func() bool { return r.activeGen(t) != 0 })
+
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "late.txt"), "a document that arrived with the drive")
+	waitFor(t, 30*time.Second, "the file of the returned folder", func() bool {
+		_, ok := r.hitPaths(t, r.activeGen(t))["late.txt"]
+		return ok
+	})
+}
