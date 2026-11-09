@@ -58,6 +58,32 @@ func TestNestedInFollowsPlatformCase(t *testing.T) {
 	}
 }
 
+// TestNestedInDriveRoot checks that a drive root (C:\ on Windows, / elsewhere), which already ends in a separator,
+// contains the folders below it, and that a sibling that shares a name prefix is not inside a folder.
+func TestNestedInDriveRoot(t *testing.T) {
+	rootDir := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	data := filepath.Join(rootDir, "Data")
+
+	roots := []folderView{folderAt(rootDir)}
+	if got := nestedIn(data, roots); got != rootDir {
+		t.Errorf("nestedIn(%q, root %q) = %q, want the root", data, rootDir, got)
+	}
+	if got := nestedIn(filepath.Join(data, "sub"), roots); got != rootDir {
+		t.Errorf("nestedIn(deep path, root %q) = %q, want the root", rootDir, got)
+	}
+	if got := nestedIn(rootDir, roots); got != "" {
+		t.Errorf("the root is not nested in itself: got %q", got)
+	}
+
+	folders := []folderView{folderAt(data)}
+	if got := nestedIn(filepath.Join(rootDir, "Database"), folders); got != "" {
+		t.Errorf("a sibling that shares a name prefix is not inside the folder: got %q", got)
+	}
+	if got := nestedIn(filepath.Join(data, "sub"), folders); got != data {
+		t.Errorf("nestedIn(sub, %q) = %q, want %q", data, got, data)
+	}
+}
+
 // TestNestedInCaseOnlyTwin checks that a folder whose path differs only by case from another is not nested in it.
 func TestNestedInCaseOnlyTwin(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "Data")

@@ -165,11 +165,12 @@ func countsLine(fv folderView) string {
 }
 
 // nestedIn returns the path of the folder that contains path, or "" when none does. On Windows the comparison
-// ignores case, so C:\Data contains c:\data\sub.
+// ignores case, so C:\Data contains c:\data\sub. A drive root (C:\) or / already ends in a separator, so the
+// separator is trimmed before it is added again.
 func nestedIn(p string, folders []folderView) string {
 	for _, o := range folders {
-		if !pathsSame(o.folder.Path, p, foldPathCase) &&
-			pathHasPrefix(p, o.folder.Path+string(filepath.Separator), foldPathCase) {
+		prefix := strings.TrimRight(o.folder.Path, string(filepath.Separator)) + string(filepath.Separator)
+		if !pathsSame(o.folder.Path, p, foldPathCase) && pathHasPrefix(p, prefix, foldPathCase) {
 			return o.folder.Path
 		}
 	}
