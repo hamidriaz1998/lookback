@@ -161,6 +161,17 @@ func (h *harness) wantText(s string) {
 	h.t.Errorf("no text contains %q; texts: %q", s, h.tt.Texts())
 }
 
+// wantNoText fails when a text on the screen contains s.
+func (h *harness) wantNoText(s string) {
+	h.t.Helper()
+	for _, txt := range h.tt.Texts() {
+		if strings.Contains(txt, s) {
+			h.t.Errorf("text %q is on the screen, want none containing %q", txt, s)
+			return
+		}
+	}
+}
+
 // failingSearch is the fixture store with Search failing, for the error state.
 type failingSearch struct{ contract.Store }
 

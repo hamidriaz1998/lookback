@@ -952,6 +952,7 @@ func (a *App) stepFolders(c *ui.Context) {
 						if parent := nestedIn(fv.folder.Path, a.data.folders); parent != "" {
 							ui.Text(c, "Inside "+parent+". Its files are merged with that folder.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
 						}
+						networkNote(c, fv)
 					})
 					if ui.Button(c, "Edit rules").Clicked() {
 						f.editOpen, f.editID, f.editText = true, fv.folder.ID, fv.folder.Ignore

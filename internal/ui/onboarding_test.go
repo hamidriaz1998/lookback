@@ -47,6 +47,20 @@ func TestOnboardingLabNeedsChoice(t *testing.T) {
 	})
 }
 
+// TestOnboardingFolderListShowsNetworkNote checks that the first-run folder list notes a network folder, as the
+// Folders page does, and shows no note for a local one.
+func TestOnboardingFolderListShowsNetworkNote(t *testing.T) {
+	h, _ := newFirstRunHarness(t, nil, nil)
+	waitDetection(h)
+	h.app.onb.step = 3
+	h.app.data.folders = []folderView{folderAt(t.TempDir())}
+	h.pump(0)
+	h.wantNoText("Network folder: changes appear after a restart.")
+	h.app.data.folders[0].network = true
+	h.pump(0)
+	h.wantText("Network folder: changes appear after a restart.")
+}
+
 // TestOnboardingFinishesToSearch checks the whole first run: step 1 to step 3, then Start indexing marks it done.
 func TestOnboardingFinishesToSearch(t *testing.T) {
 	h, _ := newFirstRunHarness(t, nil, nil)

@@ -83,9 +83,7 @@ func (a *App) folderRow(c *ui.Context, fv folderView) {
 			if parent := nestedIn(fv.folder.Path, a.data.folders); parent != "" {
 				ui.Text(c, "Inside "+parent+". Its files are merged with that folder.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
 			}
-			if fv.network {
-				ui.Text(c, "Network folder: changes appear after a restart.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
-			}
+			networkNote(c, fv)
 			a.folderNotice(c, fv)
 		})
 		a.folderStatus(c, fv)
@@ -106,6 +104,16 @@ func (a *App) folderRow(c *ui.Context, fv folderView) {
 			f.rmOpen, f.rmID, f.rmPath = true, fv.folder.ID, fv.folder.Path
 		}
 	})
+}
+
+// networkNote tells that a folder on a network share is not watched live. The Folders page and the first-run folder
+// list both show it.
+func networkNote(c *ui.Context, fv folderView) {
+	if !fv.network {
+		return
+	}
+	t := c.Theme()
+	ui.Text(c, "Network folder: changes appear after a restart.").TextColor(t.TextMuted).FontSize(t.Rem(0.85))
 }
 
 // folderNotice shows the state of the folder itself: not found, or a permission problem.
