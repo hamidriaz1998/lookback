@@ -38,11 +38,16 @@ type fileID struct {
 // replaced, the handle is released and the root is opened again at the same path once it exists, and each
 // of those steps makes a burst.
 func Watch(ctx context.Context, root string, skip func(path string, isDir bool) bool, onChange func()) error {
+	return watchWithBuffer(ctx, root, skip, onChange, bufSize)
+}
+
+// watchWithBuffer is Watch with the size of the read buffer given, so that a test can overflow a small one.
+func watchWithBuffer(ctx context.Context, root string, skip func(path string, isDir bool) bool, onChange func(), size int) error {
 	ev, err := windows.CreateEvent(nil, 1, 0, nil) // manual reset: ResetEvent before each read
 	if err != nil {
 		return err
 	}
-	w := &watcher{root: root, skip: skip, ev: ev, h: windows.InvalidHandle, buf: make([]byte, bufSize)}
+	w := &watcher{root: root, skip: skip, ev: ev, h: windows.InvalidHandle, buf: make([]byte, size)}
 	if err := w.open(); err != nil {
 		windows.CloseHandle(ev)
 		return err
